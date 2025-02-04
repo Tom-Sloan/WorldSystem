@@ -1,6 +1,6 @@
 [submodule "fantasy"]
 	path = fantasy
-	url = https://github.com/Tom-Sloan/ORB-SLAM3-python.git
+	url = https://github.com/Tom-Sloan/fantasy_world_builder.git
 [submodule "reconstruction"]
 	path = reconstruction
 	url = https://github.com/Tom-Sloan/MambaRecon.git
@@ -13,3 +13,6 @@
 [submodule "slam"]
 	path = slam
 	url = https://github.com/Tom-Sloan/ORB-SLAM3-python.git
+[submodule "server"]
+	path = server
+	url = https://github.com/Tom-Sloan/LidarWorld_Server.git

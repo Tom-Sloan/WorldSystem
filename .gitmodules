@@ -13,3 +13,6 @@
 [submodule "server"]
 	path = server
 	url = https://github.com/Tom-Sloan/LidarWorld_Server.git
+[submodule "fantasy"]
+	path = fantasy
+	url = https://github.com/Tom-Sloan/fantasy_world_builder.git

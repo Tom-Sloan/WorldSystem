@@ -1,6 +1,3 @@
-[submodule "fantasy"]
-	path = fantasy
-	url = https://github.com/Tom-Sloan/fantasy_world_builder.git
 [submodule "reconstruction"]
 	path = reconstruction
 	url = https://github.com/Tom-Sloan/MambaRecon.git

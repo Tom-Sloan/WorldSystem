@@ -6,8 +6,7 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
-    networks:
-      - app-network
+    network_mode: host
 
   nginx:
     build: ./nginx
@@ -17,57 +16,163 @@ services:
     depends_on:
       - website
       - server
-    networks:
-      - app-network
+    network_mode: host
 
   website:
-    build: ./website
+    image: website:latest
+    build:
+      context: ./website
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
+    privileged: true
+    container_name: website
     volumes:
-      - ./website:/app
+      - ${WORKSPACE}/website:/app
+      - ${X11SOCKET}:${X11SOCKET}
+      - ${XAUTHORITY}:${XAUTHORITY}
       - /app/node_modules
     environment:
-      - VITE_API_URL=/api
-      - VITE_WS_HOST=${HOST_DOMAIN:-localhost}
-      - NODE_ENV=development
-    networks:
-      - app-network
+      VITE_API_URL: /api
+      VITE_WS_HOST: ${HOST_DOMAIN:-localhost}
+      NODE_ENV: development
+      CUDA_PATH: ${CUDA_PATH}
+      LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
+      DISPLAY: ${DISPLAY}
+      HOME: ${HOME}
     ports:
       - "5001:5001"
+    ipc: host
+    network_mode: host
+    tty: true
+    stdin_open: true
 
   server:
-    build: ./server
+    image: server:latest
+    build:
+      context: ./server
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
     volumes:
-      - ./server:/app
+      - ${WORKSPACE}/server:/app
+      - ${X11SOCKET}:${X11SOCKET}
+      - ${XAUTHORITY}:${XAUTHORITY}
     environment:
       - RABBITMQ_URL=amqp://rabbitmq
       - NVIDIA_VISIBLE_DEVICES=all
-    runtime: nvidia:cuda12.6
+    runtime: nvidia
     ports:
       - "5001:5001"
-    networks:
-      - app-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
+    network_mode: host 
+    tty: true
+    stdin_open: true
+    shm_size: 8gb
 
   fantasy:
-    build: ./fantasy
+    image: fantasy:latest
+    build:
+      context: ./fantasy
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
     volumes:
-      - ./fantasy:/app
-    runtime: nvidia:cuda12.6
+      - ${WORKSPACE}/fantasy:/app
+      - ${X11SOCKET}:${X11SOCKET}
+      - ${XAUTHORITY}:${XAUTHORITY}
+    runtime: nvidia
     environment:
-      - RABBITMQ_URL=amqp://rabbitmq
-    networks:
-      - app-network
+      RABBITMQ_URL: amqp://rabbitmq
+      CUDA_PATH: ${CUDA_PATH}
+      LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
+      DISPLAY: ${DISPLAY}
+      HOME: ${HOME}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    ipc: host
+    network_mode: host 
+    tty: true
+    stdin_open: true
+    shm_size: 4gb
 
   reconstruction:
-    build: ./reconstruction
+    image: reconstruction:latest
+    build:
+      context: ./reconstruction
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
     volumes:
-      - ./reconstruction:/app
-    runtime: nvidia:cuda12.6
+      - ${WORKSPACE}/reconstruction:/app
+      - ${X11SOCKET}:${X11SOCKET}
+      - ${XAUTHORITY}:${XAUTHORITY}
+    runtime: nvidia
     environment:
-      - RABBITMQ_URL=amqp://rabbitmq
-      - NVIDIA_VISIBLE_DEVICES=all
-    networks:
-      - app-network
+      CUDA_PATH: ${CUDA_PATH}
+      LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
+      DISPLAY: ${DISPLAY}
+      HOME: ${HOME}
+      RABBITMQ_URL: amqp://rabbitmq
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
+    network_mode: host 
+    tty: true
+    stdin_open: true
+    shm_size: 8gb
 
-networks:
-  app-network:
-    driver: bridge 
+  slam:
+    image: slam:latest
+    privileged: true
+    build:
+      context: ./slam
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
+    container_name: slam
+    runtime: nvidia
+    volumes:
+      - ${WORKSPACE}/slam:/app
+      - ${X11SOCKET}:${X11SOCKET}
+      - ${XAUTHORITY}:${XAUTHORITY}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: 4gb
+    ipc: host
+    network_mode: host
+    environment:
+      CUDA_PATH: ${CUDA_PATH}
+      LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
+      DISPLAY: ${DISPLAY}
+      HOME: ${HOME}
+    tty: true
+    stdin_open: true

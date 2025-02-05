@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - app-network
+
+  nginx:
+    build: ./nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - website
+      - server
+    networks:
+      - app-network
+
+  website:
+    build: ./website
+    volumes:
+      - ./website:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=/api
+      - VITE_WS_HOST=${HOST_DOMAIN:-localhost}
+      - NODE_ENV=development
+    networks:
+      - app-network
+    ports:
+      - "5001:5001"
+
+  server:
+    build: ./server
+    volumes:
+      - ./server:/app
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq
+      - NVIDIA_VISIBLE_DEVICES=all
+    runtime: nvidia:cuda12.6
+    ports:
+      - "5001:5001"
+    networks:
+      - app-network
+
+  fantasy:
+    build: ./fantasy
+    volumes:
+      - ./fantasy:/app
+    runtime: nvidia:cuda12.6
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq
+    networks:
+      - app-network
+
+  reconstruction:
+    build: ./reconstruction
+    volumes:
+      - ./reconstruction:/app
+    runtime: nvidia:cuda12.6
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq
+      - NVIDIA_VISIBLE_DEVICES=all
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge 

@@ -4,6 +4,62 @@ This is a collection of all the components of the WorldSystem.
 
 ![System Diagram](./images/CurrentSetup.png)
 
+## Setup
+
+1. Clone the repository
+```bash
+git clone https://github.com/Tom-Sloan/WorldSystem.git
+```
+
+2. Install submodules
+```bash
+git submodule update --init --recursive
+```
+
+3. Build the docker containers
+```bash
+docker compose build
+```
+
+4. Run the docker containers
+```bash
+docker compose up
+```
+
+## Common Commands
+### Build all services with cache (initial build)
+```bash
+docker-compose build
+```
+
+### Start all services with live code reload
+```bash
+docker-compose up
+```
+
+### Force rebuild specific service (when changing dependencies)
+```bash
+docker-compose build --no-cache website
+```
+
+### Access container shell for live coding
+```bash
+docker-compose exec website sh
+docker-compose exec server bash
+```
+
+### Watch website changes with hot reload (inside container)
+```bash
+docker-compose exec website bash
+cd /app && npm run dev
+```
+
+### For Python services, use mounted volumes with:
+```bash
+docker-compose exec server bash
+-> $ source activate drone_server && python main.py  # Changes in ./server will be live
+```
+
 ## Components
 
 ### Visualization Website [website]
@@ -30,3 +86,62 @@ I am trying to build something like:
   <source src="./images/EndGoal.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
+
+## Testing
+
+```bash
+docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3.12-management
+```
+
+### Website
+```
+# Build
+docker build -t website:latest ./website
+
+# Run (development mode)
+docker run -it --rm \
+  -p 3000:3000 \
+  -v $(pwd)/website:/app \
+  -e VITE_API_URL=http://localhost:5001 \
+  -e VITE_WS_HOST=localhost \
+  website:latest
+```
+
+### Server
+```bash
+# Build
+docker build -t server:latest ./server
+
+# Run 
+docker run -it --rm \
+  -p 5001:5001 \
+  --gpus all \
+  -v $(pwd)/server:/app \
+  -e RABBITMQ_URL=amqp://host.docker.internal \
+  server:latest
+```
+### Reconstruction
+```bash
+# Build
+docker build -t reconstruction:latest ./reconstruction
+
+# Run
+docker run -it --rm \
+  --gpus all \
+  -v $(pwd)/reconstruction:/app \
+  -e RABBITMQ_URL=amqp://host.docker.internal \
+  reconstruction:latest
+```
+
+### Fantasy Builder
+```bash
+# Build
+docker build -t fantasy:latest ./fantasy
+
+# Run
+docker run -it --rm \
+  --gpus all \
+  -v $(pwd)/fantasy:/app \
+  -e RABBITMQ_URL=amqp://host.docker.internal \
+  fantasy:latest
+```

@@ -29,7 +29,8 @@ services:
       VITE_API_URL: "http://134.117.167.139/api"
       VITE_WS_HOST: "134.117.167.139"
       NODE_ENV: "development"
-
+    depends_on:
+      - rabbitmq
     tty: true
     stdin_open: true
 
@@ -58,39 +59,43 @@ services:
               capabilities: [gpu]
     ports:
       - "5001:5001"
+    depends_on:
+      - rabbitmq
     tty: true
     stdin_open: true
     shm_size: 8gb
 
-  fantasy:
-    image: fantasy:latest
-    build:
-      context: ./fantasy
-      args:
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
-    volumes:
-      - ${WORKSPACE}/fantasy:/app
-      - ${X11SOCKET}:${X11SOCKET}
-      - ${XAUTHORITY}:${XAUTHORITY}
-    runtime: nvidia
-    environment:
-      RABBITMQ_URL: amqp://rabbitmq
-      CUDA_PATH: ${CUDA_PATH}
-      LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
-      DISPLAY: ${DISPLAY}
-      HOME: ${HOME}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    tty: true
-    stdin_open: true
-    shm_size: 4gb
+  # fantasy:
+  #   image: fantasy:latest
+  #   build:
+  #     context: ./fantasy
+  #     args:
+  #       USERNAME: ${USERNAME}
+  #       UID: ${UID}
+  #       GID: ${GID}
+  #   volumes:
+  #     - ${WORKSPACE}/fantasy:/app
+  #     - ${X11SOCKET}:${X11SOCKET}
+  #     - ${XAUTHORITY}:${XAUTHORITY}
+  #   runtime: nvidia
+  #   environment:
+  #     RABBITMQ_URL: amqp://rabbitmq
+  #     CUDA_PATH: ${CUDA_PATH}
+  #     LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
+  #     DISPLAY: ${DISPLAY}
+  #     HOME: ${HOME}
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   depends_on:
+  #     - rabbitmq
+  #   tty: true
+  #   stdin_open: true
+  #   shm_size: 4gb
 
   reconstruction:
     image: reconstruction:latest
@@ -118,6 +123,8 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    depends_on:
+      - rabbitmq
     tty: true
     stdin_open: true
     shm_size: 8gb
@@ -151,13 +158,19 @@ services:
       DISPLAY: ${DISPLAY}
       HOME: ${HOME}
       RABBITMQ_URL: amqp://rabbitmq
+      SLAM_MODE: mono
+    depends_on:
+      - rabbitmq
     tty: true
     stdin_open: true
 
-  data_recorder:
-    image: data_recorder:latest
+  data_storage:
+    image: data_storage:latest
     build: ./storage
     volumes:
+      - ${WORKSPACE}/storage:/app
       - ${WORKSPACE}/data:/data
     environment:
       RABBITMQ_URL: amqp://rabbitmq
+    depends_on:
+      - rabbitmq

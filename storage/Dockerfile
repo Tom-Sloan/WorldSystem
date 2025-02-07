@@ -9,4 +9,4 @@ WORKDIR /app
 COPY . .
 RUN pip install aio-pika opencv-python-headless numpy pika
 
-CMD ["python", "-u", "src/core/data_storage.py"] 
+CMD ["python", "data_storage.py"] 

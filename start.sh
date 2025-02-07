@@ -11,6 +11,7 @@ echo "GID=$(id -g)" >> .env
 echo "CUDA_PATH=/usr/local/cuda" >> .env
 echo "LIBGL_ALWAYS_INDIRECT=1" >> .env
 echo "DISPLAY=$DISPLAY" >> .env
+echo "BIND_HOST=0.0.0.0" >> .env
 
 # Determine the Docker Compose command
 if command -v docker-compose &> /dev/null; then
@@ -19,27 +20,26 @@ else
     compose_cmd="docker compose"
 fi
 
-# Run Docker Compose
-$compose_cmd up --build -d slam
+# Add cleanup of all containers before building
+echo "Removing any existing containers..."
+$compose_cmd down --remove-orphans --volumes --rmi local
 
-# Capture the container ID or name
-container_id=$($compose_cmd ps -q slam)
+# Run Docker Compose with build and remove orphans
+$compose_cmd up --build --force-recreate --remove-orphans -d
 
-# Function to clean up the specific container
-cleanup() {
-  echo "Cleaning up container $container_id..."
-  if [ -n "$container_id" ]; then
-    docker container rm -f "$container_id" 2>/dev/null || echo "Failed to remove container $container_id"
-  else
-    echo "No container ID found to clean up."
-  fi
-}
-
-# Check if the container is running (i.e., deployment failed)
-if ! docker ps -q -f "id=$container_id" > /dev/null; then
-  echo "Docker container failed to start."
-  cleanup
+# Remove the container_id check and simplify cleanup
+# Since we're checking all services, we don't need single-container checks
+if [ $? -ne 0 ]; then
+  echo "Docker Compose failed to start services"
+  $compose_cmd down
   exit 1
 fi
 
-echo "Docker Compose build and deployment succeeded."
+echo "All services rebuilt and started:"
+echo "- slam (3D SLAM)"
+echo "- fantasy (Fantasy World Generator)"
+echo "- server (Backend API)"
+echo "- reconstruction (3D Reconstruction)"
+echo "- rabbitmq (Message Broker)"
+echo "- nginx (Web Server)"
+echo "- website (Frontend)"

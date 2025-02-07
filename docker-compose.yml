@@ -6,18 +6,13 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
-    network_mode: host
-
   nginx:
     build: ./nginx
     ports:
       - "80:80"
       - "443:443"
     depends_on:
-      - website
       - server
-    network_mode: host
-
   website:
     image: website:latest
     build:
@@ -26,25 +21,15 @@ services:
         USERNAME: ${USERNAME}
         UID: ${UID}
         GID: ${GID}
-    privileged: true
     container_name: website
     volumes:
       - ${WORKSPACE}/website:/app
-      - ${X11SOCKET}:${X11SOCKET}
-      - ${XAUTHORITY}:${XAUTHORITY}
       - /app/node_modules
     environment:
-      VITE_API_URL: /api
-      VITE_WS_HOST: ${HOST_DOMAIN:-localhost}
-      NODE_ENV: development
-      CUDA_PATH: ${CUDA_PATH}
-      LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
-      DISPLAY: ${DISPLAY}
-      HOME: ${HOME}
-    ports:
-      - "5001:5001"
-    ipc: host
-    network_mode: host
+      VITE_API_URL: "http://134.117.167.139/api"
+      VITE_WS_HOST: "134.117.167.139"
+      NODE_ENV: "development"
+
     tty: true
     stdin_open: true
 
@@ -64,8 +49,6 @@ services:
       - RABBITMQ_URL=amqp://rabbitmq
       - NVIDIA_VISIBLE_DEVICES=all
     runtime: nvidia
-    ports:
-      - "5001:5001"
     deploy:
       resources:
         reservations:
@@ -73,8 +56,8 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    ipc: host
-    network_mode: host 
+    ports:
+      - "5001:5001"
     tty: true
     stdin_open: true
     shm_size: 8gb
@@ -105,9 +88,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-
-    ipc: host
-    network_mode: host 
     tty: true
     stdin_open: true
     shm_size: 4gb
@@ -138,8 +118,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    ipc: host
-    network_mode: host 
     tty: true
     stdin_open: true
     shm_size: 8gb
@@ -167,12 +145,19 @@ services:
               count: all
               capabilities: [gpu]
     shm_size: 4gb
-    ipc: host
-    network_mode: host
     environment:
       CUDA_PATH: ${CUDA_PATH}
       LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
       DISPLAY: ${DISPLAY}
       HOME: ${HOME}
+      RABBITMQ_URL: amqp://rabbitmq
     tty: true
     stdin_open: true
+
+  data_recorder:
+    image: data_recorder:latest
+    build: ./storage
+    volumes:
+      - ${WORKSPACE}/data:/data
+    environment:
+      RABBITMQ_URL: amqp://rabbitmq

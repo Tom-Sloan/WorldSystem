@@ -52,6 +52,8 @@ services:
     runtime: nvidia
     deploy:
       resources:
+        limits:
+          cpus: '4.0'
         reservations:
           devices:
             - driver: nvidia
@@ -63,6 +65,7 @@ services:
       - rabbitmq
     tty: true
     stdin_open: true
+    cpus: "4.0"
     shm_size: 8gb
 
   # fantasy:
@@ -146,12 +149,15 @@ services:
       - ${XAUTHORITY}:${XAUTHORITY}
     deploy:
       resources:
+        limits:
+          cpus: '4.0'
         reservations:
           devices:
             - driver: nvidia
               count: all
               capabilities: [gpu]
     shm_size: 4gb
+    cpus: "4.0"
     environment:
       CUDA_PATH: ${CUDA_PATH}
       LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}

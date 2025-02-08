@@ -145,3 +145,29 @@ docker run -it --rm \
   -e RABBITMQ_URL=amqp://host.docker.internal \
   fantasy:latest
 ```
+
+## Port Reference
+
+| Service               | Host Port | Notes / How to Access                                               |
+|-----------------------|----------:|----------------------------------------------------------------------|
+| **RabbitMQ**          | 5672      | AMQP messaging (clients connect here)                               |
+| **RabbitMQ Management** | 15672   | Web-based management UI for RabbitMQ                                |
+| **Nginx**             | 80        | HTTP reverse proxy / website front-end (HTTP)                       |
+|                       | 443       | HTTP reverse proxy / website front-end (HTTPS)                      |
+| **Server**            | 5001      | Main server API (includes `/api` and `/ws` routes)                  |
+| **Slam**              | 8000      | SLAM service (exposes a possible API or WebSocket)                  |
+| **Reconstruction**    | 8001      | Reconstruction service API                                          |
+| **Data Storage**      | 8002      | Data storage service API                                            |
+| **cAdvisor**          | 8080      | Container resource usage metrics (scraped by Prometheus)            |
+| **Prometheus**        | 9090      | Prometheus metrics UI                                               |
+| **Grafana**           | 3000      | Grafana dashboards                                                  |
+| **Jaeger (UI)**       | 16686     | Distributed tracing UI                                              |
+| **Jaeger (OTLP)**     | 4318      | OTLP ingestion port (if using OTLP tracing)                         |
+| **Jaeger (Other)**    | 6831/udp, 6832/udp, 14268 | Legacy agent ports, collector endpoint, etc.        |
+| **NVIDIA DCGM Exporter** | 9400   | GPU metrics (scraped by Prometheus)                                 |
+
+RabbitMQ Management: http://134.117.167.139:15672/
+cAdvisor: http://134.117.167.139:8080/
+Prometheus: http://134.117.167.139:9090/
+Grafana: http://134.117.167.139:3000/ 
+Jaeger UI: http://134.117.167.139:16686/

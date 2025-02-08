@@ -8,12 +8,59 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
+# PROMETHEUS
+from prometheus_client import start_http_server, Counter, Histogram
+
+############
+# Define metrics
+############
+
+# Counters: total number of each data type saved
+images_saved_counter = Counter(
+    "data_storage_images_saved_total",
+    "Total number of images successfully saved by data_storage"
+)
+imu_saved_counter = Counter(
+    "data_storage_imu_saved_total",
+    "Total number of IMU records saved by data_storage"
+)
+trajectories_saved_counter = Counter(
+    "data_storage_trajectories_saved_total",
+    "Total number of trajectory lines saved by data_storage"
+)
+ply_saved_counter = Counter(
+    "data_storage_ply_saved_total",
+    "Total number of .ply files saved by data_storage"
+)
+
+# Histograms: time taken for each save operation
+save_image_hist = Histogram(
+    "data_storage_save_image_seconds",
+    "Time spent saving a single image file",
+    buckets=[0.001, 0.01, 0.1, 0.5, 1, 2, 5]
+)
+save_imu_hist = Histogram(
+    "data_storage_save_imu_seconds",
+    "Time spent saving a single IMU record",
+    buckets=[0.0005, 0.001, 0.005, 0.01, 0.1, 1]
+)
+save_trajectory_hist = Histogram(
+    "data_storage_save_trajectory_seconds",
+    "Time spent saving a single trajectory record",
+    buckets=[0.0005, 0.001, 0.005, 0.01, 0.1, 1]
+)
+save_ply_hist = Histogram(
+    "data_storage_save_ply_seconds",
+    "Time spent saving a single PLY file",
+    buckets=[0.01, 0.05, 0.1, 0.5, 1, 5, 10]
+)
+
 class DataStorage:
     def __init__(self):
         self.connection = None
         self.channel = None
         self.recording_path = None
-        self.trajectory_file = None  # We'll open this once we start recording
+        self.trajectory_file = None
         self._connect_with_retry()  # tries to connect until success
 
     def _connect_with_retry(self, max_retries=30, delay=2):
@@ -38,13 +85,9 @@ class DataStorage:
         # ------------------------------------------------------
         # Declare the fanout exchanges from FrameProcessor or SLAM:
         # ------------------------------------------------------
-        # 1) image_data_exchange
         self.channel.exchange_declare(exchange='image_data_exchange', exchange_type='fanout', durable=True)
-        # 2) imu_data_exchange
         self.channel.exchange_declare(exchange='imu_data_exchange', exchange_type='fanout', durable=True)
-        # 3) trajectory_data_exchange
         self.channel.exchange_declare(exchange='trajectory_data_exchange', exchange_type='fanout', durable=True)
-        # 4) ply_fanout_exchange - for .ply files from continuous_reconstruction.py
         self.channel.exchange_declare(exchange='ply_fanout_exchange', exchange_type='fanout', durable=True)
 
         # ------------------------------------------------------
@@ -74,7 +117,7 @@ class DataStorage:
             routing_key=''
         )
 
-        # (NEW) .ply -> ply_data_storage
+        # .ply -> ply_data_storage
         self.channel.queue_declare(queue='ply_data_storage', durable=True)
         self.channel.queue_bind(
             exchange='ply_fanout_exchange',
@@ -97,47 +140,57 @@ class DataStorage:
 
     def _save_image(self, ch, method, properties, body):
         """Callback for storing images from 'image_data_storage' queue."""
-        data = json.loads(body)
-        frame_data = data['frame_data']
-        frame_timestamp = data['timestamp']
-        # Decode base64 -> OpenCV image
-        np_data = np.frombuffer(base64.b64decode(frame_data), np.uint8)
-        frame = cv2.imdecode(np_data, cv2.IMREAD_COLOR)
-        if frame is None:
-            print(f"[!] Received invalid image data at timestamp {frame_timestamp}")
-            return
+        start_time = time.time()
+        try:
+            data = json.loads(body)
+            frame_data = data['frame_data']
+            frame_timestamp = data['timestamp']
+            np_data = np.frombuffer(base64.b64decode(frame_data), np.uint8)
+            frame = cv2.imdecode(np_data, cv2.IMREAD_COLOR)
+            if frame is None:
+                print(f"[!] Received invalid image data at timestamp {frame_timestamp}")
+                return
 
-        frame_path = self.recording_path / "cam0" / "data" / f"{frame_timestamp}.jpg"
-        cv2.imwrite(str(frame_path), frame)
+            frame_path = self.recording_path / "cam0" / "data" / f"{frame_timestamp}.jpg"
+            cv2.imwrite(str(frame_path), frame)
+
+            # Increment counter if successfully saved
+            images_saved_counter.inc()
+        finally:
+            elapsed = time.time() - start_time
+            save_image_hist.observe(elapsed)
 
     def _save_imu(self, ch, method, properties, body):
         """Callback for storing IMU data from 'imu_data_storage' queue."""
-        data = json.loads(body)
-        imu_timestamp = data['timestamp']
-        angular_vel = data['angular_velocity']
-        linear_acc = data['linear_acceleration']
-
-        imu_path = self.recording_path / "imu0" / "data" / f"{imu_timestamp}.txt"
-        with open(imu_path, 'w') as f:
-            f.write(f"angular_velocity: {angular_vel}\n")
-            f.write(f"linear_acceleration: {linear_acc}\n")
-
-    def _save_trajectory(self, ch, method, properties, body):
-        """
-        Callback for storing trajectory data from 'trajectory_data_storage' queue.
-        We'll write them all to a single file 'trajectory.txt'.
-        """
-        if not self.trajectory_file:
-            print("[!] Trajectory file not open! Did you call start_recording() first?")
-            return
-
+        start_time = time.time()
         try:
             data = json.loads(body)
-            # data might look like: {"timestamp_ns": 1234567890, "pose": [[...],[...]]}
+            imu_timestamp = data['timestamp']
+            angular_vel = data['angular_velocity']
+            linear_acc = data['linear_acceleration']
+
+            imu_path = self.recording_path / "imu0" / "data" / f"{imu_timestamp}.txt"
+            with open(imu_path, 'w') as f:
+                f.write(f"angular_velocity: {angular_vel}\n")
+                f.write(f"linear_acceleration: {linear_acc}\n")
+
+            # Increment counter if successfully saved
+            imu_saved_counter.inc()
+        finally:
+            elapsed = time.time() - start_time
+            save_imu_hist.observe(elapsed)
+
+    def _save_trajectory(self, ch, method, properties, body):
+        """Callback for storing trajectory data from 'trajectory_data_storage' queue."""
+        start_time = time.time()
+        try:
+            if not self.trajectory_file:
+                print("[!] Trajectory file not open! Did you call start_recording() first?")
+                return
+
+            data = json.loads(body)
             ts_ns = data.get("timestamp_ns")
             pose = data.get("pose")
-
-            # We can store this as JSON or a simple line
             record = {
                 "timestamp_ns": ts_ns,
                 "pose": pose
@@ -146,18 +199,15 @@ class DataStorage:
             self.trajectory_file.write(line + "\n")
             self.trajectory_file.flush()
 
-        except Exception as e:
-            print(f"[!] Error saving trajectory: {e}")
+            # Increment counter if successfully saved
+            trajectories_saved_counter.inc()
+        finally:
+            elapsed = time.time() - start_time
+            save_trajectory_hist.observe(elapsed)
 
     def _save_ply(self, ch, method, properties, body):
-        """
-        Callback for storing .ply files from 'ply_data_storage' queue.
-        The message format is typically:
-          {
-            "ply_filename": "<filename>.ply",
-            "ply_data_b64": "<base64-encoded .ply file>"
-          }
-        """
+        """Callback for storing .ply files from 'ply_data_storage' queue."""
+        start_time = time.time()
         try:
             msg = json.loads(body)
             ply_filename = msg.get("ply_filename", "output.ply")
@@ -166,24 +216,24 @@ class DataStorage:
                 print("[!] No base64 data in ply message.")
                 return
 
-            # Decode the .ply data from base64
             ply_data = base64.b64decode(ply_data_b64)
-
-            # Save into the "ply" folder of our recording path
-            # We'll just use the provided name or you can use a timestamp
             out_path = self.recording_path / "ply" / ply_filename
             with open(out_path, "wb") as f:
                 f.write(ply_data)
 
             print(f"Saved .ply file to: {out_path}")
 
-        except Exception as e:
-            print(f"[!] Error saving .ply file: {e}")
+            # Increment counter if successfully saved
+            ply_saved_counter.inc()
+        finally:
+            elapsed = time.time() - start_time
+            save_ply_hist.observe(elapsed)
 
     def run(self):
-        """Continuously consume from all relevant queues (image, imu, trajectory, ply) in a loop."""
+        """Continuously consume from all relevant queues (image, imu, trajectory, ply)."""
         while True:
             try:
+                # (Re-declare consumers each loop if we lose the connection.)
                 self.channel.basic_consume(
                     queue='image_data_storage',
                     on_message_callback=self._save_image,
@@ -205,16 +255,17 @@ class DataStorage:
                     auto_ack=True
                 )
 
-                print(" [*] Waiting for messages (images, IMU, trajectory, ply). To exit press CTRL+C")
+                print(" [*] Waiting for messages. To exit press CTRL+C")
                 self.channel.start_consuming()
-
             except pika.exceptions.AMQPConnectionError as err:
                 print("Connection lost, reconnecting...", err)
                 self._connect_with_retry()
-                # We'll loop and re-declare the consumers in the next iteration
-
+                # Next loop iteration will re-declare consumers
 
 if __name__ == "__main__":
+    # Start the Prometheus metrics server on port 8002
+    start_http_server(8002)
+
     ds = DataStorage()
     ds.start_recording()
     ds.run()

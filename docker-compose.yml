@@ -1,11 +1,11 @@
-version: '3.8'
-
 services:
   rabbitmq:
     image: rabbitmq:3.12-management
     ports:
       - "5672:5672"
       - "15672:15672"
+    # management UI at :15672
+
   nginx:
     build: ./nginx
     ports:
@@ -13,6 +13,7 @@ services:
       - "443:443"
     depends_on:
       - server
+
   website:
     image: website:latest
     build:
@@ -31,8 +32,8 @@ services:
       NODE_ENV: "development"
     depends_on:
       - rabbitmq
-    tty: true
-    stdin_open: true
+      - server
+
 
   server:
     image: server:latest
@@ -48,57 +49,19 @@ services:
       - ${XAUTHORITY}:${XAUTHORITY}
     environment:
       - RABBITMQ_URL=amqp://rabbitmq
-      - NVIDIA_VISIBLE_DEVICES=all
-    runtime: nvidia
-    deploy:
-      resources:
-        limits:
-          cpus: '4.0'
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     ports:
       - "5001:5001"
     depends_on:
       - rabbitmq
-    tty: true
-    stdin_open: true
-    cpus: "4.0"
-    shm_size: 8gb
 
-  # fantasy:
-  #   image: fantasy:latest
-  #   build:
-  #     context: ./fantasy
-  #     args:
-  #       USERNAME: ${USERNAME}
-  #       UID: ${UID}
-  #       GID: ${GID}
-  #   volumes:
-  #     - ${WORKSPACE}/fantasy:/app
-  #     - ${X11SOCKET}:${X11SOCKET}
-  #     - ${XAUTHORITY}:${XAUTHORITY}
-  #   runtime: nvidia
-  #   environment:
-  #     RABBITMQ_URL: amqp://rabbitmq
-  #     CUDA_PATH: ${CUDA_PATH}
-  #     LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
-  #     DISPLAY: ${DISPLAY}
-  #     HOME: ${HOME}
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: all
-  #             capabilities: [gpu]
-  #   depends_on:
-  #     - rabbitmq
-  #   tty: true
-  #   stdin_open: true
-  #   shm_size: 4gb
+  frame_processor:
+    build: ./frame_processor
+    image: frame_processor:latest
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq
+    depends_on:
+      - rabbitmq
+    # This container does YOLO analysis only
 
   reconstruction:
     image: reconstruction:latest
@@ -128,9 +91,8 @@ services:
               capabilities: [gpu]
     depends_on:
       - rabbitmq
-    tty: true
-    stdin_open: true
-    shm_size: 8gb
+    ports:
+      - "8001:8001"
 
   slam:
     image: slam:latest
@@ -149,15 +111,12 @@ services:
       - ${XAUTHORITY}:${XAUTHORITY}
     deploy:
       resources:
-        limits:
-          cpus: '4.0'
         reservations:
           devices:
             - driver: nvidia
               count: all
               capabilities: [gpu]
     shm_size: 4gb
-    cpus: "4.0"
     environment:
       CUDA_PATH: ${CUDA_PATH}
       LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
@@ -167,8 +126,8 @@ services:
       SLAM_MODE: mono
     depends_on:
       - rabbitmq
-    tty: true
-    stdin_open: true
+    ports:
+      - "8000:8000"
 
   data_storage:
     image: data_storage:latest
@@ -180,3 +139,92 @@ services:
       RABBITMQ_URL: amqp://rabbitmq
     depends_on:
       - rabbitmq
+    ports:
+      - "8002:8002"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - "9090:9090"
+    depends_on:
+      - cadvisor
+    networks:
+      - default
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - default
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    container_name: cadvisor
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - default
+    deploy:
+      resources:
+        reservations:
+          cpus: '0.2'
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"       # Enable OTLP ingestion
+      COLLECTOR_OTLP_HTTP_HOST_PORT: ":4318"
+    ports:
+      - "16686:16686"    # Jaeger UI
+      - "6831/udp"       # Legacy agent port
+      - "6832/udp"
+      - "14268:14268"
+      - "4318:4318"      # OTLP endpoint
+    networks:
+      - default
+
+  nvidia-dcgm-exporter:
+    image: nvidia/dcgm-exporter:4.0.0-4.0.1-ubuntu22.04
+    container_name: nvidia-dcgm-exporter
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - /var/run/nvidia-persistenced/socket:/var/run/nvidia-persistenced/socket
+    ports:
+      - "9400:9400"
+    command: [
+      "--collectors",
+      "gpu",
+      "--address=:9400",
+      "--no-analytics"
+    ]
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  grafana-data:

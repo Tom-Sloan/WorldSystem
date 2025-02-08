@@ -1,0 +1,43 @@
+global:
+  scrape_interval: 5s  # How frequently to scrape
+
+scrape_configs:
+  # cAdvisor
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # RabbitMQ
+  - job_name: 'rabbitmq'
+    metrics_path: '/metrics'
+    scheme: 'http'
+    static_configs:
+      - targets: ['rabbitmq:15672']  # or 15692 if you use the separate exporter
+    basic_auth:
+      username: guest
+      password: guest
+
+  # Server
+  - job_name: 'server'
+    static_configs:
+      - targets: ['server:5001']  # If you expose metrics on port 5001, path /metrics
+
+  # NVIDIA DCGM Exporter
+  - job_name: 'nvidia-dcgm-exporter'
+    static_configs:
+      - targets: ['nvidia-dcgm-exporter:9400']
+
+  # SLAM
+  - job_name: 'slam'
+    static_configs:
+      - targets: ['slam:8000']
+
+  # Reconstruction
+  - job_name: 'reconstruction'
+    static_configs:
+      - targets: ['reconstruction:8001']
+
+  # Storage
+  - job_name: 'data_storage'
+    static_configs:
+      - targets: ['data_storage:800']

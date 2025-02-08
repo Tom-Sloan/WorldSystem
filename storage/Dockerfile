@@ -7,6 +7,6 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 COPY . .
-RUN pip install aio-pika opencv-python-headless numpy pika
+RUN pip install aio-pika opencv-python-headless numpy pika prometheus_client
 
 CMD ["python", "data_storage.py"] 

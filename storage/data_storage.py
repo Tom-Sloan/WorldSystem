@@ -85,10 +85,17 @@ class DataStorage:
         # ------------------------------------------------------
         # Declare the fanout exchanges from FrameProcessor or SLAM:
         # ------------------------------------------------------
-        self.channel.exchange_declare(exchange='image_data_exchange', exchange_type='fanout', durable=True)
-        self.channel.exchange_declare(exchange='imu_data_exchange', exchange_type='fanout', durable=True)
-        self.channel.exchange_declare(exchange='trajectory_data_exchange', exchange_type='fanout', durable=True)
-        self.channel.exchange_declare(exchange='ply_fanout_exchange', exchange_type='fanout', durable=True)
+        VIDEO_FRAMES_EXCHANGE   = os.getenv("VIDEO_FRAMES_EXCHANGE", "video_frames_exchange")
+        IMU_DATA_EXCHANGE       = os.getenv("IMU_DATA_EXCHANGE", "imu_data_exchange")
+        TRAJECTORY_DATA_EXCHANGE = os.getenv("TRAJECTORY_DATA_EXCHANGE", "trajectory_data_exchange")
+        PLY_FANOUT_EXCHANGE      = os.getenv("PLY_FANOUT_EXCHANGE", "ply_fanout_exchange")
+        RESTART_EXCHANGE         = os.getenv("RESTART_EXCHANGE", "restart_exchange")
+
+        self.channel.exchange_declare(exchange=VIDEO_FRAMES_EXCHANGE, exchange_type='fanout', durable=True)
+        self.channel.exchange_declare(exchange=IMU_DATA_EXCHANGE, exchange_type='fanout', durable=True)
+        self.channel.exchange_declare(exchange=TRAJECTORY_DATA_EXCHANGE, exchange_type='fanout', durable=True)
+        self.channel.exchange_declare(exchange=PLY_FANOUT_EXCHANGE, exchange_type='fanout', durable=True)
+        self.channel.exchange_declare(exchange=RESTART_EXCHANGE, exchange_type='fanout', durable=True)
 
         # ------------------------------------------------------
         # Create queues & bind them to the relevant exchange
@@ -96,7 +103,7 @@ class DataStorage:
         # images -> image_data_storage
         self.channel.queue_declare(queue='image_data_storage', durable=True)
         self.channel.queue_bind(
-            exchange='image_data_exchange',
+            exchange=VIDEO_FRAMES_EXCHANGE,
             queue='image_data_storage',
             routing_key=''
         )
@@ -104,7 +111,7 @@ class DataStorage:
         # IMU -> imu_data_storage
         self.channel.queue_declare(queue='imu_data_storage', durable=True)
         self.channel.queue_bind(
-            exchange='imu_data_exchange',
+            exchange=IMU_DATA_EXCHANGE,
             queue='imu_data_storage',
             routing_key=''
         )
@@ -112,7 +119,7 @@ class DataStorage:
         # trajectory -> trajectory_data_storage
         self.channel.queue_declare(queue='trajectory_data_storage', durable=True)
         self.channel.queue_bind(
-            exchange='trajectory_data_exchange',
+            exchange=TRAJECTORY_DATA_EXCHANGE,
             queue='trajectory_data_storage',
             routing_key=''
         )
@@ -120,9 +127,22 @@ class DataStorage:
         # .ply -> ply_data_storage
         self.channel.queue_declare(queue='ply_data_storage', durable=True)
         self.channel.queue_bind(
-            exchange='ply_fanout_exchange',
+            exchange=PLY_FANOUT_EXCHANGE,
             queue='ply_data_storage',
             routing_key=''
+        )
+
+        # restart -> restart_data_storage
+        self.channel.queue_declare(queue='restart_data_storage', durable=True)
+        self.channel.queue_bind(
+            exchange=RESTART_EXCHANGE,
+            queue='restart_data_storage',
+            routing_key=''
+        )
+        self.channel.basic_consume(
+            queue='restart_data_storage',
+            on_message_callback=self._handle_restart,
+            auto_ack=True
         )
 
     def start_recording(self):
@@ -139,42 +159,69 @@ class DataStorage:
         print(f"Trajectory will be saved to: {trajectory_file_path}")
 
     def _save_image(self, ch, method, properties, body):
-        """Callback for storing images from 'image_data_storage' queue."""
         start_time = time.time()
         try:
-            data = json.loads(body)
-            frame_data = data['frame_data']
-            frame_timestamp = data['timestamp']
-            np_data = np.frombuffer(base64.b64decode(frame_data), np.uint8)
-            frame = cv2.imdecode(np_data, cv2.IMREAD_COLOR)
-            if frame is None:
-                print(f"[!] Received invalid image data at timestamp {frame_timestamp}")
+            # If there is no timestamp in the headers, discard the message.
+            if not (properties and properties.headers and "timestamp_ns" in properties.headers):
+                print("[!] No timestamp in image message; discarding message.")
                 return
 
-            frame_path = self.recording_path / "cam0" / "data" / f"{frame_timestamp}.jpg"
+            timestamp_ns = int(properties.headers["timestamp_ns"])
+            # Decode the raw JPEG bytes directly
+            np_data = np.frombuffer(body, np.uint8)
+            frame = cv2.imdecode(np_data, cv2.IMREAD_COLOR)
+            if frame is None:
+                print(f"[!] Received invalid image data at timestamp {timestamp_ns}")
+                return
+
+            frame_path = self.recording_path / "cam0" / "data" / f"{timestamp_ns}.jpg"
             cv2.imwrite(str(frame_path), frame)
 
-            # Increment counter if successfully saved
             images_saved_counter.inc()
         finally:
             elapsed = time.time() - start_time
             save_image_hist.observe(elapsed)
 
     def _save_imu(self, ch, method, properties, body):
-        """Callback for storing IMU data from 'imu_data_storage' queue."""
+        """Callback for storing IMU data from 'imu_data_storage' queue.
+        
+        The expected message format is:
+        
+          {
+             "type": "imu_data",
+             "timestamp": <ns>,
+             "imu_data": {
+                  "velocity": {"x": ..., "y": ..., "z": ...},
+                  "attitude": {"pitch": ..., "roll": ..., "yaw": ...},
+                  "location": {...},
+                  "timestamp": <ns>,
+                  "gimbal_attitude": {...},
+                  "imu_calibration": {...},
+                  "gimbal_calibration": {...}
+             }
+          }
+        
+        If any required key is missing, the message is discarded.
+        """
         start_time = time.time()
         try:
             data = json.loads(body)
+            # Check for required top-level keys
+            if 'timestamp' not in data or 'imu_data' not in data:
+                print("[!] IMU message missing 'timestamp' or 'imu_data'; discarding message.")
+                return
             imu_timestamp = data['timestamp']
-            angular_vel = data['angular_velocity']
-            linear_acc = data['linear_acceleration']
+            imu_data = data['imu_data']
+            # Check that the inner dictionary contains the required keys
+            if 'velocity' not in imu_data or 'attitude' not in imu_data:
+                print("[!] IMU message missing 'velocity' or 'attitude' in 'imu_data'; discarding message.")
+                return
 
+            # Save the entire imu_data sub-dictionary as JSON.
             imu_path = self.recording_path / "imu0" / "data" / f"{imu_timestamp}.txt"
             with open(imu_path, 'w') as f:
-                f.write(f"angular_velocity: {angular_vel}\n")
-                f.write(f"linear_acceleration: {linear_acc}\n")
+                json.dump(imu_data, f)
 
-            # Increment counter if successfully saved
             imu_saved_counter.inc()
         finally:
             elapsed = time.time() - start_time
@@ -189,7 +236,11 @@ class DataStorage:
                 return
 
             data = json.loads(body)
-            ts_ns = data.get("timestamp_ns")
+            # Discard if no timestamp in trajectory message.
+            if "timestamp_ns" not in data:
+                print("[!] No timestamp in trajectory message; discarding message.")
+                return
+            ts_ns = data["timestamp_ns"]
             pose = data.get("pose")
             record = {
                 "timestamp_ns": ts_ns,
@@ -199,7 +250,6 @@ class DataStorage:
             self.trajectory_file.write(line + "\n")
             self.trajectory_file.flush()
 
-            # Increment counter if successfully saved
             trajectories_saved_counter.inc()
         finally:
             elapsed = time.time() - start_time
@@ -223,11 +273,23 @@ class DataStorage:
 
             print(f"Saved .ply file to: {out_path}")
 
-            # Increment counter if successfully saved
             ply_saved_counter.inc()
         finally:
             elapsed = time.time() - start_time
             save_ply_hist.observe(elapsed)
+
+    def _handle_restart(self, ch, method, properties, body):
+        try:
+            msg = json.loads(body)
+            if msg.get("type") == "restart":
+                print("Restart command received in data_storage. Restarting recording session...")
+                # Close the current trajectory file if it's open
+                if self.trajectory_file:
+                    self.trajectory_file.close()
+                    self.trajectory_file = None
+                self.start_recording()  # This creates a new timestamped folder
+        except Exception as e:
+            print("Error handling restart message:", e)
 
     def run(self):
         """Continuously consume from all relevant queues (image, imu, trajectory, ply)."""

@@ -49,6 +49,11 @@ services:
       - ${XAUTHORITY}:${XAUTHORITY}
     environment:
       - RABBITMQ_URL=amqp://rabbitmq
+      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
+      - IMU_DATA_EXCHANGE=imu_data_exchange
+      - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
+      - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
+      - RESTART_EXCHANGE=restart_exchange
     ports:
       - "5001:5001"
     depends_on:
@@ -59,6 +64,14 @@ services:
     image: frame_processor:latest
     environment:
       - RABBITMQ_URL=amqp://rabbitmq
+      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
+      - IMU_DATA_EXCHANGE=imu_data_exchange
+      - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
+      - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
+    volumes:
+      - ${WORKSPACE}/frame_processor:/app
+      - ${X11SOCKET}:${X11SOCKET}
+      - ${XAUTHORITY}:${XAUTHORITY}
     depends_on:
       - rabbitmq
     # This container does YOLO analysis only
@@ -82,6 +95,10 @@ services:
       DISPLAY: ${DISPLAY}
       HOME: ${HOME}
       RABBITMQ_URL: amqp://rabbitmq
+      VIDEO_FRAMES_EXCHANGE: video_frames_exchange
+      TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
+      PLY_FANOUT_EXCHANGE: ply_fanout_exchange
+      RESTART_EXCHANGE: restart_exchange
     deploy:
       resources:
         reservations:
@@ -124,6 +141,10 @@ services:
       HOME: ${HOME}
       RABBITMQ_URL: amqp://rabbitmq
       SLAM_MODE: mono
+      VIDEO_FRAMES_EXCHANGE: video_frames_exchange
+      IMU_DATA_EXCHANGE: imu_data_exchange
+      TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
+      RESTART_EXCHANGE: restart_exchange
     depends_on:
       - rabbitmq
     ports:
@@ -137,10 +158,30 @@ services:
       - ${WORKSPACE}/data:/data
     environment:
       RABBITMQ_URL: amqp://rabbitmq
+      VIDEO_FRAMES_EXCHANGE: video_frames_exchange
+      IMU_DATA_EXCHANGE: imu_data_exchange
+      TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
+      PLY_FANOUT_EXCHANGE: ply_fanout_exchange
+      RESTART_EXCHANGE: restart_exchange
     depends_on:
       - rabbitmq
     ports:
       - "8002:8002"
+
+  simulator:
+    build: ./simulation  # or point to a Dockerfile that includes your simulation script
+    image: simulator:latest
+    volumes:
+      - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq
+      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
+      - IMU_DATA_EXCHANGE=imu_data_exchange
+      - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
+      - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
+    depends_on:
+      - rabbitmq
+
 
   prometheus:
     image: prom/prometheus:latest

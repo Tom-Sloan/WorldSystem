@@ -40,4 +40,4 @@ scrape_configs:
   # Storage
   - job_name: 'data_storage'
     static_configs:
-      - targets: ['data_storage:800']
+      - targets: ['data_storage:8002']

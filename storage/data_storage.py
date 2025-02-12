@@ -146,17 +146,31 @@ class DataStorage:
         )
 
     def start_recording(self):
-        """Create the /data/<timestamp>/mav0 folder & open the trajectory file."""
+        """Create the /data/<timestamp>/mav0 folder and open files for trajectory and IMU data."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.recording_path = Path('/data') / timestamp / "mav0"
+        
+        # Create directories for cameras, IMU and ply data.
         (self.recording_path / "cam0" / "data").mkdir(parents=True, exist_ok=True)
-        (self.recording_path / "imu0" / "data").mkdir(parents=True, exist_ok=True)
+        # For IMU, we now create a folder and later use one CSV file instead of one file per message.
+        (self.recording_path / "imu0").mkdir(parents=True, exist_ok=True)
         (self.recording_path / "ply").mkdir(parents=True, exist_ok=True)
-
-        # Open a single file for storing trajectory data in text/CSV-like format
+        
+        # Open trajectory file (unchanged).
         trajectory_file_path = self.recording_path / "trajectory.txt"
         self.trajectory_file = open(trajectory_file_path, 'a')
         print(f"Trajectory will be saved to: {trajectory_file_path}")
+        
+        # Open a persistent CSV file for IMU data.
+        imu_csv_path = self.recording_path / "imu0" / "data.csv"
+        self.imu_csv_file = open(imu_csv_path, 'w')
+        # Write the EuRoC header.
+        self.imu_csv_file.write(
+            "#timestamp [ns],"
+            "w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],"
+            "a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]\n"
+        )
+
 
     def _save_image(self, ch, method, properties, body):
         start_time = time.time()
@@ -183,49 +197,58 @@ class DataStorage:
             save_image_hist.observe(elapsed)
 
     def _save_imu(self, ch, method, properties, body):
-        """Callback for storing IMU data from 'imu_data_storage' queue.
-        
-        The expected message format is:
-        
-          {
-             "type": "imu_data",
-             "timestamp": <ns>,
-             "imu_data": {
-                  "velocity": {"x": ..., "y": ..., "z": ...},
-                  "attitude": {"pitch": ..., "roll": ..., "yaw": ...},
-                  "location": {...},
-                  "timestamp": <ns>,
-                  "gimbal_attitude": {...},
-                  "imu_calibration": {...},
-                  "gimbal_calibration": {...}
-             }
-          }
-        
-        If any required key is missing, the message is discarded.
-        """
         start_time = time.time()
         try:
             data = json.loads(body)
-            # Check for required top-level keys
-            if 'timestamp' not in data or 'imu_data' not in data:
-                print("[!] IMU message missing 'timestamp' or 'imu_data'; discarding message.")
-                return
-            imu_timestamp = data['timestamp']
-            imu_data = data['imu_data']
-            # Check that the inner dictionary contains the required keys
-            if 'velocity' not in imu_data or 'attitude' not in imu_data:
-                print("[!] IMU message missing 'velocity' or 'attitude' in 'imu_data'; discarding message.")
+
+            # Ensure a timestamp is present.
+            if 'timestamp' not in data:
+                print("[!] IMU message missing 'timestamp'; discarding message.")
                 return
 
-            # Save the entire imu_data sub-dictionary as JSON.
-            imu_path = self.recording_path / "imu0" / "data" / f"{imu_timestamp}.txt"
-            with open(imu_path, 'w') as f:
-                json.dump(imu_data, f)
+            imu_timestamp = data['timestamp']
+
+            # Use nested 'imu_data' if available; otherwise assume sensor data is at the top level.
+            if 'imu_data' in data:
+                sensor_data = data['imu_data']
+            else:
+                sensor_data = data
+
+            # Check that both gyroscope and accelerometer data exist.
+            if 'gyroscope' not in sensor_data or 'accelerometer' not in sensor_data:
+                print("[!] IMU message missing sensor data; discarding message.")
+                return
+
+            gyroscope = sensor_data['gyroscope']
+            accelerometer = sensor_data['accelerometer']
+
+            # Ensure expected keys exist in both sensor dictionaries.
+            if not all(k in gyroscope for k in ['x', 'y', 'z']):
+                print("[!] IMU message missing gyroscope components; discarding message.")
+                return
+            if not all(k in accelerometer for k in ['x', 'y', 'z']):
+                print("[!] IMU message missing accelerometer components; discarding message.")
+                return
+
+            # Create a CSV-formatted line (EuRoC format):
+            # Format: timestamp, w_RS_S_x, w_RS_S_y, w_RS_S_z, a_RS_S_x, a_RS_S_y, a_RS_S_z
+            line = (
+                f"{imu_timestamp},"
+                f"{gyroscope['x']},{gyroscope['y']},{gyroscope['z']},"
+                f"{accelerometer['x']},{accelerometer['y']},{accelerometer['z']}\n"
+            )
+
+            # Append the new line to the persistent CSV file.
+            self.imu_csv_file.write(line)
+            self.imu_csv_file.flush()  # Optional: flush after each write to persist data immediately.
 
             imu_saved_counter.inc()
+        except Exception as e:
+            print("[!] Exception in _save_imu:", e)
         finally:
             elapsed = time.time() - start_time
             save_imu_hist.observe(elapsed)
+
 
     def _save_trajectory(self, ch, method, properties, body):
         """Callback for storing trajectory data from 'trajectory_data_storage' queue."""
@@ -244,7 +267,8 @@ class DataStorage:
             pose = data.get("pose")
             record = {
                 "timestamp_ns": ts_ns,
-                "pose": pose
+                "pose": pose,
+                "received_timestamp_ns": int(time.time() * 1e9)  # Add received timestamp
             }
             line = json.dumps(record)
             self.trajectory_file.write(line + "\n")
@@ -283,13 +307,16 @@ class DataStorage:
             msg = json.loads(body)
             if msg.get("type") == "restart":
                 print("Restart command received in data_storage. Restarting recording session...")
-                # Close the current trajectory file if it's open
+                # Close current files if open.
                 if self.trajectory_file:
                     self.trajectory_file.close()
                     self.trajectory_file = None
-                self.start_recording()  # This creates a new timestamped folder
+                if hasattr(self, "imu_csv_file") and not self.imu_csv_file.closed:
+                    self.imu_csv_file.close()
+                self.start_recording()  # This creates a new timestamped folder and new files.
         except Exception as e:
             print("Error handling restart message:", e)
+
 
     def run(self):
         """Continuously consume from all relevant queues (image, imu, trajectory, ply)."""

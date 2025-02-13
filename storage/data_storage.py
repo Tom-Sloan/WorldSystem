@@ -152,7 +152,7 @@ class DataStorage:
         
         # Create directories for cameras, IMU and ply data.
         (self.recording_path / "cam0" / "data").mkdir(parents=True, exist_ok=True)
-        # For IMU, we now create a folder and later use one CSV file instead of one file per message.
+        (self.recording_path / "cam1" / "data").mkdir(parents=True, exist_ok=True)  # New PNG folder
         (self.recording_path / "imu0").mkdir(parents=True, exist_ok=True)
         (self.recording_path / "ply").mkdir(parents=True, exist_ok=True)
         
@@ -188,10 +188,15 @@ class DataStorage:
                 print(f"[!] Received invalid image data at timestamp {timestamp_ns}")
                 return
 
-            frame_path = self.recording_path / "cam0" / "data" / f"{timestamp_ns}.jpg"
-            cv2.imwrite(str(frame_path), frame)
+            # Save as JPEG in cam0
+            jpg_path = self.recording_path / "cam0" / "data" / f"{timestamp_ns}.jpg"
+            cv2.imwrite(str(jpg_path), frame)
 
-            images_saved_counter.inc()
+            # Save as PNG in cam1
+            png_path = self.recording_path / "cam1" / "data" / f"{timestamp_ns}.png"
+            cv2.imwrite(str(png_path), frame)
+
+            images_saved_counter.inc(2)  # Increment by 2 since we're saving 2 images
         finally:
             elapsed = time.time() - start_time
             save_image_hist.observe(elapsed)
@@ -207,6 +212,16 @@ class DataStorage:
                 return
 
             imu_timestamp = data['timestamp']
+            
+            # Convert timestamp to nanoseconds if needed
+            timestamp_str = str(imu_timestamp)
+            if len(timestamp_str) == 10:  # seconds precision
+                imu_timestamp = int(timestamp_str + "000000000")
+            elif len(timestamp_str) == 13:  # milliseconds precision
+                imu_timestamp = int(timestamp_str + "000000")
+            elif len(timestamp_str) == 16:  # microseconds precision
+                imu_timestamp = int(timestamp_str + "000")
+            # else assume it's already in nanoseconds (19 digits)
 
             # Use nested 'imu_data' if available; otherwise assume sensor data is at the top level.
             if 'imu_data' in data:
@@ -231,7 +246,7 @@ class DataStorage:
                 return
 
             # Create a CSV-formatted line (EuRoC format):
-            # Format: timestamp, w_RS_S_x, w_RS_S_y, w_RS_S_z, a_RS_S_x, a_RS_S_y, a_RS_S_z
+            # Format: timestamp [ns], w_RS_S_x, w_RS_S_y, w_RS_S_z, a_RS_S_x, a_RS_S_y, a_RS_S_z
             line = (
                 f"{imu_timestamp},"
                 f"{gyroscope['x']},{gyroscope['y']},{gyroscope['z']},"

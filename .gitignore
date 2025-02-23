@@ -33,3 +33,7 @@ __pycache__/
 *$py.class
 *.ckpt
 .env.personal
+20250212_231520/mav0/imu0.csv
+20250212_231520/mav0/trajectory.txt
+Drone_Calibration/mav0/imu0.csv
+Drone_Calibration/mav0/trajectory.txt

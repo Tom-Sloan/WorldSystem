@@ -253,7 +253,7 @@ def main():
         if "accelerometer_random_walk" in imu:
             template["IMU.AccWalk"] = imu["accelerometer_random_walk"]
         if "update_rate" in imu:
-            template["IMU.Frequency"] = imu["update_rate"]
+            template["IMU.Frequency"] = float(imu["update_rate"])
 
     # Write output
     with open(args.output, "w") as f:

@@ -1,0 +1,1 @@
+python Drone_Camera_Imu_Config/make_orbslam_file.py --cam-file Drone_Camera_Imu_Config/drone_calibration_26_2_25-camchain-imucam.yaml --imu-file Drone_Camera_Imu_Config/drone_calibration_26_2_25-imu.yaml --output Drone_Camera_Imu_Config/drone_config.yaml

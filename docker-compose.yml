@@ -142,9 +142,10 @@ services:
       DISPLAY: ${DISPLAY}
       HOME: ${HOME}
       RABBITMQ_URL: amqp://rabbitmq
-      SLAM_MODE: mono
+      SLAM_MODE: mono_inertial
       VIDEO_FRAMES_EXCHANGE: video_frames_exchange
       IMU_DATA_EXCHANGE: imu_data_exchange
+      PROCESSED_IMU_EXCHANGE: processed_imu_exchange
       TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
       RESTART_EXCHANGE: restart_exchange
     depends_on:
@@ -165,6 +166,7 @@ services:
       TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
       PLY_FANOUT_EXCHANGE: ply_fanout_exchange
       RESTART_EXCHANGE: restart_exchange
+      PROCESSED_IMU_EXCHANGE: processed_imu_exchange
     depends_on:
       - rabbitmq
     ports:

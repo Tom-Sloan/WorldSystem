@@ -24,6 +24,10 @@ imu_saved_counter = Counter(
     "data_storage_imu_saved_total",
     "Total number of IMU records saved by data_storage"
 )
+processed_imu_saved_counter = Counter(
+    "data_storage_processed_imu_saved_total",
+    "Total number of processed IMU records saved by data_storage"
+)
 trajectories_saved_counter = Counter(
     "data_storage_trajectories_saved_total",
     "Total number of trajectory lines saved by data_storage"
@@ -42,6 +46,11 @@ save_image_hist = Histogram(
 save_imu_hist = Histogram(
     "data_storage_save_imu_seconds",
     "Time spent saving a single IMU record",
+    buckets=[0.0005, 0.001, 0.005, 0.01, 0.1, 1]
+)
+save_processed_imu_hist = Histogram(
+    "data_storage_save_processed_imu_seconds",
+    "Time spent saving a single processed IMU record",
     buckets=[0.0005, 0.001, 0.005, 0.01, 0.1, 1]
 )
 save_trajectory_hist = Histogram(
@@ -90,12 +99,14 @@ class DataStorage:
         TRAJECTORY_DATA_EXCHANGE = os.getenv("TRAJECTORY_DATA_EXCHANGE", "trajectory_data_exchange")
         PLY_FANOUT_EXCHANGE      = os.getenv("PLY_FANOUT_EXCHANGE", "ply_fanout_exchange")
         RESTART_EXCHANGE         = os.getenv("RESTART_EXCHANGE", "restart_exchange")
+        PROCESSED_IMU_EXCHANGE   = os.getenv("PROCESSED_IMU_EXCHANGE", "processed_imu_exchange")
 
         self.channel.exchange_declare(exchange=VIDEO_FRAMES_EXCHANGE, exchange_type='fanout', durable=True)
         self.channel.exchange_declare(exchange=IMU_DATA_EXCHANGE, exchange_type='fanout', durable=True)
         self.channel.exchange_declare(exchange=TRAJECTORY_DATA_EXCHANGE, exchange_type='fanout', durable=True)
         self.channel.exchange_declare(exchange=PLY_FANOUT_EXCHANGE, exchange_type='fanout', durable=True)
         self.channel.exchange_declare(exchange=RESTART_EXCHANGE, exchange_type='fanout', durable=True)
+        self.channel.exchange_declare(exchange=PROCESSED_IMU_EXCHANGE, exchange_type='fanout', durable=True)
 
         # ------------------------------------------------------
         # Create queues & bind them to the relevant exchange
@@ -145,6 +156,14 @@ class DataStorage:
             auto_ack=True
         )
 
+        # Processed IMU -> processed_imu_data_storage
+        self.channel.queue_declare(queue='processed_imu_data_storage', durable=True)
+        self.channel.queue_bind(
+            exchange=PROCESSED_IMU_EXCHANGE,
+            queue='processed_imu_data_storage',
+            routing_key=''
+        )
+
     def start_recording(self):
         """Create the /data/<timestamp>/mav0 folder and open files for trajectory and IMU data."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -154,6 +173,7 @@ class DataStorage:
         (self.recording_path / "cam0" / "data").mkdir(parents=True, exist_ok=True)
         (self.recording_path / "cam1" / "data").mkdir(parents=True, exist_ok=True)  # New PNG folder
         (self.recording_path / "imu0").mkdir(parents=True, exist_ok=True)
+        (self.recording_path / "imu1").mkdir(parents=True, exist_ok=True)  # New folder for processed IMU data
         (self.recording_path / "ply").mkdir(parents=True, exist_ok=True)
         
         # Open trajectory file (unchanged).
@@ -170,7 +190,16 @@ class DataStorage:
             "w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],"
             "a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]\n"
         )
-
+        
+        # Open a persistent CSV file for processed IMU data
+        processed_imu_csv_path = self.recording_path / "imu1" / "data.csv"
+        self.processed_imu_csv_file = open(processed_imu_csv_path, 'w')
+        # Write the EuRoC header.
+        self.processed_imu_csv_file.write(
+            "#timestamp [ns],"
+            "w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],"
+            "a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]\n"
+        )
 
     def _save_image(self, ch, method, properties, body):
         start_time = time.time()
@@ -264,7 +293,6 @@ class DataStorage:
             elapsed = time.time() - start_time
             save_imu_hist.observe(elapsed)
 
-
     def _save_trajectory(self, ch, method, properties, body):
         """Callback for storing trajectory data from 'trajectory_data_storage' queue."""
         start_time = time.time()
@@ -298,6 +326,7 @@ class DataStorage:
         """Callback for storing .ply files from 'ply_data_storage' queue."""
         start_time = time.time()
         try:
+            print(f"[+] Received PLY data message on {method.exchange}/{method.routing_key} queue")
             msg = json.loads(body)
             ply_filename = msg.get("ply_filename", "output.ply")
             ply_data_b64 = msg.get("ply_data_b64")
@@ -310,12 +339,69 @@ class DataStorage:
             with open(out_path, "wb") as f:
                 f.write(ply_data)
 
-            print(f"Saved .ply file to: {out_path}")
+            print(f"[+] Successfully saved PLY file '{ply_filename}' ({len(ply_data)/1024:.1f} KB) to: {out_path}")
 
             ply_saved_counter.inc()
         finally:
             elapsed = time.time() - start_time
             save_ply_hist.observe(elapsed)
+
+    def _save_processed_imu(self, ch, method, properties, body):
+        start_time = time.time()
+        try:
+            data = json.loads(body)
+
+            # Ensure a timestamp is present.
+            if 'timestamp' not in data:
+                print("[!] Processed IMU message missing 'timestamp'; discarding message.")
+                return
+
+            imu_timestamp = data['timestamp']
+            
+            # Convert timestamp to nanoseconds if needed
+            timestamp_str = str(imu_timestamp)
+            if len(timestamp_str) == 10:  # seconds precision
+                imu_timestamp = int(timestamp_str + "000000000")
+            elif len(timestamp_str) == 13:  # milliseconds precision
+                imu_timestamp = int(timestamp_str + "000000")
+            elif len(timestamp_str) == 16:  # microseconds precision
+                imu_timestamp = int(timestamp_str + "000")
+            # else assume it's already in nanoseconds (19 digits)
+
+            # Check that both gyroscope and accelerometer data exist.
+            if 'gyroscope' not in data or 'accelerometer' not in data:
+                print("[!] Processed IMU message missing sensor data; discarding message.")
+                return
+
+            gyroscope = data['gyroscope']
+            accelerometer = data['accelerometer']
+
+            # Ensure expected keys exist in both sensor dictionaries.
+            if not all(k in gyroscope for k in ['x', 'y', 'z']):
+                print("[!] Processed IMU message missing gyroscope components; discarding message.")
+                return
+            if not all(k in accelerometer for k in ['x', 'y', 'z']):
+                print("[!] Processed IMU message missing accelerometer components; discarding message.")
+                return
+
+            # Create a CSV-formatted line (EuRoC format):
+            # Format: timestamp [ns], w_RS_S_x, w_RS_S_y, w_RS_S_z, a_RS_S_x, a_RS_S_y, a_RS_S_z
+            line = (
+                f"{imu_timestamp},"
+                f"{gyroscope['x']},{gyroscope['y']},{gyroscope['z']},"
+                f"{accelerometer['x']},{accelerometer['y']},{accelerometer['z']}\n"
+            )
+
+            # Append the new line to the persistent CSV file.
+            self.processed_imu_csv_file.write(line)
+            self.processed_imu_csv_file.flush()  # Optional: flush after each write to persist data immediately.
+
+            processed_imu_saved_counter.inc()
+        except Exception as e:
+            print("[!] Exception in _save_processed_imu:", e)
+        finally:
+            elapsed = time.time() - start_time
+            save_processed_imu_hist.observe(elapsed)
 
     def _handle_restart(self, ch, method, properties, body):
         try:
@@ -328,10 +414,11 @@ class DataStorage:
                     self.trajectory_file = None
                 if hasattr(self, "imu_csv_file") and not self.imu_csv_file.closed:
                     self.imu_csv_file.close()
+                if hasattr(self, "processed_imu_csv_file") and not self.processed_imu_csv_file.closed:
+                    self.processed_imu_csv_file.close()
                 self.start_recording()  # This creates a new timestamped folder and new files.
         except Exception as e:
             print("Error handling restart message:", e)
-
 
     def run(self):
         """Continuously consume from all relevant queues (image, imu, trajectory, ply)."""
@@ -346,6 +433,11 @@ class DataStorage:
                 self.channel.basic_consume(
                     queue='imu_data_storage',
                     on_message_callback=self._save_imu,
+                    auto_ack=True
+                )
+                self.channel.basic_consume(
+                    queue='processed_imu_data_storage',
+                    on_message_callback=self._save_processed_imu,
                     auto_ack=True
                 )
                 self.channel.basic_consume(

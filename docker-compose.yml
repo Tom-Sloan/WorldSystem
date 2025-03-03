@@ -90,11 +90,15 @@ services:
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
     runtime: nvidia
+    ports:
+      - "8001:8001"
+      - "5678:5678"  # Add this port for debugpy
     environment:
       CUDA_PATH: ${CUDA_PATH}
       LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
       DISPLAY: ${DISPLAY}
       HOME: ${HOME}
+      PYTHONUNBUFFERED: 1  # Ensures Python output is sent straight to the terminal
       RABBITMQ_URL: amqp://rabbitmq
       VIDEO_FRAMES_EXCHANGE: video_frames_exchange
       TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
@@ -109,8 +113,6 @@ services:
               capabilities: [gpu]
     depends_on:
       - rabbitmq
-    ports:
-      - "8001:8001"
 
   slam:
     image: slam:latest

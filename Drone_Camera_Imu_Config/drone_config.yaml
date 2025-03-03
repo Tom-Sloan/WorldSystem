@@ -26,7 +26,7 @@ IMU.NoiseAcc: 0.011524038185652905
 IMU.GyroWalk: 5.309855482461205e-05
 IMU.AccWalk: 0.0012306092406376534
 IMU.Frequency: 100.0
-ORBextractor.nFeatures: 1000
+ORBextractor.nFeatures: 2000
 ORBextractor.scaleFactor: 1.2
 ORBextractor.nLevels: 8
 ORBextractor.iniThFAST: 20

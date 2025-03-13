@@ -5,7 +5,45 @@ import json
 import cv2
 import numpy as np
 import torch
+import ntplib
+import socket
+import threading
 from ultralytics import YOLO
+
+# Add NTP client and time offset tracking
+ntp_client = ntplib.NTPClient()
+ntp_time_offset = 0.0  # Offset between system time and NTP time in seconds
+last_ntp_sync = 0
+NTP_SYNC_INTERVAL = 60  # Sync NTP every 60 seconds
+NTP_SERVER = os.getenv("NTP_SERVER", "pool.ntp.org")
+
+def sync_ntp_time():
+    """Update the NTP time offset by querying an NTP server."""
+    global ntp_time_offset, last_ntp_sync
+    
+    try:
+        response = ntp_client.request(NTP_SERVER, timeout=5)
+        # Calculate offset: NTP time - local time
+        ntp_time_offset = response.offset
+        last_ntp_sync = time.time()
+        print(f"[NTP] Synchronized time, offset: {ntp_time_offset:.6f} seconds")
+        return True
+    except (ntplib.NTPException, socket.gaierror, socket.timeout) as e:
+        print(f"[NTP] Synchronization failed: {str(e)}")
+        return False
+
+def get_ntp_time_ns():
+    """Get current time in nanoseconds, synchronized with NTP."""
+    current_time = time.time() + ntp_time_offset
+    # Check if we need to resync
+    if time.time() - last_ntp_sync > NTP_SYNC_INTERVAL:
+        # Start a thread to sync NTP time without blocking
+        threading.Thread(target=sync_ntp_time, daemon=True).start()
+    return int(current_time * 1e9)  # Convert to nanoseconds
+
+# Initialize NTP synchronization
+print("[NTP] Initializing time synchronization...")
+sync_ntp_time()
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq")
 params = pika.URLParameters(RABBITMQ_URL)
@@ -70,7 +108,14 @@ def analysis_mode_callback(ch, method, properties, body):
 def frame_callback(ch, method, properties, body):
     """Process a raw frame, run YOLO if requested, and publish the annotated frame."""
     try:
+        # Record start time using NTP-synchronized clock
+        start_time_ns = get_ntp_time_ns()
+        
+        # Get timestamps from headers
         timestamp_ns = properties.headers.get("timestamp_ns") if properties.headers else None
+        server_received = properties.headers.get("server_received") if properties.headers else None
+        ntp_time = properties.headers.get("ntp_time") if properties.headers else server_received
+        
         np_arr = np.frombuffer(body, np.uint8)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if frame is None:
@@ -92,8 +137,34 @@ def frame_callback(ch, method, properties, body):
                     cv2.putText(processed_frame, label, (x1, y1 - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
+        # Get image dimensions
+        height, width = processed_frame.shape[:2]
+        
+        # Calculate processing time using NTP-synchronized time
+        end_time_ns = get_ntp_time_ns()
+        processing_time_ms = (end_time_ns - start_time_ns) / 1_000_000  # Convert ns to ms
+        
         _, encoded = cv2.imencode(".jpg", processed_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         annotated_bytes = encoded.tobytes()
+        
+        # Get original resolution if available
+        original_width = properties.headers.get("original_width") if properties.headers else width
+        original_height = properties.headers.get("original_height") if properties.headers else height
+        resolution = properties.headers.get("resolution") if properties.headers else "Unknown"
+        
+        # Include all metadata in the headers including NTP information
+        headers = {
+            "timestamp_ns": timestamp_ns,
+            "server_received": server_received,
+            "ntp_time": ntp_time, 
+            "processing_time_ms": str(processing_time_ms),
+            "width": width,
+            "height": height,
+            "resolution": resolution,
+            "original_width": original_width,
+            "original_height": original_height,
+            "ntp_offset": str(ntp_time_offset)
+        }
         
         channel.basic_publish(
             exchange=PROCESSED_FRAMES_EXCHANGE,
@@ -101,7 +172,7 @@ def frame_callback(ch, method, properties, body):
             body=annotated_bytes,
             properties=pika.BasicProperties(
                 content_type="application/octet-stream",
-                headers={"timestamp_ns": timestamp_ns or "0"}
+                headers=headers
             )
         )
     except Exception as e:

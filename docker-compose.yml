@@ -76,84 +76,84 @@ services:
       - rabbitmq
     # This container does YOLO analysis only
 
-  reconstruction:
-    image: reconstruction:latest
-    build:
-      context: ./reconstruction
-      args:
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
-    volumes:
-      - ${WORKSPACE}/reconstruction:/app
-      - ${WORKSPACE}/Drone_Camera_Imu_Config/drone_config.yaml:/app/drone_config.yaml
-      - ${X11SOCKET}:${X11SOCKET}
-      - ${XAUTHORITY}:${XAUTHORITY}
-    runtime: nvidia
-    ports:
-      - "8001:8001"
-      - "5678:5678"  # Add this port for debugpy
-    environment:
-      CUDA_PATH: ${CUDA_PATH}
-      LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
-      DISPLAY: ${DISPLAY}
-      HOME: ${HOME}
-      PYTHONUNBUFFERED: 1  # Ensures Python output is sent straight to the terminal
-      RABBITMQ_URL: amqp://rabbitmq
-      VIDEO_FRAMES_EXCHANGE: video_frames_exchange
-      TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
-      PLY_FANOUT_EXCHANGE: ply_fanout_exchange
-      RESTART_EXCHANGE: restart_exchange
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    depends_on:
-      - rabbitmq
+  # reconstruction:
+  #   image: reconstruction:latest
+  #   build:
+  #     context: ./reconstruction
+  #     args:
+  #       USERNAME: ${USERNAME}
+  #       UID: ${UID}
+  #       GID: ${GID}
+  #   volumes:
+  #     - ${WORKSPACE}/reconstruction:/app
+  #     - ${WORKSPACE}/Drone_Camera_Imu_Config/drone_config.yaml:/app/drone_config.yaml
+  #     - ${X11SOCKET}:${X11SOCKET}
+  #     - ${XAUTHORITY}:${XAUTHORITY}
+  #   runtime: nvidia
+  #   ports:
+  #     - "8001:8001"
+  #     - "5678:5678"  # Add this port for debugpy
+  #   environment:
+  #     CUDA_PATH: ${CUDA_PATH}
+  #     LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
+  #     DISPLAY: ${DISPLAY}
+  #     HOME: ${HOME}
+  #     PYTHONUNBUFFERED: 1  # Ensures Python output is sent straight to the terminal
+  #     RABBITMQ_URL: amqp://rabbitmq
+  #     VIDEO_FRAMES_EXCHANGE: video_frames_exchange
+  #     TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
+  #     PLY_FANOUT_EXCHANGE: ply_fanout_exchange
+  #     RESTART_EXCHANGE: restart_exchange
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   depends_on:
+  #     - rabbitmq
 
-  slam:
-    image: slam:latest
-    privileged: true
-    build:
-      context: ./slam
-      args:
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
-    container_name: slam
-    runtime: nvidia
-    volumes:
-      - ${WORKSPACE}/slam:/app
-      - ${WORKSPACE}/Drone_Camera_Imu_Config/drone_config.yaml:/app/drone_config.yaml
-      - ${X11SOCKET}:${X11SOCKET}
-      - ${XAUTHORITY}:${XAUTHORITY}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    shm_size: 4gb
-    environment:
-      CUDA_PATH: ${CUDA_PATH}
-      LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
-      DISPLAY: ${DISPLAY}
-      HOME: ${HOME}
-      RABBITMQ_URL: amqp://rabbitmq
-      SLAM_MODE: mono_inertial
-      VIDEO_FRAMES_EXCHANGE: video_frames_exchange
-      IMU_DATA_EXCHANGE: imu_data_exchange
-      PROCESSED_IMU_EXCHANGE: processed_imu_exchange
-      TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
-      RESTART_EXCHANGE: restart_exchange
-    depends_on:
-      - rabbitmq
-    ports:
-      - "8000:8000"
+  # slam:
+  #   image: slam:latest
+  #   privileged: true
+  #   build:
+  #     context: ./slam
+  #     args:
+  #       USERNAME: ${USERNAME}
+  #       UID: ${UID}
+  #       GID: ${GID}
+  #   container_name: slam
+  #   runtime: nvidia
+  #   volumes:
+  #     - ${WORKSPACE}/slam:/app
+  #     - ${WORKSPACE}/Drone_Camera_Imu_Config/drone_config.yaml:/app/drone_config.yaml
+  #     - ${X11SOCKET}:${X11SOCKET}
+  #     - ${XAUTHORITY}:${XAUTHORITY}
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   shm_size: 4gb
+  #   environment:
+  #     CUDA_PATH: ${CUDA_PATH}
+  #     LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
+  #     DISPLAY: ${DISPLAY}
+  #     HOME: ${HOME}
+  #     RABBITMQ_URL: amqp://rabbitmq
+  #     SLAM_MODE: mono_inertial
+  #     VIDEO_FRAMES_EXCHANGE: video_frames_exchange
+  #     IMU_DATA_EXCHANGE: imu_data_exchange
+  #     PROCESSED_IMU_EXCHANGE: processed_imu_exchange
+  #     TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
+  #     RESTART_EXCHANGE: restart_exchange
+  #   depends_on:
+  #     - rabbitmq
+  #   ports:
+  #     - "8000:8000"
 
   data_storage:
     image: data_storage:latest
@@ -174,19 +174,19 @@ services:
     ports:
       - "8002:8002"
 
-  # simulator:
-  #   build: ./simulation  # or point to a Dockerfile that includes your simulation script
-  #   image: simulator:latest
-  #   volumes:
-  #     - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
-  #   environment:
-  #     - RABBITMQ_URL=amqp://rabbitmq
-  #     - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
-  #     - IMU_DATA_EXCHANGE=imu_data_exchange
-  #     - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
-  #     - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
-  #   depends_on:
-  #     - rabbitmq
+  simulator:
+    build: ./simulation  # or point to a Dockerfile that includes your simulation script
+    image: simulator:latest
+    volumes:
+      - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq
+      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
+      - IMU_DATA_EXCHANGE=imu_data_exchange
+      - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
+      - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
+    depends_on:
+      - rabbitmq
 
 
   prometheus:
@@ -257,7 +257,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
     volumes:
-      - /var/run/nvidia-persistenced/socket:/var/run/nvidia-persistenced/socket
+      - /var/run/nvidia-persistenced:/var/run/nvidia-persistenced
     ports:
       - "9400:9400"
     command: [

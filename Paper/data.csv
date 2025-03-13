@@ -1,0 +1,102 @@
+{
+  "full": [
+    {
+      "resolution": "720p",
+      "size": "1280x720", 
+      "processing": "2.4ms",
+      "networkToWebsite": "54.5ms",
+      "droneToNetwork": "78.4ms"
+    },
+    {
+      "resolution": "360p",
+      "size": "640x360",
+      "processing": "1.3ms",
+      "networkToWebsite": "28.3ms",
+      "droneToNetwork": "39.7ms"
+    },
+    {
+      "resolution": "4K",
+      "size": "3840x2160",
+      "processing": "19.0ms",
+      "networkToWebsite": "112.5ms",
+      "droneToNetwork": "99.6ms"
+    },
+    {
+      "resolution": "480p",
+      "size": "854x480",
+      "processing": "1.1ms",
+      "networkToWebsite": "35.9ms",
+      "droneToNetwork": "38.7ms"
+    },
+    {
+      "resolution": "240p",
+      "size": "426x240",
+      "processing": "0.7ms",
+      "networkToWebsite": "40.5ms",
+      "droneToNetwork": "39.9ms"
+    },
+    {
+      "resolution": "1080p",
+      "size": "1920x1080",
+      "processing": "5.6ms",
+      "networkToWebsite": "76.7ms",
+      "droneToNetwork": "87.4ms"
+    }
+  ],
+  "fast_4g": [
+    {
+      "resolution": "1080p",
+      "size": "1920x1080",
+      "processing": "5.2ms",
+      "networkToWebsite": "30454.3ms",
+      "droneToNetwork": "30465.4ms"
+    },
+    {
+      "resolution": "240p",
+      "size": "426x240",
+      "processing": "0.2ms",
+      "networkToWebsite": "61.2ms",
+      "droneToNetwork": "65.2ms"
+    },
+    {
+      "resolution": "360p",
+      "size": "640x360",
+      "processing": "1.0ms",
+      "networkToWebsite": "150.5ms",
+      "droneToNetwork": "151.6ms"
+    },
+    {
+      "resolution": "480p",
+      "size": "854x480",
+      "processing": "1.0ms",
+      "networkToWebsite": "1824.0ms",
+      "droneToNetwork": "1825.1ms"
+    }
+  ],
+  "3g":[
+    {
+      "resolution": "1080p",
+      "size": "1920x1080",
+      "processing": "6.7ms",
+      "networkToWebsite": "160487.8ms",
+      "droneToNetwork": "160498.7ms"
+    },
+    {
+      "resolution": "240p",
+      "size": "426x240",
+      "processing": "0.4ms",
+      "networkToWebsite": "5669.8ms",
+      "droneToNetwork": "5670.2ms"
+    },
+    {
+      "resolution": "360p",
+      "size": "640x360",
+      "processing": "1.1ms",
+      "networkToWebsite": "7144.7ms",
+      "droneToNetwork": "7145.8ms"
+    }
+  ],
+  "responseTime_full": "6.936ms",
+  "responseTime_fast_4g": "4.17504ms",
+  "responseTime_3g": "10.388096ms"
+}

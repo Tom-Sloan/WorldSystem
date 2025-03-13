@@ -7,6 +7,6 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 COPY . .
-RUN pip install aio-pika opencv-python-headless numpy pika prometheus_client
+RUN pip install aio-pika opencv-python-headless numpy pika prometheus_client ntplib
 
 CMD ["python", "simulate_data.py"] 

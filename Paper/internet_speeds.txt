@@ -1,0 +1,15 @@
+Full
+DOWNLOAD
+258.44
+ UPLOAD Mbps
+93.24
+Ping ms   20
+
+Fast 3G Profile
+	•	Download Speed: 1.44 Mbps
+	•	Upload Speed: 675 Kbps
+	•	Latency: 560 ms.
+4G (Regular LTE) Profile
+	•	Download Speed: 4 Mbps
+	•	Upload Speed: 3 Mbps
+	•	Latency: 20 ms.

@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install any dependencies needed (like ultralytics, etc.)
-RUN pip3 install ultralytics numpy opencv-python-headless pika
+RUN pip3 install ultralytics numpy opencv-python-headless pika ntplib
 
 WORKDIR /app
 COPY frame_processor.py /app/frame_processor.py

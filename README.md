@@ -171,3 +171,51 @@ cAdvisor: http://134.117.167.139:8080/
 Prometheus: http://134.117.167.139:9090/
 Grafana: http://134.117.167.139:3000/ 
 Jaeger UI: http://134.117.167.139:16686/
+
+
+
+New Control Scheme
+Left Stick/WASD: Movement
+W: Forward
+A: Left
+S: Backward
+D: Right
+Right Stick/Arrow Keys: Rotation & Altitude
+Left Arrow: Rotate left
+Right Arrow: Rotate right
+Up Arrow: Up
+Down Arrow: Down
+T: Takeoff/Land toggle
+P: Camera on/off toggle
+
+// Movement (WASD)
+{
+"type": "movement",
+"x": 0.0, // -1.0 (left) to 1.0 (right)
+"y": 0.0, // -1.0 (backward) to 1.0 (forward)
+"timestamp": "1234567890123456789"
+}
+
+// Rotation/Altitude (Arrow Keys)
+{
+"type": "rotation",
+"yaw": 0.0, // -1.0 (rotate left) to 1.0 (rotate right)
+"z": 0.0, // -1.0 (down) to 1.0 (up)
+"timestamp": "1234567890123456789"
+}
+
+// Camera Toggle (P key)
+{
+"type": "camera",
+"action": "toggle", // "toggle", "on", or "off"
+"timestamp": "1234567890123456789"
+}
+
+// Takeoff/Land (T key)
+{
+"type": "flightmode",
+"action": "takeoff", // or "land"
+"timestamp": "1234567890123456789"
+}
+
+

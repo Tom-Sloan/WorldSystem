@@ -174,19 +174,19 @@ services:
     ports:
       - "8002:8002"
 
-  simulator:
-    build: ./simulation  # or point to a Dockerfile that includes your simulation script
-    image: simulator:latest
-    volumes:
-      - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
-    environment:
-      - RABBITMQ_URL=amqp://rabbitmq
-      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
-      - IMU_DATA_EXCHANGE=imu_data_exchange
-      - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
-      - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
-    depends_on:
-      - rabbitmq
+  # simulator:
+  #   build: ./simulation  # or point to a Dockerfile that includes your simulation script
+  #   image: simulator:latest
+  #   volumes:
+  #     - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
+  #   environment:
+  #     - RABBITMQ_URL=amqp://rabbitmq
+  #     - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
+  #     - IMU_DATA_EXCHANGE=imu_data_exchange
+  #     - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
+  #     - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
+  #   depends_on:
+  #     - rabbitmq
 
 
   prometheus:

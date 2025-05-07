@@ -76,5 +76,6 @@
         "typeinfo": "cpp",
         "valarray": "cpp",
         "variant": "cpp"
-    }
+    },
+    "cmake.sourceDirectory": "/home/sam3/Desktop/Toms_Workspace/WorldSystem/slam"
 }

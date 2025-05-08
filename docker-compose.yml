@@ -74,7 +74,6 @@ services:
       - ${XAUTHORITY}:${XAUTHORITY}
     depends_on:
       - rabbitmq
-    # This container does YOLO analysis only
 
   # reconstruction:
   #   image: reconstruction:latest
@@ -100,10 +99,10 @@ services:
   #     HOME: ${HOME}
   #     PYTHONUNBUFFERED: 1  # Ensures Python output is sent straight to the terminal
   #     RABBITMQ_URL: amqp://rabbitmq
-  #     VIDEO_FRAMES_EXCHANGE: video_frames_exchange
-  #     TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
-  #     PLY_FANOUT_EXCHANGE: ply_fanout_exchange
-  #     RESTART_EXCHANGE: restart_exchange
+      # VIDEO_FRAMES_EXCHANGE: video_frames_exchange
+      # TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
+      # PLY_FANOUT_EXCHANGE: ply_fanout_exchange
+      # RESTART_EXCHANGE: restart_exchange
   #   deploy:
   #     resources:
   #       reservations:
@@ -137,7 +136,6 @@ services:
   #           - driver: nvidia
   #             count: all
   #             capabilities: [gpu]
-  #   shm_size: 4gb
   #   environment:
   #     CUDA_PATH: ${CUDA_PATH}
   #     LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
@@ -173,6 +171,99 @@ services:
       - rabbitmq
     ports:
       - "8002:8002"
+
+  # mast3r_slam:
+  #   image: mast3r_slam:latest
+  #   build:
+  #     context: ./master_slam # Dockerfile is in master_slam/
+  #     args:
+  #       USERNAME: ${USERNAME}
+  #       UID: ${UID}
+  #       GID: ${GID}
+  #   container_name: mast3r_slam
+  #   runtime: nvidia
+  #   privileged: true # Often needed for full GPU/device access, similar to ORB_SLAM3 setup
+  #   volumes:
+  #     - ${WORKSPACE}/master_slam:/app # Mounts the host's master_slam dir to /app in container
+  #     # Config files (base.yaml, intrinsics.yaml) are expected inside /app/config/ by default script args
+  #     - ${WORKSPACE}/data/mast3r_slam_maps:/maps/mast3r_slam # For saving meshes
+  #     - ${X11SOCKET}:${X11SOCKET}
+  #     - ${XAUTHORITY}:${XAUTHORITY}
+  #   environment:
+  #     - RABBITMQ_URL=amqp://rabbitmq
+  #     - VIDEO_FRAMES_EXCHANGE=${VIDEO_FRAMES_EXCHANGE:-video_frames_exchange}
+  #     - MAST3R_SLAM_POSE_EXCHANGE=${MAST3R_SLAM_POSE_EXCHANGE:-mast3r_slam_pose_exchange}
+  #     - MAST3R_SLAM_KEYFRAME_EXCHANGE=${MAST3R_SLAM_KEYFRAME_EXCHANGE:-mast3r_slam_keyframe_exchange}
+  #     - MAST3R_SLAM_POINTCLOUD_EXCHANGE=${MAST3R_SLAM_POINTCLOUD_EXCHANGE:-mast3r_slam_pointcloud_exchange}
+  #     - MAST3R_SLAM_DENSE_MAP_EXCHANGE=${MAST3R_SLAM_DENSE_MAP_EXCHANGE:-mast3r_slam_dense_map_exchange}
+  #     - RESTART_EXCHANGE=${RESTART_EXCHANGE:-restart_exchange}
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #     - CUDA_PATH=${CUDA_PATH}
+  #     - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
+  #     - DISPLAY=${DISPLAY}
+  #     - HOME=${HOME} # For X11 auth usually
+  #     - PYTHONUNBUFFERED=1
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all # Or specify a specific GPU count/ID
+  #             capabilities: [gpu]
+  #   depends_on:
+  #     - rabbitmq
+  #   # No ports exposed by default unless MASt3R-SLAM itself runs a server
+
+  slam3r:
+    image: slam3r:latest
+    privileged: true
+    build:
+      context: ./slam3r
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
+    container_name: slam3r
+    runtime: nvidia
+    volumes:
+      - ${WORKSPACE}/slam3r:/app # Mounts the host's slam3r dir to /app in container
+      - ${WORKSPACE}/slam3r/checkpoints:/checkpoints_mount # For SLAM3R model checkpoints
+      - ${WORKSPACE}/slam3r/EuRoC_mono_inertial.yaml:/app/camera_intrinsics.yaml # Using EuRoC as placeholder, replace with actual intrinsics
+      - ${X11SOCKET}:${X11SOCKET}
+      - ${XAUTHORITY}:${XAUTHORITY}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq
+      # Input Exchanges
+      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
+      - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
+      - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
+      - RESTART_EXCHANGE=restart_exchange
+      # Output Exchanges for SLAM3R
+      - SLAM3R_POSE_EXCHANGE=${SLAM3R_POSE_EXCHANGE:-slam3r_pose_exchange}
+      - SLAM3R_POINTCLOUD_EXCHANGE=${SLAM3R_POINTCLOUD_EXCHANGE:-slam3r_pointcloud_exchange}
+      - SLAM3R_RECONSTRUCTION_VIS_EXCHANGE=${SLAM3R_RECONSTRUCTION_VIS_EXCHANGE:-slam3r_reconstruction_vis_exchange}
+      # Checkpoints directory inside the container
+      - SLAM3R_CHECKPOINTS_DIR=/checkpoints_mount
+      # SLAM3R Config and Intrinsics
+      - SLAM3R_CONFIG_FILE=/app/SLAM3R_engine/configs/wild.yaml # Example, adjust if needed
+      # NVIDIA and CUDA settings
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_PATH=${CUDA_PATH} 
+      - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
+      - DISPLAY=${DISPLAY}
+      - HOME=${HOME} # Directly use HOME from .env
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - rabbitmq
+    ports:
+      - "8003:8003"
 
   # simulator:
   #   build: ./simulation  # or point to a Dockerfile that includes your simulation script

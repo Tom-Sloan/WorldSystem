@@ -6,7 +6,7 @@
 # prompt to remove Conda-based environment management in favor of system Python.
 
 # Base image with CUDA 11.8.1
-FROM nvidia/cuda:12.0.0-devel-ubuntu22.04
+FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
 
 ENV PYTHONUNBUFFERED=1
 

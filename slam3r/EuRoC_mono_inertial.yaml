@@ -1,0 +1,26 @@
+%YAML 1.0
+# Camera calibration parameters.
+# These are the primary parameters used by the SLAM3R processor's load_camera_intrinsics function.
+fx: 905.9805764723004
+fy: 903.8697216493965
+cx: 628.6583531774853
+cy: 348.90016625665316
+
+# Optional: Distortion parameters (values from the original Camera1.k1, etc.)
+# These are not currently used by the load_camera_intrinsics function in slam3r_processor.py
+# k1: 0.20796653247283758
+# k2: -1.0209783326144832
+# p1: -0.0005810334199116348
+# p2: -0.0033936448334717616
+
+# Optional: Original image dimensions and other info from the file
+# These are not currently used by the load_camera_intrinsics function.
+# original_width: 1280       # Was Camera.width
+# original_height: 720      # Was Camera.height
+# new_width: 1280           # Was Camera.newWidth
+# new_height: 720           # Was Camera.newHeight
+# fps: 30                   # Was Camera.fps
+# color_order_rgb: true     # Was Camera.RGB: 1 (true for RGB, false for BGR)
+
+# The File.version and Camera.type fields from the original file have been omitted
+# as they are not standard for a simple intrinsics dictionary expected by the script.

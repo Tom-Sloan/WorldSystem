@@ -319,10 +319,7 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
     networks:
       - default
-    deploy:
-      resources:
-        reservations:
-          cpus: '0.2'
+    cpus: '0.2'
 
   jaeger:
     image: jaegertracing/all-in-one:latest

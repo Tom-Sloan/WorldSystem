@@ -77,9 +77,6 @@ RUN cd /app/SLAM3R_engine/slam3r/pos_embed/curope && \
 
 WORKDIR /app
 
-# Copy the RabbitMQ processor script
-COPY ./slam3r_processor.py /app/slam3r_processor.py
-
 WORKDIR /app
 ARG USERNAME
 ARG UID
@@ -93,4 +90,4 @@ USER $USERNAME
 RUN echo "*customization: -color" > $HOME/.Xdefaults
 
 # Set the default command to run the processor script
-CMD ["python3", "./slam3r_processor.py"] 
+CMD ["python3", "./SLAM3R_engine/slam3r_processor.py"] 

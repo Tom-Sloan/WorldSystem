@@ -15,6 +15,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV CUDA_HOME=/usr/local/cuda
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 ENV PATH="${CUDA_HOME}/bin:${PATH}"
+ENV PYTHONPATH=/app:$PYTHONPATH
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

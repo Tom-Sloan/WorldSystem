@@ -76,7 +76,13 @@ RUN pip3 install aio-pika PyYAML
 RUN cd /app/SLAM3R_engine/slam3r/pos_embed/curope && \
     python3 setup.py build_ext --inplace
 
+    
 WORKDIR /app
+
+RUN mkdir -p /app/models
+RUN python3 -c "from SLAM3R_engine.slam3r.models import Image2PointsModel, Local2WorldModel; \
+    i2p = Image2PointsModel.from_pretrained('siyan824/slam3r_i2p'); \
+    l2w = Local2WorldModel.from_pretrained('siyan824/slam3r_l2w')"
 
 WORKDIR /app
 ARG USERNAME

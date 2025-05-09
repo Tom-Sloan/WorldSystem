@@ -228,7 +228,6 @@ services:
     volumes:
       - ${WORKSPACE}/slam3r:/app # Mounts the host's slam3r dir to /app in container
       - ${WORKSPACE}/slam3r/checkpoints:/checkpoints_mount # For SLAM3R model checkpoints
-      - ${WORKSPACE}/slam3r/EuRoC_mono_inertial.yaml:/app/camera_intrinsics.yaml # Using EuRoC as placeholder, replace with actual intrinsics
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
     deploy:
@@ -251,8 +250,6 @@ services:
       - SLAM3R_RECONSTRUCTION_VIS_EXCHANGE=${SLAM3R_RECONSTRUCTION_VIS_EXCHANGE:-slam3r_reconstruction_vis_exchange}
       # Checkpoints directory inside the container
       - SLAM3R_CHECKPOINTS_DIR=/checkpoints_mount
-      # SLAM3R Config and Intrinsics
-      - SLAM3R_CONFIG_FILE=/app/SLAM3R_engine/configs/wild.yaml # Example, adjust if needed
       # NVIDIA and CUDA settings
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_PATH=${CUDA_PATH} 
@@ -260,6 +257,7 @@ services:
       - DISPLAY=${DISPLAY}
       - HOME=${HOME} # Directly use HOME from .env
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app:$PYTHONPATH
     depends_on:
       - rabbitmq
     ports:

@@ -1,13 +1,17 @@
 .
 ├── camera_intrinsics.yaml
 ├── checkpoints
+│   └── siyan824
+│       ├── slam3r_i2p
+│       └── slam3r_l2w
 ├── CLAUDE.md
 ├── Dockerfile
-├── EuRoC_mono_inertial.yaml
 ├── output.txt
 └── SLAM3R_engine
     ├── app.py
-    ├── camera_intrinsics.yaml
+    ├── configs
+    │   ├── camera_intrinsics.yaml
+    │   └── wild.yaml
     ├── datasets_preprocess
     │   ├── preprocess_ase.py
     │   ├── preprocess_co3d.py
@@ -136,4 +140,4 @@
     ├── train.py
     └── visualize.py
 
-26 directories, 110 files
+30 directories, 110 files

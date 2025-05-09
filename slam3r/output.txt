@@ -5,134 +5,135 @@
 ├── Dockerfile
 ├── EuRoC_mono_inertial.yaml
 ├── output.txt
-├── SLAM3R_engine
-│   ├── app.py
-│   ├── datasets_preprocess
-│   │   ├── preprocess_ase.py
-│   │   ├── preprocess_co3d.py
-│   │   └── preprocess_scannetpp.py
-│   ├── docs
-│   │   ├── data_preprocess.md
-│   │   └── recon_tips.md
-│   ├── evaluation
-│   │   ├── eval_recon.py
-│   │   └── process_gt.py
-│   ├── media
-│   │   ├── gradio_office.gif
-│   │   ├── gradio_office.jpg
-│   │   ├── gradio.png
-│   │   ├── replica.gif
-│   │   └── wild.gif
-│   ├── __pycache__
-│   │   └── recon.cpython-310.pyc
-│   ├── README.md
-│   ├── recon.py
-│   ├── requirements_optional.txt
-│   ├── requirements.txt
-│   ├── scripts
-│   │   ├── demo_replica.sh
-│   │   ├── demo_vis_wild.sh
-│   │   ├── demo_wild.sh
-│   │   ├── eval_replica.sh
-│   │   ├── train_i2p.sh
-│   │   └── train_l2w.sh
-│   ├── slam3r
-│   │   ├── blocks
-│   │   │   ├── basic_blocks.py
-│   │   │   ├── __init__.py
-│   │   │   ├── multiview_blocks.py
-│   │   │   └── __pycache__
-│   │   │       ├── basic_blocks.cpython-310.pyc
-│   │   │       ├── __init__.cpython-310.pyc
-│   │   │       └── multiview_blocks.cpython-310.pyc
-│   │   ├── datasets
-│   │   │   ├── base
-│   │   │   │   ├── base_stereo_view_dataset.py
-│   │   │   │   ├── batched_sampler.py
-│   │   │   │   ├── easy_dataset.py
-│   │   │   │   ├── __init__.py
-│   │   │   │   └── __pycache__
-│   │   │   │       ├── base_stereo_view_dataset.cpython-310.pyc
-│   │   │   │       ├── batched_sampler.cpython-310.pyc
-│   │   │   │       ├── easy_dataset.cpython-310.pyc
-│   │   │   │       └── __init__.cpython-310.pyc
-│   │   │   ├── co3d_seq.py
-│   │   │   ├── __init__.py
-│   │   │   ├── project_aria_seq.py
-│   │   │   ├── __pycache__
-│   │   │   │   ├── co3d_seq.cpython-310.pyc
-│   │   │   │   ├── __init__.cpython-310.pyc
-│   │   │   │   ├── project_aria_seq.cpython-310.pyc
-│   │   │   │   ├── replica_seq.cpython-310.pyc
-│   │   │   │   ├── scannetpp_seq.cpython-310.pyc
-│   │   │   │   └── wild_seq.cpython-310.pyc
-│   │   │   ├── replica_seq.py
-│   │   │   ├── scannetpp_seq.py
-│   │   │   ├── seven_scenes_seq.py
-│   │   │   ├── utils
-│   │   │   │   ├── cropping.py
-│   │   │   │   ├── __init__.py
-│   │   │   │   ├── __pycache__
-│   │   │   │   │   ├── cropping.cpython-310.pyc
-│   │   │   │   │   ├── __init__.cpython-310.pyc
-│   │   │   │   │   └── transforms.cpython-310.pyc
-│   │   │   │   └── transforms.py
-│   │   │   └── wild_seq.py
-│   │   ├── heads
-│   │   │   ├── dpt_block.py
-│   │   │   ├── dpt_head.py
-│   │   │   ├── __init__.py
-│   │   │   ├── linear_head.py
-│   │   │   ├── postprocess.py
-│   │   │   └── __pycache__
-│   │   │       ├── dpt_block.cpython-310.pyc
-│   │   │       ├── dpt_head.cpython-310.pyc
-│   │   │       ├── __init__.cpython-310.pyc
-│   │   │       ├── linear_head.cpython-310.pyc
-│   │   │       └── postprocess.cpython-310.pyc
-│   │   ├── inference.py
-│   │   ├── __init__.py
-│   │   ├── losses.py
-│   │   ├── models.py
-│   │   ├── patch_embed.py
-│   │   ├── pos_embed
-│   │   │   ├── curope
-│   │   │   │   ├── curope2d.py
-│   │   │   │   ├── curope.cpp
-│   │   │   │   ├── __init__.py
-│   │   │   │   ├── kernels.cu
-│   │   │   │   ├── __pycache__
-│   │   │   │   │   ├── curope2d.cpython-310.pyc
-│   │   │   │   │   └── __init__.cpython-310.pyc
-│   │   │   │   └── setup.py
-│   │   │   ├── __init__.py
-│   │   │   ├── pos_embed.py
-│   │   │   └── __pycache__
-│   │   │       ├── __init__.cpython-310.pyc
-│   │   │       └── pos_embed.cpython-310.pyc
-│   │   ├── __pycache__
-│   │   │   ├── inference.cpython-310.pyc
-│   │   │   ├── __init__.cpython-310.pyc
-│   │   │   ├── models.cpython-310.pyc
-│   │   │   └── patch_embed.cpython-310.pyc
-│   │   ├── utils
-│   │   │   ├── croco_misc.py
-│   │   │   ├── device.py
-│   │   │   ├── geometry.py
-│   │   │   ├── image.py
-│   │   │   ├── __init__.py
-│   │   │   ├── misc.py
-│   │   │   ├── __pycache__
-│   │   │   │   ├── device.cpython-310.pyc
-│   │   │   │   ├── geometry.cpython-310.pyc
-│   │   │   │   ├── image.cpython-310.pyc
-│   │   │   │   ├── __init__.cpython-310.pyc
-│   │   │   │   ├── misc.cpython-310.pyc
-│   │   │   │   └── recon_utils.cpython-310.pyc
-│   │   │   └── recon_utils.py
-│   │   └── viz.py
-│   ├── train.py
-│   └── visualize.py
-└── slam3r_processor.py
+└── SLAM3R_engine
+    ├── app.py
+    ├── camera_intrinsics.yaml
+    ├── datasets_preprocess
+    │   ├── preprocess_ase.py
+    │   ├── preprocess_co3d.py
+    │   └── preprocess_scannetpp.py
+    ├── docs
+    │   ├── data_preprocess.md
+    │   └── recon_tips.md
+    ├── evaluation
+    │   ├── eval_recon.py
+    │   └── process_gt.py
+    ├── media
+    │   ├── gradio_office.gif
+    │   ├── gradio_office.jpg
+    │   ├── gradio.png
+    │   ├── replica.gif
+    │   └── wild.gif
+    ├── __pycache__
+    │   └── recon.cpython-310.pyc
+    ├── README.md
+    ├── recon.py
+    ├── requirements_optional.txt
+    ├── requirements.txt
+    ├── scripts
+    │   ├── demo_replica.sh
+    │   ├── demo_vis_wild.sh
+    │   ├── demo_wild.sh
+    │   ├── eval_replica.sh
+    │   ├── train_i2p.sh
+    │   └── train_l2w.sh
+    ├── slam3r
+    │   ├── blocks
+    │   │   ├── basic_blocks.py
+    │   │   ├── __init__.py
+    │   │   ├── multiview_blocks.py
+    │   │   └── __pycache__
+    │   │       ├── basic_blocks.cpython-310.pyc
+    │   │       ├── __init__.cpython-310.pyc
+    │   │       └── multiview_blocks.cpython-310.pyc
+    │   ├── datasets
+    │   │   ├── base
+    │   │   │   ├── base_stereo_view_dataset.py
+    │   │   │   ├── batched_sampler.py
+    │   │   │   ├── easy_dataset.py
+    │   │   │   ├── __init__.py
+    │   │   │   └── __pycache__
+    │   │   │       ├── base_stereo_view_dataset.cpython-310.pyc
+    │   │   │       ├── batched_sampler.cpython-310.pyc
+    │   │   │       ├── easy_dataset.cpython-310.pyc
+    │   │   │       └── __init__.cpython-310.pyc
+    │   │   ├── co3d_seq.py
+    │   │   ├── __init__.py
+    │   │   ├── project_aria_seq.py
+    │   │   ├── __pycache__
+    │   │   │   ├── co3d_seq.cpython-310.pyc
+    │   │   │   ├── __init__.cpython-310.pyc
+    │   │   │   ├── project_aria_seq.cpython-310.pyc
+    │   │   │   ├── replica_seq.cpython-310.pyc
+    │   │   │   ├── scannetpp_seq.cpython-310.pyc
+    │   │   │   └── wild_seq.cpython-310.pyc
+    │   │   ├── replica_seq.py
+    │   │   ├── scannetpp_seq.py
+    │   │   ├── seven_scenes_seq.py
+    │   │   ├── utils
+    │   │   │   ├── cropping.py
+    │   │   │   ├── __init__.py
+    │   │   │   ├── __pycache__
+    │   │   │   │   ├── cropping.cpython-310.pyc
+    │   │   │   │   ├── __init__.cpython-310.pyc
+    │   │   │   │   └── transforms.cpython-310.pyc
+    │   │   │   └── transforms.py
+    │   │   └── wild_seq.py
+    │   ├── heads
+    │   │   ├── dpt_block.py
+    │   │   ├── dpt_head.py
+    │   │   ├── __init__.py
+    │   │   ├── linear_head.py
+    │   │   ├── postprocess.py
+    │   │   └── __pycache__
+    │   │       ├── dpt_block.cpython-310.pyc
+    │   │       ├── dpt_head.cpython-310.pyc
+    │   │       ├── __init__.cpython-310.pyc
+    │   │       ├── linear_head.cpython-310.pyc
+    │   │       └── postprocess.cpython-310.pyc
+    │   ├── inference.py
+    │   ├── __init__.py
+    │   ├── losses.py
+    │   ├── models.py
+    │   ├── patch_embed.py
+    │   ├── pos_embed
+    │   │   ├── curope
+    │   │   │   ├── curope2d.py
+    │   │   │   ├── curope.cpp
+    │   │   │   ├── __init__.py
+    │   │   │   ├── kernels.cu
+    │   │   │   ├── __pycache__
+    │   │   │   │   ├── curope2d.cpython-310.pyc
+    │   │   │   │   └── __init__.cpython-310.pyc
+    │   │   │   └── setup.py
+    │   │   ├── __init__.py
+    │   │   ├── pos_embed.py
+    │   │   └── __pycache__
+    │   │       ├── __init__.cpython-310.pyc
+    │   │       └── pos_embed.cpython-310.pyc
+    │   ├── __pycache__
+    │   │   ├── inference.cpython-310.pyc
+    │   │   ├── __init__.cpython-310.pyc
+    │   │   ├── models.cpython-310.pyc
+    │   │   └── patch_embed.cpython-310.pyc
+    │   ├── utils
+    │   │   ├── croco_misc.py
+    │   │   ├── device.py
+    │   │   ├── geometry.py
+    │   │   ├── image.py
+    │   │   ├── __init__.py
+    │   │   ├── misc.py
+    │   │   ├── __pycache__
+    │   │   │   ├── device.cpython-310.pyc
+    │   │   │   ├── geometry.cpython-310.pyc
+    │   │   │   ├── image.cpython-310.pyc
+    │   │   │   ├── __init__.cpython-310.pyc
+    │   │   │   ├── misc.cpython-310.pyc
+    │   │   │   └── recon_utils.cpython-310.pyc
+    │   │   └── recon_utils.py
+    │   └── viz.py
+    ├── slam3r_processor.py
+    ├── train.py
+    └── visualize.py
 
-26 directories, 109 files
+26 directories, 110 files

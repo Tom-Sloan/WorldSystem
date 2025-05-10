@@ -1,6 +1,6 @@
 services:
-  slam:
-    image: slam:latest
+  test_container:
+    image: test_container:latest
     privileged: true
     build:
       context: .
@@ -8,7 +8,7 @@ services:
         USERNAME: ${USERNAME}
         UID: ${UID}
         GID: ${GID}
-    container_name: slam
+    container_name: test_container
     runtime: nvidia
     volumes:
       - ${WORKSPACE}:/app

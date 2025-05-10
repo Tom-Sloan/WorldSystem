@@ -26,7 +26,8 @@ RUN python3 -m pip install --upgrade pip
 RUN pip install --no-cache-dir \
     mne \
     pyqt6 \
-    matplotlib
+    matplotlib \
+    rerun-sdk
 
 # Upgrade ipykernel
 RUN /usr/bin/python3 -m pip install ipykernel -U --user --force-reinstall
@@ -50,5 +51,8 @@ RUN echo "*customization: -color" > $HOME/.Xdefaults
 RUN mkdir -p /home/$USERNAME/workspace
 WORKDIR $HOME/workspace
 
-# Set up the container to start with bash by default
-CMD ["/bin/bash"]
+# Copy the Rerun test script
+COPY test_rerun.py $HOME/workspace/test_rerun.py
+
+# Set up the container to start with the Rerun test script
+CMD ["python3", "test_rerun.py"]

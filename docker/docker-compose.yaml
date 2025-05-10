@@ -1,19 +1,23 @@
+version: '3.8'
+
 services:
   test_container:
     image: test_container:latest
-    privileged: true
     build:
       context: .
       args:
         USERNAME: ${USERNAME}
         UID: ${UID}
         GID: ${GID}
+        HOME: ${HOME}
     container_name: test_container
     runtime: nvidia
     volumes:
       - ${WORKSPACE}:/app
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
+    ports:
+      - "9090:9090"
     deploy:
       resources:
         reservations:
@@ -25,11 +29,11 @@ services:
       memlock: -1
       stack: 134217728
     ipc: host
-    network_mode: host
     environment:
       CUDA_PATH: ${CUDA_PATH}
       LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
       DISPLAY: ${DISPLAY}
       HOME: ${HOME}
+      RERUN_VIEWER_ADDRESS: "0.0.0.0:9090"
     tty: true
     stdin_open: true

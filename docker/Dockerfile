@@ -22,12 +22,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python3 -m pip install --upgrade pip
 
-# Install Python packages
+# First ensure numpy is installed correctly to avoid binary compatibility issues
+RUN pip uninstall -y numpy
+RUN pip install --no-cache-dir numpy>=1.24.0
+
+# Install Python packages with the specific version of rerun-sdk
 RUN pip install --no-cache-dir \
     mne \
     pyqt6 \
     matplotlib \
-    rerun-sdk
+    rerun-sdk==0.23.2
 
 # Upgrade ipykernel
 RUN /usr/bin/python3 -m pip install ipykernel -U --user --force-reinstall
@@ -42,17 +46,22 @@ ARG HOME
 RUN groupadd -g $GID $USERNAME && \
     useradd -m -u $UID -g $GID -s /bin/bash $USERNAME
 
-# Grant the user sudo privileges (optional)
+# Grant the user sudo privileges
 RUN echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Set the default user to the new user
 USER $USERNAME
 RUN echo "*customization: -color" > $HOME/.Xdefaults
+
+# Make sure workspace directory exists and is owned by the user
 RUN mkdir -p /home/$USERNAME/workspace
-WORKDIR $HOME/workspace
+WORKDIR /home/$USERNAME/workspace
 
 # Copy the Rerun test script
-COPY test_rerun.py $HOME/workspace/test_rerun.py
+COPY --chown=$USERNAME:$USERNAME test_rerun.py /home/$USERNAME/workspace/test_rerun.py
+
+# For external network access, make sure we're setting up proper network environment
+ENV RERUN_VIEWER_ADDRESS=0.0.0.0:9090
 
 # Set up the container to start with the Rerun test script
 CMD ["python3", "test_rerun.py"]

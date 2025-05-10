@@ -13,13 +13,9 @@ def main() -> None:
     # Get environment variables for Rerun configuration
     viewer_address = os.environ.get("RERUN_VIEWER_ADDRESS", "127.0.0.1:9090")
     print(f"Viewer address: {viewer_address}")
-    host, port = viewer_address.split(":")
     
-    # Properly initialize Rerun with web configuration
-    # Using a specific SDK configuration for compatibility with NVIDIA container
-    rr.init(
-        "rerun_docker_test_minimal"
-    )
+    # Properly initialize Rerun with application name
+    rr.init("rerun_docker_test_minimal")
     
     print(f"Initialized Rerun with viewer address: {viewer_address}")
 
@@ -34,7 +30,7 @@ def main() -> None:
     # Try-except block to handle potential errors with more diagnostic information
     try:
         # Log the points as static
-        rr.log("my_docker_points", rr.Points3D(points, colors=colors, radii=radii), static=True)
+        rr.log("my_docker_points", rr.Points3D(points, colors=colors, radii=radii))
         print(f"Successfully logged {num_points} static points to Rerun.")
     except Exception as e:
         print(f"Error logging points: {e}")
@@ -46,13 +42,13 @@ def main() -> None:
     print("Logging time-series data for a graph...")
     for i in range(200):  # Log 200 data points for the sine wave
         # Set the current time for this data point
-        rr.set_time("plot_time", sequence=i)
+        rr.set_time_sequence("plot_time", i)  # Updated according to docs
 
         # Calculate a sine wave value
         value = math.sin(i * 0.1)
 
         # Log the scalar value
-        rr.log("my_graph/sine_wave", rr.Scalars(value))
+        rr.log("my_graph/sine_wave", rr.Scalar(value))  # Using Scalar instead of Scalars
 
         time.sleep(0.05)  # Sleep for 50ms to make the updates visible
 
@@ -61,12 +57,8 @@ def main() -> None:
 
     try:
         # Configure the web viewer for Docker with host networking
-        # Using the host and port from RERUN_VIEWER_ADDRESS
-        rr.serve_web_viewer(
-            host=host,  # Use the host from environment
-            port=int(port),   # Use the port from environment
-            open_browser=False  # Don't try to open a browser inside the container
-        )
+        # Using the address format according to the Rerun docs
+        rr.serve_web_viewer(open_browser=False)
         print(f"Rerun web viewer is being served at http://{viewer_address}")
         print("Select 'my_graph/sine_wave' in the Rerun viewer to see the plot.")
         print("The script will keep running to serve the viewer. Press Ctrl+C to stop.")

@@ -1,66 +1,56 @@
-#!/usr/bin/env python3
-"""Minimal example of using the Rerun SDK to log and serve data over HTTP in an NVIDIA container."""
-
-from __future__ import annotations
-
+import rerun as rr
 import numpy as np
-import rerun as rr  # pip install rerun-sdk
 import time
-import math
 import os
 
 def main() -> None:
+    print(f"NumPy version: {np.__version__}")
     # Get environment variables for Rerun configuration
-    viewer_address = os.environ.get("RERUN_VIEWER_ADDRESS", "127.0.0.1:9090")
+    viewer_address = os.environ.get("RERUN_VIEWER_ADDRESS", "0.0.0.0:9090")
     print(f"Viewer address: {viewer_address}")
     
-    # Properly initialize Rerun with application name
-    rr.init("rerun_docker_test_minimal")
+    # Initialize Rerun with application name - don't automatically spawn a viewer
+    rr.init("rerun_docker_test_minimal", spawn=False)
     
     print(f"Initialized Rerun with viewer address: {viewer_address}")
 
     # Log some static 3D points with explicit types to avoid conversion issues
-    num_points = 15
+    SIZE = 10
+
+    # Create a simple range of positions instead of using meshgrid
+    x = np.linspace(-10, 10, SIZE)
+    y = np.linspace(-10, 10, SIZE)
+    z = np.linspace(-10, 10, SIZE)
     
-    # Create arrays directly with the correct types (no conversions)
-    points = np.random.rand(num_points, 3).astype(np.float32) * 10
-    colors = np.random.randint(0, 255, size=(num_points, 3), dtype=np.uint8)
-    radii = np.random.rand(num_points).astype(np.float32) * 0.5
-
-    # Try-except block to handle potential errors with more diagnostic information
-    try:
-        # Log the points as static
-        rr.log("my_docker_points", rr.Points3D(points, colors=colors, radii=radii))
-        print(f"Successfully logged {num_points} static points to Rerun.")
-    except Exception as e:
-        print(f"Error logging points: {e}")
-        print(f"Points shape: {points.shape}, dtype: {points.dtype}")
-        print(f"Colors shape: {colors.shape}, dtype: {colors.dtype}")
-        print(f"Radii shape: {radii.shape}, dtype: {radii.dtype}")
-
-    # Log a scalar over time to create a graph
-    print("Logging time-series data for a graph...")
-    for i in range(200):  # Log 200 data points for the sine wave
-        # Set the current time for this data point
-        rr.set_time_sequence("plot_time", i)  # Updated according to docs
-
-        # Calculate a sine wave value
-        value = math.sin(i * 0.1)
-
-        # Log the scalar value
-        rr.log("my_graph/sine_wave", rr.Scalar(value))  # Using Scalar instead of Scalars
-
-        time.sleep(0.05)  # Sleep for 50ms to make the updates visible
-
+    # Manually create points to avoid the numpy.dtype size issue
+    positions = []
+    colors = []
+    
+    for i in range(SIZE):
+        for j in range(SIZE):
+            for k in range(SIZE):
+                positions.append([float(x[i]), float(y[j]), float(z[k])])
+                colors.append([int(i * 255/SIZE), int(j * 255/SIZE), int(k * 255/SIZE)])
+    
+    # Convert to NumPy arrays with explicit dtypes after creation
+    positions = np.array(positions, dtype=np.float32)
+    colors = np.array(colors, dtype=np.uint8)
+    
+    # Log using the component API instead of the Points3D class
+    rr.log("my_points", {
+        "positions": positions,
+        "colors": colors,
+        "radii": 0.5
+    })
+    
     print("Finished logging time-series data.")
     print("Attempting to serve a Rerun web viewer...")
 
     try:
-        # Configure the web viewer for Docker with host networking
-        # Using the address format according to the Rerun docs
+        # Serving the web viewer with the correct API call
         rr.serve_web_viewer(open_browser=False)
         print(f"Rerun web viewer is being served at http://{viewer_address}")
-        print("Select 'my_graph/sine_wave' in the Rerun viewer to see the plot.")
+        print("Select 'my_points' in the Rerun viewer to see the visualizations.")
         print("The script will keep running to serve the viewer. Press Ctrl+C to stop.")
         
         # Keep the main thread alive to serve the web viewer

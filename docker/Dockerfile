@@ -22,16 +22,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python3 -m pip install --upgrade pip
 
-# First ensure numpy is installed correctly to avoid binary compatibility issues
-RUN pip uninstall -y numpy
-RUN pip install --no-cache-dir numpy>=1.24.0
-
 # Install Python packages with the specific version of rerun-sdk
 RUN pip install --no-cache-dir \
     mne \
     pyqt6 \
     matplotlib \
-    rerun-sdk==0.23.2
+    rerun-sdk==0.23.2 \
+    numpy
+
+# Print pip environment information
+RUN pip list && pip freeze
 
 # Upgrade ipykernel
 RUN /usr/bin/python3 -m pip install ipykernel -U --user --force-reinstall

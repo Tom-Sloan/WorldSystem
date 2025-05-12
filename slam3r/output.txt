@@ -1,5 +1,4 @@
 .
-├── camera_intrinsics.yaml
 ├── checkpoints
 │   └── siyan824
 │       ├── slam3r_i2p
@@ -9,6 +8,7 @@
 ├── output.txt
 └── SLAM3R_engine
     ├── app.py
+    ├── CLAUDE.md
     ├── configs
     │   ├── camera_intrinsics.yaml
     │   └── wild.yaml
@@ -137,7 +137,8 @@
     │   │   └── recon_utils.py
     │   └── viz.py
     ├── slam3r_processor.py
+    ├── streaming
     ├── train.py
     └── visualize.py
 
-30 directories, 110 files
+31 directories, 110 files

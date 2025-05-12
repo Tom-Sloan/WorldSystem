@@ -250,6 +250,10 @@ services:
       - SLAM3R_RECONSTRUCTION_VIS_EXCHANGE=${SLAM3R_RECONSTRUCTION_VIS_EXCHANGE:-slam3r_reconstruction_vis_exchange}
       # Checkpoints directory inside the container
       - SLAM3R_CHECKPOINTS_DIR=/checkpoints_mount
+      # Rerun specific environment variables
+      - RERUN_VIEWER_ADDRESS=${RERUN_VIEWER_ADDRESS:-host.docker.internal:9876} # For Docker Desktop, adjust if needed
+      - RERUN_CONNECT_URL=${RERUN_CONNECT_URL:-rerun+http://host.docker.internal:9876/proxy}
+      - RERUN_ENABLED=${RERUN_ENABLED:-true}
       # NVIDIA and CUDA settings
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_PATH=${CUDA_PATH} 

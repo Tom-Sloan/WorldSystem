@@ -16,8 +16,8 @@ services:
       - ${WORKSPACE}:/app
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
-    ports:
-      - "9090:9090"
+    network_mode: host 
+      
     deploy:
       resources:
         reservations:
@@ -34,6 +34,7 @@ services:
       LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
       DISPLAY: ${DISPLAY}
       HOME: ${HOME}
-      RERUN_VIEWER_ADDRESS: "0.0.0.0:9090"
+      RERUN_VIEWER_ADDRESS: "0.0.0.0:9090"   
+      RERUN_CONNECT_URL: "rerun+http://127.0.0.1:9876/proxy"
     tty: true
     stdin_open: true

@@ -67,10 +67,14 @@ COPY ./SLAM3R_engine /app/SLAM3R_engine/
 
 # Install SLAM3R Python dependencies
 RUN pip3 install -r /app/SLAM3R_engine/requirements.txt
-RUN pip3 install -r /app/SLAM3R_engine/requirements_optional.txt 
+# Ensure libGL is available for Rerun (even if running headlessly, some parts might link against it)
+RUN apt-get update && apt-get install -y libgl1-mesa-glx && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install other necessary Python packages for the processor script
 RUN pip3 install aio-pika PyYAML
+
+# --- Rerun SDK (visualization) ---
+RUN pip3 install --no-cache-dir "numpy>=2.2,<3" rerun-sdk==0.23.2
 
 # Build RoPE2D CUDA extension
 RUN cd /app/SLAM3R_engine/slam3r/pos_embed/curope && \
@@ -95,6 +99,14 @@ RUN groupadd -g $GID $USERNAME && \
 
 USER $USERNAME
 RUN echo "*customization: -color" > $HOME/.Xdefaults
+
+# Rerun visualization configuration
+ENV RERUN_VIEWER_ADDRESS="0.0.0.0:9876"
+ENV RERUN_CONNECT_URL="rerun+http://127.0.0.1:9876/proxy"
+ENV RERUN_ENABLED="true"
+
+# Expose Rerun viewer gRPC/Web port
+EXPOSE 9876
 
 # Set the default command to run the processor script
 CMD ["python3", "./SLAM3R_engine/slam3r_processor.py"] 

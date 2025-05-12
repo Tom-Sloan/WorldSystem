@@ -225,11 +225,17 @@ services:
         GID: ${GID}
     container_name: slam3r
     runtime: nvidia
+
+    # Mount source and checkpoints
     volumes:
-      - ${WORKSPACE}/slam3r:/app # Mounts the host's slam3r dir to /app in container
-      - ${WORKSPACE}/slam3r/checkpoints:/checkpoints_mount # For SLAM3R model checkpoints
+      - ${WORKSPACE}/slam3r:/app
+      - ${WORKSPACE}/slam3r/checkpoints:/checkpoints_mount
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
+
+    # ---------- key change: share the host network namespace ----------
+    network_mode: host
+
     deploy:
       resources:
         reservations:
@@ -237,35 +243,44 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+    # ‼️ host‑network means container DNS can’t resolve other service names; connect via 127.0.0.1 instead
     environment:
-      - RABBITMQ_URL=amqp://rabbitmq
-      # Input Exchanges
+      # RabbitMQ now reached on the host‑published port
+      - RABBITMQ_URL=amqp://127.0.0.1:5672
+
+      # Input exchanges
       - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
       - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
       - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
       - RESTART_EXCHANGE=restart_exchange
-      # Output Exchanges for SLAM3R
+
+      # Output exchanges
       - SLAM3R_POSE_EXCHANGE=${SLAM3R_POSE_EXCHANGE:-slam3r_pose_exchange}
       - SLAM3R_POINTCLOUD_EXCHANGE=${SLAM3R_POINTCLOUD_EXCHANGE:-slam3r_pointcloud_exchange}
       - SLAM3R_RECONSTRUCTION_VIS_EXCHANGE=${SLAM3R_RECONSTRUCTION_VIS_EXCHANGE:-slam3r_reconstruction_vis_exchange}
-      # Checkpoints directory inside the container
+
+      # Paths & checkpoints
       - SLAM3R_CHECKPOINTS_DIR=/checkpoints_mount
-      # Rerun specific environment variables
-      - RERUN_VIEWER_ADDRESS=${RERUN_VIEWER_ADDRESS:-host.docker.internal:9876} # For Docker Desktop, adjust if needed
-      - RERUN_CONNECT_URL=${RERUN_CONNECT_URL:-rerun+http://host.docker.internal:9876/proxy}
-      - RERUN_ENABLED=${RERUN_ENABLED:-true}
-      # NVIDIA and CUDA settings
+
+      # Rerun viewer (host‑local)
+      - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
+      - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
+      - RERUN_ENABLED=true
+
+      # GPU / display
       - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_PATH=${CUDA_PATH} 
+      - CUDA_PATH=${CUDA_PATH}
       - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
       - DISPLAY=${DISPLAY}
-      - HOME=${HOME} # Directly use HOME from .env
+
+      # Misc
+      - HOME=${HOME}
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app:$PYTHONPATH
+
     depends_on:
       - rabbitmq
-    ports:
-      - "8003:8003"
 
   # simulator:
   #   build: ./simulation  # or point to a Dockerfile that includes your simulation script

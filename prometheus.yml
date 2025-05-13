@@ -36,7 +36,7 @@ scrape_configs:
   # Storage
   - job_name: 'data_storage'
     static_configs:
-      - targets: ['data_storage:8002']
+      - targets: ['host.docker.internal:8002']
 
   # Jaeger
   - job_name: 'jaeger'

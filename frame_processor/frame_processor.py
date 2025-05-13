@@ -9,6 +9,18 @@ import ntplib
 import socket
 import threading
 from ultralytics import YOLO
+import rerun as rr  # Import Rerun SDK
+from prometheus_client import start_http_server, Counter, Gauge, Histogram, Summary
+import threading
+
+# Prometheus metrics
+PROCESSED_FRAMES = Counter('frame_processor_frames_processed_total', 'Total number of frames processed')
+YOLO_DETECTIONS = Counter('frame_processor_yolo_detections_total', 'Total number of YOLO detections')
+PROCESSING_TIME = Histogram('frame_processor_processing_time_ms', 'Processing time in milliseconds',
+                            buckets=(1, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000))
+FRAME_SIZE = Gauge('frame_processor_frame_size_bytes', 'Size of the processed frame in bytes')
+CONNECTION_STATUS = Gauge('frame_processor_connection_status', 'Connection status (1=connected, 0=disconnected)')
+NTP_TIME_OFFSET = Gauge('frame_processor_ntp_time_offset_seconds', 'NTP time offset in seconds')
 
 # Add NTP client and time offset tracking
 ntp_client = ntplib.NTPClient()
@@ -27,6 +39,8 @@ def sync_ntp_time():
         ntp_time_offset = response.offset
         last_ntp_sync = time.time()
         print(f"[NTP] Synchronized time, offset: {ntp_time_offset:.6f} seconds")
+        # Update Prometheus metric
+        NTP_TIME_OFFSET.set(ntp_time_offset)
         return True
     except (ntplib.NTPException, socket.gaierror, socket.timeout) as e:
         print(f"[NTP] Synchronization failed: {str(e)}")
@@ -41,9 +55,42 @@ def get_ntp_time_ns():
         threading.Thread(target=sync_ntp_time, daemon=True).start()
     return int(current_time * 1e9)  # Convert to nanoseconds
 
+# Get metrics port from environment with default of 8003
+METRICS_PORT = int(os.getenv("METRICS_PORT", 8003))
+
+# Start Prometheus HTTP server on configured port
+print(f"[Prometheus] Starting metrics server on port {METRICS_PORT}...")
+start_http_server(METRICS_PORT)
+
 # Initialize NTP synchronization
 print("[NTP] Initializing time synchronization...")
 sync_ntp_time()
+
+# Initialize Rerun
+RERUN_ENABLED = os.getenv("RERUN_ENABLED", "true").lower() == "true"
+if RERUN_ENABLED:
+    print("[Rerun] Initializing...")
+    # Get environment variables for Rerun configuration
+    viewer_address = os.environ.get("RERUN_VIEWER_ADDRESS", "0.0.0.0:9090")
+    print(f"[Rerun] Viewer address: {viewer_address}")
+    
+    # Initialize Rerun with application name - don't automatically spawn a viewer
+    rr.init("frame_processor", spawn=False)
+    
+    print(f"[Rerun] Initialized with viewer address: {viewer_address}")
+    
+    # Connect to the viewer using gRPC
+    rerun_connect_url = os.getenv(
+        "RERUN_CONNECT_URL",
+        "rerun+http://localhost:9876/proxy"  # sensible fallback
+    )
+    try:
+        print(f"[Rerun] Connecting to viewer via gRPC at {rerun_connect_url}")
+        rr.connect_grpc(rerun_connect_url)
+        print(f"[Rerun] Connected to viewer via gRPC")
+    except Exception as e:
+        print(f"[Rerun] Error connecting to viewer via gRPC: {e}")
+        print("[Rerun] Will continue sending data regardless of connection status")
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq")
 params = pika.URLParameters(RABBITMQ_URL)
@@ -55,9 +102,13 @@ def connect_rabbitmq_with_retry(max_retries=10, delay=2):
         try:
             connection = pika.BlockingConnection(params)
             print("Successfully connected to RabbitMQ.")
+            # Update connection status in Prometheus
+            CONNECTION_STATUS.set(1)
             return connection
         except pika.exceptions.AMQPConnectionError as e:
             print(f"Connection failed: {e}")
+            # Update connection status in Prometheus
+            CONNECTION_STATUS.set(0)
             if attempt == max_retries:
                 raise RuntimeError("Could not connect to RabbitMQ after multiple retries.")
             time.sleep(delay)
@@ -76,7 +127,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 print(f"Using device: {device}")
 
-current_mode = "none"
+current_mode = os.getenv("INITIAL_ANALYSIS_MODE", "none").lower()
 
 # Declare exchanges using the variables
 channel.exchange_declare(exchange=VIDEO_FRAMES_EXCHANGE, exchange_type="fanout", durable=True)
@@ -123,10 +174,14 @@ def frame_callback(ch, method, properties, body):
             return
         
         processed_frame = frame.copy()
+        yolo_results = None
+        detection_count = 0
+        
         if current_mode == "yolo":
-            results = model(frame, conf=0.5)
-            for result in results:
+            yolo_results = model(frame, conf=0.5)
+            for result in yolo_results:
                 boxes = result.boxes
+                detection_count += len(boxes)
                 for box in boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     class_id = int(box.cls[0])
@@ -136,6 +191,9 @@ def frame_callback(ch, method, properties, body):
                     label = f"{class_name} {conf:.2f}"
                     cv2.putText(processed_frame, label, (x1, y1 - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            # Update YOLO detection counter
+            YOLO_DETECTIONS.inc(detection_count)
         
         # Get image dimensions
         height, width = processed_frame.shape[:2]
@@ -144,8 +202,53 @@ def frame_callback(ch, method, properties, body):
         end_time_ns = get_ntp_time_ns()
         processing_time_ms = (end_time_ns - start_time_ns) / 1_000_000  # Convert ns to ms
         
+        # Update Prometheus metrics
+        PROCESSED_FRAMES.inc()
+        PROCESSING_TIME.observe(processing_time_ms)
+        
+        # Log to Rerun if enabled
+        if RERUN_ENABLED:
+            timestamp = int(timestamp_ns) if timestamp_ns is not None else start_time_ns
+            
+            # Convert from BGR (OpenCV) to RGB (Rerun)
+            rgb_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+            
+            # Log the frame to Rerun
+            rr.set_time_nanos("capture_time", timestamp)
+            rr.log("processed_frame", rr.Image(rgb_frame).compress(jpeg_quality=85))
+            
+            # If we're using YOLO, also log the detections
+            if current_mode == "yolo" and yolo_results is not None:
+                for result in yolo_results:
+                    boxes = result.boxes
+                    for i, box in enumerate(boxes):
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        class_id = int(box.cls[0])
+                        conf = float(box.conf[0])
+                        class_name = result.names[class_id]
+                        
+                        # Calculate for Rerun's format
+                        center_x = (x1 + x2) / 2
+                        center_y = (y1 + y2) / 2
+                        box_width = x2 - x1
+                        box_height = y2 - y1
+                        
+                        # Log bounding box to Rerun
+                        rr.log(
+                            f"detections/{class_name}/{i}",
+                            rr.Boxes2D(
+                                array=[[center_x, center_y, box_width, box_height]],
+                                array_format=rr.Box2DFormat.XYWH,
+                                labels=[f"{class_name} {conf:.2f}"],
+                                colors=[[0, 255, 0, 255]]  # RGBA
+                            )
+                        )
+        
         _, encoded = cv2.imencode(".jpg", processed_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         annotated_bytes = encoded.tobytes()
+        
+        # Update frame size metric
+        FRAME_SIZE.set(len(annotated_bytes))
         
         # Get original resolution if available
         original_width = properties.headers.get("original_width") if properties.headers else width

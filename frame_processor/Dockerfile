@@ -8,8 +8,8 @@ RUN apt-get update && apt-get install -y \
       libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install any dependencies needed (like ultralytics, etc.)
-RUN pip3 install ultralytics numpy opencv-python-headless pika ntplib
+# Install dependencies including rerun-sdk version 0.23.2
+RUN pip3 install ultralytics numpy opencv-python-headless pika ntplib rerun-sdk==0.23.2 prometheus_client
 
 WORKDIR /app
 COPY frame_processor.py /app/frame_processor.py

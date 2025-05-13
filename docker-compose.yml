@@ -1,10 +1,18 @@
 services:
   rabbitmq:
-    image: rabbitmq:3.12-management
+    image: rabbitmq:4-management          # 4.1 with the Management UI
+    container_name: rabbitmq
     ports:
-      - "5672:5672"
-      - "15672:15672"
-    # management UI at :15672
+      - "5672:5672"                       # AMQP
+      - "15672:15672"                     # Management UI
+      - "15692:15692"                     # Prometheus metrics
+    environment:
+      # expose Prometheus metrics on 15692
+      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbitmq_prometheus.listener.tcp 0.0.0.0 15692
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq   # persist queues/users
+    networks:
+      - default
 
   nginx:
     build: ./nginx
@@ -327,7 +335,7 @@ services:
       - default
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    image: gcr.io/cadvisor/cadvisor:latest
     container_name: cadvisor
     ports:
       - "8080:8080"
@@ -356,21 +364,20 @@ services:
       - default
 
   nvidia-dcgm-exporter:
-    image: nvidia/dcgm-exporter:4.0.0-4.0.1-ubuntu22.04
+    # use NVIDIA’s canonical registry & newest tag
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.2.3-4.1.1-ubuntu22.04
     container_name: nvidia-dcgm-exporter
     runtime: nvidia
+
+    # full set of GPU‑profiling metrics needs SYS_ADMIN
+    cap_add:
+      - SYS_ADMIN
+
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    volumes:
-      - /var/run/nvidia-persistenced:/var/run/nvidia-persistenced
+      - NVIDIA_VISIBLE_DEVICES=all        # all GPUs
     ports:
       - "9400:9400"
-    command: [
-      "--collectors",
-      "gpu",
-      "--address=:9400",
-      "--no-analytics"
-    ]
+      
     networks:
       - default
 
@@ -380,3 +387,4 @@ networks:
 
 volumes:
   grafana-data:
+  rabbitmq-data:

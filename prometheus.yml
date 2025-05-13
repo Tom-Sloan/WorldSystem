@@ -10,12 +10,8 @@ scrape_configs:
   # RabbitMQ
   - job_name: 'rabbitmq'
     metrics_path: '/metrics'
-    scheme: 'http'
     static_configs:
-      - targets: ['rabbitmq:15672']  # or 15692 if you use the separate exporter
-    basic_auth:
-      username: guest
-      password: guest
+      - targets: ['rabbitmq:15692']
 
   # Server
   - job_name: 'server'
@@ -41,3 +37,8 @@ scrape_configs:
   - job_name: 'data_storage'
     static_configs:
       - targets: ['data_storage:8002']
+
+  # Jaeger
+  - job_name: 'jaeger'
+    static_configs:
+      - targets: ['jaeger:14269'] 

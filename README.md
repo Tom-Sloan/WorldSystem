@@ -2,6 +2,8 @@
 
 This is a collection of all the components of the WorldSystem.
 
+docker compose up --detach $(docker compose config --services | grep -v slam3r)
+
 ![System Diagram](./images/CurrentSetup.png)
 
 ## Setup

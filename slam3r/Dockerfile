@@ -67,6 +67,7 @@ COPY ./SLAM3R_engine /app/SLAM3R_engine/
 
 # Install SLAM3R Python dependencies
 RUN pip3 install -r /app/SLAM3R_engine/requirements.txt
+
 # Ensure libGL is available for Rerun (even if running headlessly, some parts might link against it)
 RUN apt-get update && apt-get install -y libgl1-mesa-glx && apt-get clean && rm -rf /var/lib/apt/lists/*
 

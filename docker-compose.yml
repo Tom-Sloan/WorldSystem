@@ -265,7 +265,7 @@ services:
 
     # Mount source and checkpoints
     volumes:
-      - ${WORKSPACE}/slam3r:/app
+      - ${WORKSPACE}/slam3r/SLAM3R_engine/slam3r_processor.py:/app/SLAM3R_engine/slam3r_processor.py
       - ${WORKSPACE}/slam3r/checkpoints:/checkpoints_mount
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}

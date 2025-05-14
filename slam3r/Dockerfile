@@ -5,8 +5,8 @@
 # SLAM3R GitHub repository, checkpoint handling, and a subsequent
 # prompt to remove Conda-based environment management in favor of system Python.
 
-# Base image with CUDA 11.8.1
-FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
+# CUDA 12.1 (matching the cu121 wheels used below)
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 
 ENV PYTHONUNBUFFERED=1
 
@@ -51,12 +51,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python3 -m pip install --upgrade pip
 
-# Install PyTorch (cu118 as per SLAM3R README, ensure compatibility with CUDA 12.4 base or update if needed)
-# Note: If issues arise, consider a PyTorch build for CUDA 12.1 or using a CUDA 11.8 base image.
-RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+ # Install the exact Torch versions used in the SLAM3R README
+RUN pip3 install torch==2.5.0 torchvision==0.20.0 torchaudio==2.5.0 --index-url https://download.pytorch.org/whl/cu121
+RUN python3 -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('CUDA version:', torch.version.cuda); print('Device count:', torch.cuda.device_count())"
+# XFormers version aligned with README (pre‑built wheels include CUDA kernels)
+RUN pip3 install xformers==0.0.28.post2 --index-url https://download.pytorch.org/whl/cu121
 
-# Install xformers (memory-efficient attention)
-RUN pip3 install -U xformers --index-url https://download.pytorch.org/whl/cu118
+# Utility build tools needed by RoPE2D and other extensions
+RUN pip3 install ninja
 
 # Set working directory
 WORKDIR /app
@@ -77,7 +79,10 @@ RUN pip3 install aio-pika PyYAML
 # --- Rerun SDK (visualization) ---
 RUN pip3 install --no-cache-dir "numpy>=2.2,<3" rerun-sdk==0.23.2
 
-# Build RoPE2D CUDA extension
+
+WORKDIR /app
+
+# Build and install the CUDA‑accelerated curope wheel
 RUN cd /app/SLAM3R_engine/slam3r/pos_embed/curope && \
     python3 setup.py build_ext --inplace
 
@@ -105,9 +110,6 @@ RUN echo "*customization: -color" > $HOME/.Xdefaults
 ENV RERUN_VIEWER_ADDRESS="0.0.0.0:9876"
 ENV RERUN_CONNECT_URL="rerun+http://127.0.0.1:9876/proxy"
 ENV RERUN_ENABLED="true"
-
-# Expose Rerun viewer gRPC/Web port
-EXPOSE 9876
 
 # Set the default command to run the processor script
 CMD ["python3", "./SLAM3R_engine/slam3r_processor.py"] 

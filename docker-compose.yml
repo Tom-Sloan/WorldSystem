@@ -7,12 +7,14 @@ services:
       - "15672:15672"                     # Management UI
       - "15692:15692"                     # Prometheus metrics
     environment:
-      # expose Prometheus metrics on 15692
-      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbitmq_prometheus.listener.tcp 0.0.0.0 15692
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >-
+        -rabbitmq_prometheus.listener.tcp 0.0.0.0 15692
+        -rabbit frame_max 1048576
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq   # persist queues/users
     networks:
       - default
+    
 
   nginx:
     build: ./nginx
@@ -294,6 +296,7 @@ services:
       - SLAM3R_POSE_EXCHANGE=${SLAM3R_POSE_EXCHANGE:-slam3r_pose_exchange}
       - SLAM3R_POINTCLOUD_EXCHANGE=${SLAM3R_POINTCLOUD_EXCHANGE:-slam3r_pointcloud_exchange}
       - SLAM3R_RECONSTRUCTION_VIS_EXCHANGE=${SLAM3R_RECONSTRUCTION_VIS_EXCHANGE:-slam3r_reconstruction_vis_exchange}
+      - SLAM3R_OUTPUT_TO_RABBITMQ=false
 
       # Paths & checkpoints
       - SLAM3R_CHECKPOINTS_DIR=/checkpoints_mount

@@ -303,7 +303,7 @@ services:
       - SLAM3R_CHECKPOINTS_DIR=/checkpoints_mount
 
       # Rerun viewer (host‑local)
-      - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
+      - RERUN_VIEWER_ADDRESS=127.0.0.1:9090
       - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
       - RERUN_ENABLED=true
 

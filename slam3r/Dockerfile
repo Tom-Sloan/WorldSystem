@@ -106,10 +106,5 @@ RUN groupadd -g $GID $USERNAME && \
 USER $USERNAME
 RUN echo "*customization: -color" > $HOME/.Xdefaults
 
-# Rerun visualization configuration
-ENV RERUN_VIEWER_ADDRESS="0.0.0.0:9876"
-ENV RERUN_CONNECT_URL="rerun+http://127.0.0.1:9876/proxy"
-ENV RERUN_ENABLED="true"
-
 # Set the default command to run the processor script
 CMD ["python3", "./SLAM3R_engine/slam3r_processor.py"] 

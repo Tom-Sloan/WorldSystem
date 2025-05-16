@@ -15,7 +15,6 @@ services:
     networks:
       - default
     
-
   nginx:
     build: ./nginx
     ports:
@@ -23,28 +22,6 @@ services:
       - "443:443"
     depends_on:
       - server
-
-  website:
-    image: website:latest
-    build:
-      context: ./website
-      args:
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
-    container_name: website
-    volumes:
-      - ${WORKSPACE}/website:/app
-      - /app/node_modules
-    environment:
-      VITE_API_URL: "http://134.117.167.139/api"
-      VITE_WS_HOST: "134.117.167.139"
-      NODE_ENV: "development"
-    depends_on:
-      - rabbitmq
-      - server
-
-
   server:
     image: server:latest
     build:
@@ -110,84 +87,6 @@ services:
     depends_on:
       - rabbitmq
 
-  # reconstruction:
-  #   image: reconstruction:latest
-  #   build:
-  #     context: ./reconstruction
-  #     args:
-  #       USERNAME: ${USERNAME}
-  #       UID: ${UID}
-  #       GID: ${GID}
-  #   volumes:
-  #     - ${WORKSPACE}/reconstruction:/app
-  #     - ${WORKSPACE}/Drone_Camera_Imu_Config/drone_config.yaml:/app/drone_config.yaml
-  #     - ${X11SOCKET}:${X11SOCKET}
-  #     - ${XAUTHORITY}:${XAUTHORITY}
-  #   runtime: nvidia
-  #   ports:
-  #     - "8001:8001"
-  #     - "5678:5678"  # Add this port for debugpy
-  #   environment:
-  #     CUDA_PATH: ${CUDA_PATH}
-  #     LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
-  #     DISPLAY: ${DISPLAY}
-  #     HOME: ${HOME}
-  #     PYTHONUNBUFFERED: 1  # Ensures Python output is sent straight to the terminal
-  #     RABBITMQ_URL: amqp://rabbitmq
-      # VIDEO_FRAMES_EXCHANGE: video_frames_exchange
-      # TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
-      # PLY_FANOUT_EXCHANGE: ply_fanout_exchange
-      # RESTART_EXCHANGE: restart_exchange
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: all
-  #             capabilities: [gpu]
-  #   depends_on:
-  #     - rabbitmq
-
-  # slam:
-  #   image: slam:latest
-  #   privileged: true
-  #   build:
-  #     context: ./slam
-  #     args:
-  #       USERNAME: ${USERNAME}
-  #       UID: ${UID}
-  #       GID: ${GID}
-  #   container_name: slam
-  #   runtime: nvidia
-  #   volumes:
-  #     - ${WORKSPACE}/slam:/app
-  #     - ${WORKSPACE}/Drone_Camera_Imu_Config/drone_config.yaml:/app/drone_config.yaml
-  #     - ${X11SOCKET}:${X11SOCKET}
-  #     - ${XAUTHORITY}:${XAUTHORITY}
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: all
-  #             capabilities: [gpu]
-  #   environment:
-  #     CUDA_PATH: ${CUDA_PATH}
-  #     LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
-  #     DISPLAY: ${DISPLAY}
-  #     HOME: ${HOME}
-  #     RABBITMQ_URL: amqp://rabbitmq
-  #     SLAM_MODE: mono_inertial
-  #     VIDEO_FRAMES_EXCHANGE: video_frames_exchange
-  #     IMU_DATA_EXCHANGE: imu_data_exchange
-  #     PROCESSED_IMU_EXCHANGE: processed_imu_exchange
-  #     TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
-  #     RESTART_EXCHANGE: restart_exchange
-  #   depends_on:
-  #     - rabbitmq
-  #   ports:
-  #     - "8000:8000"
-
   data_storage:
     image: data_storage:latest
     build: ./storage
@@ -209,50 +108,66 @@ services:
     ports:
       - "8002:8002"
 
-  # mast3r_slam:
-  #   image: mast3r_slam:latest
-  #   build:
-  #     context: ./master_slam # Dockerfile is in master_slam/
-  #     args:
-  #       USERNAME: ${USERNAME}
-  #       UID: ${UID}
-  #       GID: ${GID}
-  #   container_name: mast3r_slam
-  #   runtime: nvidia
-  #   privileged: true # Often needed for full GPU/device access, similar to ORB_SLAM3 setup
-  #   volumes:
-  #     - ${WORKSPACE}/master_slam:/app # Mounts the host's master_slam dir to /app in container
-  #     # Config files (base.yaml, intrinsics.yaml) are expected inside /app/config/ by default script args
-  #     - ${WORKSPACE}/data/mast3r_slam_maps:/maps/mast3r_slam # For saving meshes
-  #     - ${X11SOCKET}:${X11SOCKET}
-  #     - ${XAUTHORITY}:${XAUTHORITY}
-  #   environment:
-  #     - RABBITMQ_URL=amqp://rabbitmq
-  #     - VIDEO_FRAMES_EXCHANGE=${VIDEO_FRAMES_EXCHANGE:-video_frames_exchange}
-  #     - MAST3R_SLAM_POSE_EXCHANGE=${MAST3R_SLAM_POSE_EXCHANGE:-mast3r_slam_pose_exchange}
-  #     - MAST3R_SLAM_KEYFRAME_EXCHANGE=${MAST3R_SLAM_KEYFRAME_EXCHANGE:-mast3r_slam_keyframe_exchange}
-  #     - MAST3R_SLAM_POINTCLOUD_EXCHANGE=${MAST3R_SLAM_POINTCLOUD_EXCHANGE:-mast3r_slam_pointcloud_exchange}
-  #     - MAST3R_SLAM_DENSE_MAP_EXCHANGE=${MAST3R_SLAM_DENSE_MAP_EXCHANGE:-mast3r_slam_dense_map_exchange}
-  #     - RESTART_EXCHANGE=${RESTART_EXCHANGE:-restart_exchange}
-  #     - NVIDIA_VISIBLE_DEVICES=all
-  #     - CUDA_PATH=${CUDA_PATH}
-  #     - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
-  #     - DISPLAY=${DISPLAY}
-  #     - HOME=${HOME} # For X11 auth usually
-  #     - PYTHONUNBUFFERED=1
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: all # Or specify a specific GPU count/ID
-  #             capabilities: [gpu]
-  #   depends_on:
-  #     - rabbitmq
-  #   # No ports exposed by default unless MASt3R-SLAM itself runs a server
+  mast3r:
+    image: mast3r:latest
+    profiles: ["mast3r"]          # ⇠ choose at runtime with --profile mast3r
+    privileged: true
+    build:
+      context: ./mast3r           # Dockerfile & processor live here
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
+    container_name: mast3r
+    runtime: nvidia
+    network_mode: host            # same trick as slam3r
 
+    # ───────── volume mounts ─────────
+    volumes:
+      # live-edit the processor & config without rebuilding
+      - ${WORKSPACE}/mast3r/mast3r_processor.py:/app/mast3r_processor.py
+      - ${WORKSPACE}/mast3r/config:/app/config                 # optional extra cfgs
+      - ${WORKSPACE}/mast3r/checkpoints:/checkpoints_mount     # model checkpoints
+      - ${X11SOCKET}:${X11SOCKET}
+      - ${XAUTHORITY}:${XAUTHORITY}
+
+    # ───────── environment ─────────
+    environment:
+      # RabbitMQ (ONLY INPUT queues!)
+      - RABBITMQ_URL=amqp://127.0.0.1:5672
+      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
+      - RESTART_EXCHANGE=restart_exchange
+
+      # Rerun live viewer
+      - RERUN_VIEWER_ADDRESS=127.0.0.1:9090
+      - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
+      - RERUN_ENABLED=true
+
+      # GPU / display
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_PATH=${CUDA_PATH}
+      - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
+      - DISPLAY=${DISPLAY}
+
+      # Misc
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app:$PYTHONPATH
+      - HOME=${HOME}
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    depends_on:
+      - rabbitmq
+  
   slam3r:
     image: slam3r:latest
+    profiles: ["slam3r"]
     privileged: true
     build:
       context: ./slam3r
@@ -321,20 +236,80 @@ services:
     depends_on:
       - rabbitmq
 
-  # simulator:
-  #   build: ./simulation  # or point to a Dockerfile that includes your simulation script
-  #   image: simulator:latest
-  #   volumes:
-  #     - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
-  #   environment:
-  #     - RABBITMQ_URL=amqp://rabbitmq
-  #     - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
-  #     - IMU_DATA_EXCHANGE=imu_data_exchange
-  #     - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
-  #     - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
-  #   depends_on:
-  #     - rabbitmq
+  reconstruction:
+    image: reconstruction:latest
+    profiles: ["reconstruction"]
+    build:
+      context: ./reconstruction
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
+    volumes:
+      - ${WORKSPACE}/reconstruction:/app
+      - ${WORKSPACE}/Drone_Camera_Imu_Config/drone_config.yaml:/app/drone_config.yaml
+      - ${X11SOCKET}:${X11SOCKET}
+      - ${XAUTHORITY}:${XAUTHORITY}
+    runtime: nvidia
+    ports:
+      - "8001:8001"
+      - "5678:5678"  # Add this port for debugpy
+    environment:
+      CUDA_PATH: ${CUDA_PATH}
+      LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
+      DISPLAY: ${DISPLAY}
+      HOME: ${HOME}
+      PYTHONUNBUFFERED: 1  # Ensures Python output is sent straight to the terminal
+      RABBITMQ_URL: amqp://rabbitmq
+      VIDEO_FRAMES_EXCHANGE: video_frames_exchange
+      TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
+      PLY_FANOUT_EXCHANGE: ply_fanout_exchange
+      RESTART_EXCHANGE: restart_exchange
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      - rabbitmq
 
+  simulator:
+    build: ./simulation  # or point to a Dockerfile that includes your simulation script
+    profiles: ["simulator"]
+    image: simulator:latest
+    volumes:
+      - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq
+      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
+      - IMU_DATA_EXCHANGE=imu_data_exchange
+      - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
+      - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
+    depends_on:
+      - rabbitmq
+
+  website:
+    image: website:latest
+    profiles: ["website"]
+    build:
+      context: ./website
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
+    container_name: website
+    volumes:
+      - ${WORKSPACE}/website:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: "http://134.117.167.139/api"
+      VITE_WS_HOST: "134.117.167.139"
+      NODE_ENV: "development"
+    depends_on:
+      - rabbitmq
+      - server
 
   prometheus:
     image: prom/prometheus:latest

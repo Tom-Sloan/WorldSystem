@@ -16,9 +16,6 @@
 [submodule "fantasy"]
 	path = fantasy
 	url = https://github.com/Tom-Sloan/fantasy_world_builder.git
-[submodule "master_slam"]
-	path = master_slam
-	url = https://github.com/Tom-Sloan/MASt3R-SLAM.git
 [submodule "slam3r/SLAM3R_engine"]
 	path = slam3r/SLAM3R_engine
 	url = https://github.com/Tom-Sloan/SLAM3R.git

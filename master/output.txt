@@ -1,0 +1,81 @@
+.
+├── config
+│   ├── base.yaml
+│   ├── calib.yaml
+│   ├── eth3d.yaml
+│   ├── eval_calib.yaml
+│   ├── eval_no_calib.yaml
+│   └── intrinsics.yaml
+├── Dependencies.md
+├── Dockerfile
+├── groundtruths
+│   ├── 7-scenes
+│   │   ├── chess.txt
+│   │   ├── fire.txt
+│   │   ├── heads.txt
+│   │   ├── office.txt
+│   │   ├── pumpkin.txt
+│   │   ├── redkitchen.txt
+│   │   └── stairs.txt
+│   └── euroc
+│       ├── MH_01_easy.txt
+│       ├── MH_02_easy.txt
+│       ├── MH_03_medium.txt
+│       ├── MH_04_difficult.txt
+│       ├── MH_05_difficult.txt
+│       ├── V1_01_easy.txt
+│       ├── V1_02_medium.txt
+│       ├── V1_03_difficult.txt
+│       ├── V2_01_easy.txt
+│       ├── V2_02_medium.txt
+│       └── V2_03_difficult.txt
+├── LICENSE.md
+├── main.py
+├── mast3r_processor.py
+├── mast3r_slam
+│   ├── backend
+│   │   ├── include
+│   │   │   └── gn.h
+│   │   └── src
+│   │       ├── gn.cpp
+│   │       ├── gn_kernels.cu
+│   │       └── matching_kernels.cu
+│   ├── config.py
+│   ├── dataloader.py
+│   ├── evaluate.py
+│   ├── frame.py
+│   ├── geometry.py
+│   ├── global_opt.py
+│   ├── image.py
+│   ├── __init__.py
+│   ├── lietorch_utils.py
+│   ├── mast3r_utils.py
+│   ├── matching.py
+│   ├── multiprocess_utils.py
+│   ├── nonlinear_optimizer.py
+│   ├── retrieval_database.py
+│   ├── tictoc.py
+│   ├── tracker.py
+│   ├── visualization.py
+│   └── visualization_utils.py
+├── media
+│   └── teaser.gif
+├── output.txt
+├── pyproject.toml
+├── README.md
+├── resources
+│   └── programs
+│       ├── surfelmap.glsl
+│       └── trianglemap.glsl
+├── scripts
+│   ├── download_7_scenes.sh
+│   ├── download_eth3d.sh
+│   ├── download_euroc.sh
+│   ├── download_tum.sh
+│   ├── eval_7_scenes.sh
+│   ├── eval_eth3d.sh
+│   ├── eval_euroc.sh
+│   └── eval_tum.sh
+├── setup.py
+└── thirdparty
+    

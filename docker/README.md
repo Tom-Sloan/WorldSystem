@@ -71,3 +71,6 @@ How to use
 	1.	Run the command from your laptop/desktop, not on the server.
 	2.	Keep that terminal open; as long as the SSH session is up, all the URLs above work at http://localhost:PORT.
 	3.	Point your browser to, for example, http://localhost:3000 and you should get Grafana instantly without the sluggish hair‑pin round‑trip through the campus router.
+
+
+RERUN_BIND=0.0.0.0:9876 rerun viewer

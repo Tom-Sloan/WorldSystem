@@ -127,7 +127,6 @@ services:
       # live-edit the processor & config without rebuilding
       - ${WORKSPACE}/mast3r/mast3r_processor.py:/app/mast3r_processor.py
       - ${WORKSPACE}/mast3r/config:/app/config                 # optional extra cfgs
-      - ${WORKSPACE}/mast3r/checkpoints:/checkpoints_mount     # model checkpoints
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
 

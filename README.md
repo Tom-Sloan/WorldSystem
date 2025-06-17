@@ -2,6 +2,17 @@
 
 This is a collection of all the components of the WorldSystem.
 
+# 1. Clone the repository
+git clone https://github.com/Tom-Sloan/WorldSystem.git
+
+# 2. Initialize and update submodules
+cd WorldSystem
+git submodule update --init --recursive
+
+# 3. Build all services
+docker compose build
+
+# 4. Start the services (excluding slam3r by default)
 docker compose up --detach $(docker compose config --services | grep -v slam3r)
 
 ![System Diagram](./images/CurrentSetup.png)

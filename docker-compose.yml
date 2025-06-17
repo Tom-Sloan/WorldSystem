@@ -112,6 +112,7 @@ services:
     image: mast3r:latest
     profiles: ["mast3r"]          # ⇠ choose at runtime with --profile mast3r
     privileged: true
+    shm_size: "4g"  # 4 GB /dev/shm so PyTorch shared tensors avoid SIGBUS crashes
     build:
       context: ./mast3r           # Dockerfile & processor live here
       args:

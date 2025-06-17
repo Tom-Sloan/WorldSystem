@@ -1,3 +1,12 @@
+"""
+add_timestamps.py
+
+This script processes image files in mav0/cam0/data directories to extract timestamps from JPG filenames.
+It calculates timing statistics (average, max, min, std dev, FPS) between consecutive frames and writes:
+1. A timestamps.txt file containing all timestamps in nanoseconds
+2. A timestamp_stats.txt file with timing statistics in milliseconds
+"""
+
 import os
 from pathlib import Path
 import numpy as np

@@ -1,3 +1,10 @@
+"""
+This script provides utilities for analyzing and converting IMU data files in CSV format.
+It can analyze timestamp statistics (FPS, timing differences) and convert timestamps to nanosecond precision.
+The script handles various timestamp formats (seconds, milliseconds, microseconds) and provides
+detailed analysis of timing patterns in the data.
+"""
+
 import os
 import numpy as np
 from pathlib import Path

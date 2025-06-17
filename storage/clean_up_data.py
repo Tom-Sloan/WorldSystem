@@ -82,12 +82,13 @@ def has_valid_trajectory(trajectory_file: Path) -> bool:
     print(f"    [Trajectory Check] Found valid trajectory file: {trajectory_file}")
     return True
 
-def run_cleanup(data_folder_str: str = "data", execute_deletion: bool = False, require_imu_check: bool = False, require_trajectory_check: bool = False):
+def run_cleanup(data_folder_str: str = "data", execute_deletion: bool = False, require_imu_check: bool = False, require_trajectory_check: bool = False, delete_all: bool = False):
     """
     Iterate over each sub-directory in the specified data folder.
     If the directory does not meet criteria, it will be marked for deletion.
     Actual deletion only occurs if execute_deletion is True.
     Image check is always performed. IMU and Trajectory checks are optional.
+    If delete_all is True, all folders will be deleted regardless of validation status.
     """
     data_folder = Path(data_folder_str)
     if not data_folder.exists() or not data_folder.is_dir():
@@ -95,13 +96,21 @@ def run_cleanup(data_folder_str: str = "data", execute_deletion: bool = False, r
         return
 
     print(f"\nStarting cleanup process for: {data_folder.resolve()}")
-    if not execute_deletion:
-        print("[!] RUNNING IN DRY RUN MODE. No files will be deleted.")
+    if delete_all:
+        print("[!] DELETE ALL MODE ENABLED. All folders will be deleted regardless of validation status.")
+        if not execute_deletion:
+            print("[!] RUNNING IN DRY RUN MODE. No files will be deleted.")
+        else:
+            print("[!] EXECUTE DELETION MODE ENABLED. All folders will be deleted.")
     else:
-        print("[!] EXECUTE DELETION MODE ENABLED. Folders failing checks will be deleted.")
+        if not execute_deletion:
+            print("[!] RUNNING IN DRY RUN MODE. No files will be deleted.")
+        else:
+            print("[!] EXECUTE DELETION MODE ENABLED. Folders failing checks will be deleted.")
     
-    print(f"[i] IMU Check: {'ENFORCED' if require_imu_check else 'SKIPPED (default)'}")
-    print(f"[i] Trajectory Check: {'ENFORCED' if require_trajectory_check else 'SKIPPED (default)'}")
+    if not delete_all:
+        print(f"[i] IMU Check: {'ENFORCED' if require_imu_check else 'SKIPPED (default)'}")
+        print(f"[i] Trajectory Check: {'ENFORCED' if require_trajectory_check else 'SKIPPED (default)'}")
 
     folders_before = [f.name for f in data_folder.iterdir() if f.is_dir()]
     print(f"Folders scanned: {folders_before}")
@@ -115,6 +124,22 @@ def run_cleanup(data_folder_str: str = "data", execute_deletion: bool = False, r
             continue
 
         print(f"Processing subfolder: {subfolder.name}")
+        
+        if delete_all:
+            print(f"  [-] DELETE ALL MODE: Marking {subfolder.name} for deletion.")
+            if execute_deletion:
+                print(f"    EXECUTING DELETION of {subfolder.name} (delete all mode)")
+                try:
+                    shutil.rmtree(subfolder, ignore_errors=False)
+                    print(f"      ✓ Successfully deleted {subfolder.name}")
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"      ✗ Failed to delete {subfolder.name}: {str(e)}")
+            else:
+                print(f"    WOULD DELETE {subfolder.name} (delete all mode)")
+                deleted_count += 1
+            continue
+        
         mav0_path = subfolder / "mav0"
         if not mav0_path.is_dir():
             print(f"  [-] {subfolder.name} has no 'mav0' folder.")
@@ -210,6 +235,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Enforce the check for a valid trajectory.txt file. Skipped by default."
     )
+    parser.add_argument(
+        "--delete_all",
+        action="store_true",
+        help="Delete ALL folders regardless of validation status. This is a nuclear option that bypasses all checks."
+    )
     args = parser.parse_args()
 
-    run_cleanup(data_folder_str=args.data_path, execute_deletion=args.execute_deletion, require_imu_check=args.require_imu_check, require_trajectory_check=args.require_trajectory_check)
+    run_cleanup(data_folder_str=args.data_path, execute_deletion=args.execute_deletion, require_imu_check=args.require_imu_check, require_trajectory_check=args.require_trajectory_check, delete_all=args.delete_all)

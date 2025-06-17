@@ -21,6 +21,7 @@ build/
 *.ply
 *.npz
 **/data/
+**/data copy/
 *.log
 *.pt
 *.pth
@@ -37,3 +38,4 @@ __pycache__/
 20250212_231520/mav0/trajectory.txt
 Drone_Calibration/mav0/imu0.csv
 Drone_Calibration/mav0/trajectory.txt
+**/__MACOSX/

@@ -105,8 +105,6 @@ services:
       PROCESSED_IMU_EXCHANGE: processed_imu_exchange
     depends_on:
       - rabbitmq
-    ports:
-      - "8002:8002"
 
   mast3r:
     image: mast3r:latest
@@ -197,7 +195,7 @@ services:
               count: all
               capabilities: [gpu]
 
-    # ‼️ host‑network means container DNS can’t resolve other service names; connect via 127.0.0.1 instead
+    # ‼️ host‑network means container DNS can't resolve other service names; connect via 127.0.0.1 instead
     environment:
       # RabbitMQ now reached on the host‑published port
       - RABBITMQ_URL=amqp://127.0.0.1:5672
@@ -279,10 +277,13 @@ services:
     build: ./simulation  # or point to a Dockerfile that includes your simulation script
     profiles: ["simulator"]
     image: simulator:latest
+    network_mode: host
+    restart: "no"  # Don't restart when simulation completes
     volumes:
       - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
     environment:
-      - RABBITMQ_URL=amqp://rabbitmq
+      - PYTHONUNBUFFERED=1  # Ensures Python output is sent straight to the terminal
+      - RABBITMQ_URL=amqp://127.0.0.1:5672
       - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
       - IMU_DATA_EXCHANGE=imu_data_exchange
       - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
@@ -372,7 +373,7 @@ services:
       - default
 
   nvidia-dcgm-exporter:
-    # use NVIDIA’s canonical registry & newest tag
+    # use NVIDIA's canonical registry & newest tag
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.2.3-4.1.1-ubuntu22.04
     container_name: nvidia-dcgm-exporter
     runtime: nvidia

@@ -13,7 +13,7 @@ scrape_configs:
     static_configs:
       - targets: ['rabbitmq:15692']
 
-  # Server
+  # Server (uses default bridge network)
   - job_name: 'server'
     static_configs:
       - targets: ['server:5001']  # If you expose metrics on port 5001, path /metrics
@@ -23,17 +23,12 @@ scrape_configs:
     static_configs:
       - targets: ['nvidia-dcgm-exporter:9400']
 
-  # SLAM
-  - job_name: 'slam'
-    static_configs:
-      - targets: ['slam:8000']
-
-  # Reconstruction
+  # Reconstruction (uses default bridge network)
   - job_name: 'reconstruction'
     static_configs:
       - targets: ['reconstruction:8001']
 
-  # Storage
+  # Data Storage (uses host network mode)
   - job_name: 'data_storage'
     static_configs:
       - targets: ['host.docker.internal:8002']
@@ -43,7 +38,17 @@ scrape_configs:
     static_configs:
       - targets: ['jaeger:14269'] 
 
-  # Frame Processor
+  # Frame Processor (uses host network mode)
   - job_name: 'frame_processor'
     static_configs:
       - targets: ['host.docker.internal:8003']
+
+  # SLAM3R (uses host network mode, when running)
+  - job_name: 'slam3r'
+    static_configs:
+      - targets: ['host.docker.internal:8000']
+
+  # MAST3R (uses host network mode, when running)  
+  - job_name: 'mast3r'
+    static_configs:
+      - targets: ['host.docker.internal:8001']

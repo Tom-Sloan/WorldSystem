@@ -187,6 +187,10 @@ services:
     # ---------- key change: share the host network namespace ----------
     network_mode: host
 
+    # ========== MEMORY AND RESOURCE MANAGEMENT ==========
+    # Shared memory for PyTorch (important for multi-process data loading)
+    shm_size: '4gb'  # Reduced from 8gb since GPU is shared
+    
     deploy:
       resources:
         reservations:
@@ -194,9 +198,20 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    # Health check to detect and recover from OOM
+    healthcheck:
+      test: ["CMD", "python", "-c", "import torch; assert torch.cuda.is_available(); assert torch.cuda.memory_allocated() < 20e9"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # Auto-restart on crashes (including OOM)
+    restart: unless-stopped
 
     # ‼️ host‑network means container DNS can't resolve other service names; connect via 127.0.0.1 instead
     environment:
+      # ========== EXISTING CONFIGURATION ==========
       # RabbitMQ now reached on the host‑published port
       - RABBITMQ_URL=amqp://127.0.0.1:5672
 
@@ -210,15 +225,17 @@ services:
       - SLAM3R_POSE_EXCHANGE=${SLAM3R_POSE_EXCHANGE:-slam3r_pose_exchange}
       - SLAM3R_POINTCLOUD_EXCHANGE=${SLAM3R_POINTCLOUD_EXCHANGE:-slam3r_pointcloud_exchange}
       - SLAM3R_RECONSTRUCTION_VIS_EXCHANGE=${SLAM3R_RECONSTRUCTION_VIS_EXCHANGE:-slam3r_reconstruction_vis_exchange}
-      - SLAM3R_OUTPUT_TO_RABBITMQ=false
+      - SLAM3R_OUTPUT_TO_RABBITMQ=${SLAM3R_OUTPUT_TO_RABBITMQ:-false}
 
       # Paths & checkpoints
       - SLAM3R_CHECKPOINTS_DIR=/checkpoints_mount
+      - SLAM3R_CONFIG_FILE=/app/SLAM3R_engine/configs/wild.yaml
+      - CAMERA_INTRINSICS_FILE=/app/SLAM3R_engine/configs/camera_intrinsics.yaml
 
       # Rerun viewer (host‑local)
       - RERUN_VIEWER_ADDRESS=127.0.0.1:9090
       - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
-      - RERUN_ENABLED=true
+      - RERUN_ENABLED=${RERUN_ENABLED:-true}
 
       # GPU / display
       - NVIDIA_VISIBLE_DEVICES=all
@@ -226,13 +243,94 @@ services:
       - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
       - DISPLAY=${DISPLAY}
 
-      # Misc
-      - HOME=${HOME}
+      # ========== MEMORY MANAGEMENT (CRITICAL FOR 3090) ==========
+      # PyTorch memory allocation strategy - VERY IMPORTANT
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:256,garbage_collection_threshold:0.7
+      
+      # Enable CUDA memory debugging in case of issues
+      - CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}
+      
+      # Frame history and tensor cache limits (conservative for shared GPU)
+      - SLAM3R_MAX_HISTORY_SIZE=300  # Reduced from 500
+      - SLAM3R_MAX_TENSOR_CACHE=50   # Reduced from 100
+      - SLAM3R_MAX_POINTCLOUD_SIZE=750000  # Reduced from 1M
+      
+      # Force garbage collection interval
+      - SLAM3R_GC_INTERVAL=30  # seconds
+
+      # ========== VISUALIZATION OPTIMIZATION ==========
+      # Batch processing for Rerun to reduce overhead
+      - SLAM3R_RERUN_BATCH_SIZE=15  # Increased for better batching
+      - SLAM3R_RERUN_VOXEL_SIZE=0.008  # Slightly larger for performance
+      - SLAM3R_RERUN_KEYFRAME_VOXEL_SIZE=0.005  # Better quality for keyframes
+      
+      # Limit visualization updates
+      - SLAM3R_VIZ_UPDATE_INTERVAL=5  # Only update viz every N frames
+
+      # ========== ADAPTIVE TRACKING FOR CORRIDORS ==========
+      # Scene detection and adaptive keyframing
+      - SLAM3R_SCENE_DETECTION_ENABLED=true
+      - SLAM3R_CORRIDOR_DETECTION_WINDOW=20
+      - SLAM3R_CORRIDOR_EIGENVALUE_RATIO=5.0
+      
+      # Keyframe adaptation parameters
+      - KEYFRAME_STRIDE=-1  # Auto-adaptive
+      - SLAM3R_KEYFRAME_ADAPT_MIN=1
+      - SLAM3R_KEYFRAME_ADAPT_MAX=15  # Reduced max for better tracking
+      - SLAM3R_KEYFRAME_ADAPT_STRIDE_STEP=1
+      
+      # Buffer strategies
+      - SLAM3R_BUFFER_STRATEGY=${SLAM3R_BUFFER_STRATEGY:-reservoir}  # Default
+      - SLAM3R_BUFFER_SIZE=80  # Reduced for memory
+      - SLAM3R_UPDATE_BUFFER_INTV=1
+      
+      # Corridor-specific thresholds
+      - SLAM3R_CORRIDOR_POSITION_THRESHOLD=0.4  # meters
+      - SLAM3R_CORRIDOR_ROTATION_THRESHOLD=12   # degrees
+      - SLAM3R_ROOM_POSITION_THRESHOLD=0.8      # meters
+      - SLAM3R_ROOM_ROTATION_THRESHOLD=25       # degrees
+
+      # ========== SLAM3R ALGORITHM PARAMETERS ==========
+      # Confidence thresholds (tuned for quality vs memory)
+      - SLAM3R_CONF_THRES_I2P=1.8  # Slightly higher to reduce points
+      - SLAM3R_CONF_THRES_L2W=14.0  # Higher threshold for cleaner results
+      
+      # Window and scene parameters
+      - SLAM3R_INITIAL_WINSIZE=5
+      - SLAM3R_WIN_R=4  # Slightly reduced
+      - SLAM3R_NUM_SCENE_FRAME=8  # Reduced from 10
+      - SLAM3R_MAX_NUM_REGISTER=8  # Reduced from 10
+
+      # ========== PERFORMANCE TUNING ==========
+      # Thread limits to prevent CPU oversubscription
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+      - NUMEXPR_NUM_THREADS=4
+      
+      # Python settings
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app:$PYTHONPATH
+      
+      # Logging level
+      - SLAM3R_LOG_LEVEL=${SLAM3R_LOG_LEVEL:-INFO}
+
+      # ========== INITIALIZATION QUALITY ==========
+      - INITIALIZATION_QUALITY_MIN_AVG_CONFIDENCE=1.2
+      - INITIALIZATION_QUALITY_MIN_TOTAL_VALID_POINTS=150
+
+      # ========== MISC ==========
+      - HOME=${HOME}
+      - TZ=${TZ:-UTC}
 
     depends_on:
       - rabbitmq
+    
+    # Resource usage logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   reconstruction:
     image: reconstruction:latest

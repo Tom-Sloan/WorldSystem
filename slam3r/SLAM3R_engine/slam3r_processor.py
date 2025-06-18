@@ -12,6 +12,18 @@ from pathlib import Path
 import aio_pika, cv2, numpy as np, torch, yaml
 import rerun as rr
 
+# Add these imports for memory management and optimization
+import gc
+import psutil
+from collections import deque
+from typing import Optional, Tuple, List
+
+# Configure PyTorch CUDA allocation for better memory management
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = os.getenv(
+    "PYTORCH_CUDA_ALLOC_CONF", 
+    "expandable_segments:True,max_split_size_mb:256,garbage_collection_threshold:0.7"
+)
+
 # ───────────────────────────────────────────────────────────────────────────────
 # Imports from SLAM3R engine
 # ───────────────────────────────────────────────────────────────────────────────
@@ -30,6 +42,169 @@ try:
 except ImportError as e:
     logging.error("SLAM3R_engine not importable: %s", e)
     raise e
+
+# ============================================================
+# Memory Management Classes
+# ============================================================
+
+class MemoryAwareFrameHistory:
+    """Memory-efficient frame history management."""
+    def __init__(self, max_history_size=500, max_tensor_cache=100):
+        self.history = []
+        self.max_size = max_history_size
+        self.max_tensor_cache = max_tensor_cache
+        self.tensor_cache_indices = set()
+        
+    def append(self, record):
+        self.history.append(record)
+        if len(self.history) > self.max_size:
+            remove_count = len(self.history) - self.max_size
+            removed = 0
+            for i in range(len(self.history) - 1):
+                if removed >= remove_count:
+                    break
+                if "keyframe_id" not in self.history[i]:
+                    self._clear_tensors(i)
+                    removed += 1
+        self._manage_tensor_cache()
+    
+    def _clear_tensors(self, idx):
+        if idx >= len(self.history):
+            return
+        record = self.history[idx]
+        for key in ["img_tokens", "img_pos", "pts3d_cam", "conf_cam", 
+                    "pts3d_world", "conf_world", "img"]:
+            if key in record and torch.is_tensor(record[key]):
+                if key in ["pts3d_world", "conf_world"]:
+                    record[key] = record[key].cpu()
+                else:
+                    del record[key]
+        self.tensor_cache_indices.discard(idx)
+    
+    def _manage_tensor_cache(self):
+        current_idx = len(self.history) - 1
+        new_cache = set()
+        for i in range(max(0, current_idx - self.max_tensor_cache), current_idx + 1):
+            new_cache.add(i)
+        for i, record in enumerate(self.history):
+            if "keyframe_id" in record:
+                new_cache.add(i)
+        for idx in self.tensor_cache_indices - new_cache:
+            self._clear_tensors(idx)
+        self.tensor_cache_indices = new_cache
+    
+    def __getitem__(self, idx):
+        return self.history[idx]
+    
+    def __len__(self):
+        return len(self.history)
+    
+    def clear(self):
+        for i in range(len(self.history)):
+            self._clear_tensors(i)
+        self.history.clear()
+        self.tensor_cache_indices.clear()
+
+class SpatialPointCloudBuffer:
+    """Spatially-aware point cloud buffer with automatic downsampling."""
+    def __init__(self, max_points=1_000_000, downsample_voxel=0.005):
+        self.max_points = max_points
+        self.voxel_size = downsample_voxel
+        self.points = []
+        self.colors = []
+        
+    def extend(self, point_color_pairs):
+        new_points = [p for p, _ in point_color_pairs]
+        new_colors = [c for _, c in point_color_pairs]
+        self.points.extend(new_points)
+        self.colors.extend(new_colors)
+        if len(self.points) > self.max_points:
+            self._downsample()
+    
+    def _downsample(self):
+        pts_array = np.array(self.points)
+        cols_array = np.array(self.colors)
+        downsampled_pts, downsampled_cols = downsample_pointcloud_voxel(
+            pts_array, cols_array, self.voxel_size
+        )
+        self.points = downsampled_pts.tolist()
+        self.colors = downsampled_cols.tolist()
+        logger.info(f"Downsampled point cloud from {len(pts_array)} to {len(self.points)} points")
+    
+    def clear(self):
+        self.points.clear()
+        self.colors.clear()
+    
+    def __len__(self):
+        return len(self.points)
+
+class RerunBatchLogger:
+    """Batch logger for Rerun to improve visualization performance."""
+    def __init__(self, batch_size=10, downsample_voxel_size=0.005):
+        self.batch_size = batch_size
+        self.voxel_size = downsample_voxel_size
+        self.point_buffer = []
+        self.color_buffer = []
+        self.frame_count = 0
+        
+    def add_points(self, points, colors):
+        self.point_buffer.extend(points)
+        self.color_buffer.extend(colors)
+        self.frame_count += 1
+        if self.frame_count >= self.batch_size:
+            self.flush()
+    
+    def flush(self):
+        if not self.point_buffer:
+            return
+        points = np.array(self.point_buffer)
+        colors = np.array(self.color_buffer)
+        downsampled_pts, downsampled_cols = downsample_pointcloud_voxel(
+            points, colors, self.voxel_size
+        )
+        if len(downsampled_pts) > 0:
+            rr.log("world/points_batched", 
+                   rr.Points3D(
+                       positions=cv_to_rerun_xyz(downsampled_pts),
+                       colors=downsampled_cols.astype(np.uint8),
+                       radii=np.full(len(downsampled_pts), 0.005, np.float32)
+                   ))
+        self.point_buffer.clear()
+        self.color_buffer.clear()
+        self.frame_count = 0
+
+class SceneTypeDetector:
+    """Detect scene type (room vs corridor) based on motion patterns."""
+    def __init__(self, window_size=20):
+        self.window_size = window_size
+        self.recent_poses = []
+        self.scene_type = "room"
+        
+    def update(self, pose_matrix):
+        position = pose_matrix[:3, 3]
+        self.recent_poses.append(position)
+        if len(self.recent_poses) > self.window_size:
+            self.recent_poses.pop(0)
+        if len(self.recent_poses) >= 10:
+            self.scene_type = self._detect_scene_type()
+        return self.scene_type
+    
+    def _detect_scene_type(self):
+        positions = np.array(self.recent_poses)
+        centered = positions - positions.mean(axis=0)
+        cov = np.cov(centered.T)
+        eigenvalues, _ = np.linalg.eig(cov)
+        eigenvalues = sorted(eigenvalues, reverse=True)
+        
+        # Add safety check for zero eigenvalues
+        if eigenvalues[1] < 1e-6:  # Avoid division by zero
+            return "corridor"  # Assume corridor if no variance in secondary direction
+        
+        ratio = float(os.getenv("SLAM3R_CORRIDOR_EIGENVALUE_RATIO", "5.0"))
+        if eigenvalues[0] > ratio * eigenvalues[1]:
+            return "corridor"
+        else:
+            return "room"
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -72,9 +247,16 @@ i2p_model                = l2w_model = None
 slam_params              = {}
 is_slam_system_initialized = False
 
-processed_frames_history : list = []
+# Replace with memory-efficient versions
+processed_frames_history = MemoryAwareFrameHistory(
+    max_history_size=int(os.getenv("SLAM3R_MAX_HISTORY_SIZE", "300")),
+    max_tensor_cache=int(os.getenv("SLAM3R_MAX_TENSOR_CACHE", "50"))
+)
 keyframe_indices         : list = []
-world_point_cloud_buffer : list = []   # (xyz, rgb)
+world_point_cloud_buffer = SpatialPointCloudBuffer(
+    max_points=int(os.getenv("SLAM3R_MAX_POINTCLOUD_SIZE", "750000")),
+    downsample_voxel=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008"))
+)
 camera_positions         : list = []
 
 current_frame_index              = 0
@@ -83,6 +265,13 @@ is_slam_initialized_for_session  = False
 active_kf_stride                 = 1
 
 rerun_connected = False  # live viewer flag
+
+# New variables for enhanced functionality
+rerun_logger = None  # Will be initialized if Rerun is connected
+scene_detector = SceneTypeDetector(
+    window_size=int(os.getenv("SLAM3R_CORRIDOR_DETECTION_WINDOW", "20"))
+)
+last_keyframe_pose = None
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Camera intrinsics helper
@@ -153,11 +342,69 @@ def log_points_to_rerun(label:str, pts_col:list, radius:float=0.007):
 def _to_dev(x):
     return x.to(device) if torch.is_tensor(x) and x.device != device else x
 
+# ============================================================
+# Additional Helper Functions
+# ============================================================
+
+def downsample_pointcloud_voxel(points, colors, voxel_size=0.01):
+    """Downsample point cloud using voxel grid for visualization."""
+    if len(points) == 0:
+        return np.array([]), np.array([])
+    
+    points = np.asarray(points)
+    colors = np.asarray(colors)
+    voxel_indices = np.floor(points / voxel_size).astype(np.int32)
+    voxel_dict = {}
+    
+    for i, voxel_idx in enumerate(voxel_indices):
+        key = tuple(voxel_idx)
+        if key not in voxel_dict:
+            voxel_dict[key] = (points[i], colors[i])
+    
+    if voxel_dict:
+        downsampled = list(voxel_dict.values())
+        return np.array([p for p, _ in downsampled]), np.array([c for _, c in downsampled])
+    return np.array([]), np.array([])
+
+async def adaptive_keyframe_selection(current_pose, last_keyframe_pose, scene_type, 
+                                    current_frame_index, active_kf_stride):
+    """Adaptively select keyframes based on scene type and overlap."""
+    if last_keyframe_pose is not None:
+        position_change = np.linalg.norm(current_pose[:3, 3] - last_keyframe_pose[:3, 3])
+        rotation_change = np.arccos(np.clip(
+            (np.trace(current_pose[:3, :3].T @ last_keyframe_pose[:3, :3]) - 1) / 2, 
+            -1, 1
+        ))
+        
+        if scene_type == "corridor":
+            pos_thresh = float(os.getenv("SLAM3R_CORRIDOR_POSITION_THRESHOLD", "0.4"))
+            rot_thresh = np.radians(float(os.getenv("SLAM3R_CORRIDOR_ROTATION_THRESHOLD", "12")))
+            if position_change > pos_thresh or rotation_change > rot_thresh:
+                return True, min(active_kf_stride, 3)
+        else:
+            pos_thresh = float(os.getenv("SLAM3R_ROOM_POSITION_THRESHOLD", "0.8"))
+            rot_thresh = np.radians(float(os.getenv("SLAM3R_ROOM_ROTATION_THRESHOLD", "25")))
+            if position_change > pos_thresh or rotation_change > rot_thresh:
+                return True, active_kf_stride
+    
+    return current_frame_index % active_kf_stride == 0, active_kf_stride
+
+async def periodic_memory_cleanup():
+    """Periodically clean up GPU memory."""
+    gc_interval = int(os.getenv("SLAM3R_GC_INTERVAL", "30"))
+    while True:
+        await asyncio.sleep(gc_interval)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            gc.collect()
+            logger.info(f"GPU memory: {torch.cuda.memory_allocated()/1e9:.2f}GB allocated, "
+                       f"{torch.cuda.memory_reserved()/1e9:.2f}GB reserved")
+
 # ───────────────────────────────────────────────────────────────────────────────
 # Initialisation
 # ───────────────────────────────────────────────────────────────────────────────
 async def initialise_models_and_params():
-    global i2p_model, l2w_model, slam_params, is_slam_system_initialized, rerun_connected
+    global i2p_model, l2w_model, slam_params, is_slam_system_initialized, rerun_connected, rerun_logger
     if is_slam_system_initialized or not SLAM3R_ENGINE_AVAILABLE:
         return
 
@@ -175,6 +422,13 @@ async def initialise_models_and_params():
                 break
             except Exception as e:
                 logger.warning("Rerun connect failed at %s: %s", host, e)
+    
+    # Initialize rerun logger if connected
+    if rerun_connected:
+        rerun_logger = RerunBatchLogger(
+            batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15")),
+            downsample_voxel_size=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008"))
+        )
 
     logger.info("Loading SLAM3R models on %s…", device)
     i2p_model = Image2PointsModel.from_pretrained("siyan824/slam3r_i2p").to(device).eval()
@@ -202,7 +456,32 @@ async def initialise_models_and_params():
 # Per‑frame processing
 # ───────────────────────────────────────────────────────────────────────────────
 async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
-    global current_frame_index, is_slam_initialized_for_session, slam_initialization_buffer, active_kf_stride
+    global current_frame_index, is_slam_initialized_for_session, slam_initialization_buffer, active_kf_stride, last_keyframe_pose
+
+    # Memory management
+    if current_frame_index % 50 == 0 and current_frame_index > 0:
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+        # Log memory status on NVIDIA 3090
+        if current_frame_index % 100 == 0:
+            try:
+                process = psutil.Process()
+                ram_usage = process.memory_info().rss / 1e9
+                gpu_usage = torch.cuda.memory_allocated() / 1e9
+                logger.info(f"Memory - RAM: {ram_usage:.2f}GB, GPU: {gpu_usage:.2f}GB, "
+                           f"History: {len(processed_frames_history)}, "
+                           f"PointCloud: {len(world_point_cloud_buffer)}")
+                
+                # Aggressive cleanup if approaching 3090 limit
+                if gpu_usage > 18.0:
+                    logger.warning("High GPU memory usage, performing aggressive cleanup")
+                    if rerun_logger:
+                        rerun_logger.flush()
+                    gc.collect()
+                    torch.cuda.empty_cache()
+            except:
+                pass
 
     start = time.time()
     tensor = preprocess_image(img_bgr)
@@ -226,6 +505,10 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
             processed_frames_history.append(record); current_frame_index += 1
             return None, None, None
 
+        # We have enough frames for initialization
+        # IMPORTANT: Add the current (final) frame to history first
+        processed_frames_history.append(record)
+
         init_views = []
         for v in slam_initialization_buffer:
             _, tok, pos = slam3r_get_img_tokens([{
@@ -240,27 +523,32 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
         valid_counts = [(c > slam_params["conf_thres_i2p"]).sum().item() for c in confs]
         if sum(valid_counts) < INIT_QUALITY_MIN_POINTS:
             slam_initialization_buffer.clear()
-            processed_frames_history.append(record); current_frame_index += 1
+            current_frame_index += 1
             return None, None, None
 
         for idx, (pc, conf) in enumerate(zip(pcs, confs)):
-            hist_idx = current_frame_index - len(slam_initialization_buffer) + idx
-            processed_frames_history[hist_idx] |= {
+            # Calculate correct history index
+            # All 5 frames are now in history, starting at index (current_frame_index - 4)
+            hist_idx = current_frame_index - len(slam_initialization_buffer) + 1 + idx
+            
+            # Update the frame using .update() instead of |=
+            processed_frames_history[hist_idx].update({
                 "img_tokens":   init_views[idx]["img_tokens"],
                 "img_pos":      init_views[idx]["img_pos"],
                 "pts3d_world": pc,
                 "conf_world": conf,
                 "keyframe_id": f"kf_{len(keyframe_indices)}",
-            }
+            })
             keyframe_indices.append(hist_idx)
             pts_np = pc.cpu().numpy().reshape(-1, 3)
             mask   = conf.cpu().numpy().reshape(-1) > slam_params["conf_thres_i2p"]
             cols   = np.tile(np.array([[0,0,255]], np.uint8), (pts_np.shape[0],1))[mask]  # bootstrap → blue
             world_point_cloud_buffer.extend(list(zip(pts_np[mask], cols)))
+            
         slam_initialization_buffer.clear()
         is_slam_initialized_for_session = True
         logger.info("Bootstrap complete with %d keyframes.", len(keyframe_indices))
-        processed_frames_history.append(record); current_frame_index += 1
+        current_frame_index += 1
         return None, None, None
 
     # ────────────────────────── incremental ────────────────────────────
@@ -331,6 +619,14 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
     T = np.eye(4); T[:3,:3], T[:3,3] = R, t.squeeze()
     record["raw_pose_matrix"] = T.tolist()
 
+    # Update scene type detection
+    scene_type = scene_detector.update(T)
+    
+    # Adaptive keyframe selection
+    should_be_keyframe, active_kf_stride = await adaptive_keyframe_selection(
+        T, last_keyframe_pose, scene_type, current_frame_index, active_kf_stride
+    )
+
     # -------------- accumulate points --------------
     mask_world = conf_world_flat > slam_params["conf_thres_l2w"]
     if mask_world.sum() < 3:
@@ -346,27 +642,53 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
     processed_frames_history.append(record)
 
     # ---------- keyframe selection ----------
-    if current_frame_index % (active_kf_stride or 1) == 0:
+    if should_be_keyframe:
         record["keyframe_id"] = f"kf_{len(keyframe_indices)}"
         keyframe_indices.append(record_index)
         keyframe_id_out = record["keyframe_id"]
+        last_keyframe_pose = T.copy()
 
     # ---------- Rerun logging ----------
     if rerun_connected:
+        # Camera pose logging
         rr.log("world/camera",
                rr.Transform3D(translation=T[:3,3],
                               rotation=rr.Quaternion(xyzw=matrix_to_quaternion(T[:3,:3]))))
+        
+        # Update camera path
         camera_positions.append(T[:3,3].copy())
         if len(camera_positions) > 1:
             rr.log("world/camera_path",
                    rr.LineStrips3D(np.stack(camera_positions, dtype=np.float32)[None]))
-        if temp_world_pts:
-            log_points_to_rerun(f"world/incremental/frame_{current_frame_index}",
-                                temp_world_pts, radius=0.004)
-            log_points_to_rerun("world/points", temp_world_pts)
-        if keyframe_id_out:
-            rr.log("log/info", rr.TextLog(text=f"KF {keyframe_id_out} added", color=[0,255,0]))
+        
+        # Batch point logging
+        if temp_world_pts and rerun_logger:
+            xyz_list = [p for p, _ in temp_world_pts]
+            rgb_list = [c for _, c in temp_world_pts]
+            rerun_logger.add_points(xyz_list, rgb_list)
+        
+        # Log keyframes with higher quality
+        if keyframe_id_out and temp_world_pts:
+            kf_pts = np.array([p for p, _ in temp_world_pts])
+            kf_cols = np.array([c for _, c in temp_world_pts])
+            kf_voxel = float(os.getenv("SLAM3R_RERUN_KEYFRAME_VOXEL_SIZE", "0.005"))
+            kf_pts_down, kf_cols_down = downsample_pointcloud_voxel(
+                kf_pts, kf_cols, voxel_size=kf_voxel
+            )
+            if len(kf_pts_down) > 0:
+                rr.log(f"world/keyframes/{keyframe_id_out}",
+                       rr.Points3D(
+                           positions=cv_to_rerun_xyz(kf_pts_down),
+                           colors=kf_cols_down.astype(np.uint8),
+                           radii=np.full(len(kf_pts_down), 0.004, np.float32)
+                       ))
+        
+        # Scene type logging
+        if current_frame_index % 10 == 0:
+            rr.log("diagnostics/scene_type", 
+                   rr.TextLog(f"Scene: {scene_type}, Stride: {active_kf_stride}"))
 
+        # Log camera frustum
         if camera_intrinsics:
             frustum_path = f"world/camera_frustums/frame_{current_frame_index}"
             rr.log(
@@ -441,7 +763,8 @@ async def on_restart_message(msg: aio_pika.IncomingMessage):
     async with msg.process():
         global is_slam_system_initialized, processed_frames_history, keyframe_indices
         global world_point_cloud_buffer, current_frame_index, slam_initialization_buffer
-        global is_slam_initialized_for_session, active_kf_stride
+        global is_slam_initialized_for_session, active_kf_stride, last_keyframe_pose, rerun_logger
+        
         logger.info("Restart requested – resetting session state.")
         processed_frames_history.clear()
         keyframe_indices.clear()
@@ -450,12 +773,27 @@ async def on_restart_message(msg: aio_pika.IncomingMessage):
         current_frame_index = 0
         is_slam_initialized_for_session = False
         active_kf_stride = 1
+        
+        # Reset new components
+        if rerun_logger:
+            rerun_logger.flush()
+            rerun_logger = RerunBatchLogger(
+                batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15")),
+                downsample_voxel_size=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008"))
+            )
+        scene_detector.recent_poses.clear()
+        scene_detector.scene_type = "room"
+        last_keyframe_pose = None
 
 # ────────────────────────────────────────────────────────────────────────────────
 #  Main service loop
 # ────────────────────────────────────────────────────────────────────────────────
 async def main():
     await initialise_models_and_params()
+    
+    # Start memory cleanup task
+    cleanup_task = asyncio.create_task(periodic_memory_cleanup())
+    
     connection = await aio_pika.connect_robust(RABBITMQ_URL, timeout=30, heartbeat=60)
     async with connection:
         ch = await connection.channel()

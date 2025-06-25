@@ -40,34 +40,34 @@ def extract_frames(video_path: str, fps: float) -> str:
     subprocess.run(command, check=True)
     return temp_dir
 
-def recon_scene(i2p_model:Image2PointsModel, 
-                l2w_model:Local2WorldModel, 
-                device, save_dir, fps, 
-                img_dir_or_list, 
-                keyframe_stride, win_r, initial_winsize, conf_thres_i2p,
-                num_scene_frame, update_buffer_intv, buffer_strategy, buffer_size,
-                conf_thres_l2w, num_points_save):
-    # print(f"device: {device},\n save_dir: {save_dir},\n fps: {fps},\n keyframe_stride: {keyframe_stride},\n win_r: {win_r},\n initial_winsize: {initial_winsize},\n conf_thres_i2p: {conf_thres_i2p},\n num_scene_frame: {num_scene_frame},\n update_buffer_intv: {update_buffer_intv},\n buffer_strategy: {buffer_strategy},\n buffer_size: {buffer_size},\n conf_thres_l2w: {conf_thres_l2w},\n num_points_save: {num_points_save}")
+def recon_scene(i2p_model: Image2PointsModel, 
+                l2w_model: Local2WorldModel, 
+                device, save_dir, video_extraction_fps, 
+                input_images_or_video_path, 
+                keyframe_stride, window_radius, initial_window_size, confidence_threshold_i2p,
+                num_scene_reference_frames, buffer_update_interval, buffer_strategy, buffer_size,
+                confidence_threshold_l2w, num_points_to_save):
+    print(f"device: {device},\n save_dir: {save_dir},\n video_extraction_fps: {video_extraction_fps},\n keyframe_stride: {keyframe_stride},\n window_radius: {window_radius},\n initial_window_size: {initial_window_size},\n confidence_threshold_i2p: {confidence_threshold_i2p},\n num_scene_reference_frames: {num_scene_reference_frames},\n buffer_update_interval: {buffer_update_interval},\n buffer_strategy: {buffer_strategy},\n buffer_size: {buffer_size},\n confidence_threshold_l2w: {confidence_threshold_l2w},\n num_points_to_save: {num_points_to_save}")
     np.random.seed(42)
     
     # load the imgs or video
-    if isinstance(img_dir_or_list, str):
-        img_dir_or_list = extract_frames(img_dir_or_list, fps)
+    if isinstance(input_images_or_video_path, str):
+        input_images_or_video_path = extract_frames(input_images_or_video_path, video_extraction_fps)
     
-    dataset = Seq_Data(img_dir_or_list, to_tensor=True)
-    data_views = dataset[0][:]
-    num_views = len(data_views)
-    
+    dataset = Seq_Data(input_images_or_video_path, to_tensor=True)
+    image_data_views = dataset[0][:] 
+    total_num_views = len(image_data_views)
+    print(f"total_num_views: {total_num_views}")
     # Pre-save the RGB images along with their corresponding masks 
     # in preparation for visualization at last.
-    rgb_imgs = []
-    for i in range(len(data_views)):
-        if data_views[i]['img'].shape[0] == 1:
-            data_views[i]['img'] = data_views[i]['img'][0]        
-        rgb_imgs.append(transform_img(dict(img=data_views[i]['img'][None]))[...,::-1])
+    preprocessed_rgb_images = []
+    for i in range(len(image_data_views)):
+        if image_data_views[i]['img'].shape[0] == 1:
+            image_data_views[i]['img'] = image_data_views[i]['img'][0]        
+        preprocessed_rgb_images.append(transform_img(dict(img=image_data_views[i]['img'][None]))[...,::-1])
     
     #preprocess data for extracting their img tokens with encoder
-    for view in data_views:
+    for view in image_data_views:
         view['img'] = torch.tensor(view['img'][None])
         view['true_shape'] = torch.tensor(view['true_shape'][None])
         for key in ['valid_mask', 'pts3d_cam', 'pts3d']:
@@ -76,261 +76,261 @@ def recon_scene(i2p_model:Image2PointsModel,
         to_device(view, device=device)
     # pre-extract img tokens by encoder, which can be reused 
     # in the following inference by both i2p and l2w models
-    res_shapes, res_feats, res_poses = get_img_tokens(data_views, i2p_model)    # 300+fps
+    image_shapes, image_features, image_poses = get_img_tokens(image_data_views, i2p_model)    # 300+fps
     print('finish pre-extracting img tokens')
 
     # re-organize input views for the following inference.
     # Keep necessary attributes only.
-    input_views = []
-    for i in range(num_views):
-        input_views.append(dict(label=data_views[i]['label'],
-                              img_tokens=res_feats[i], 
-                              true_shape=data_views[i]['true_shape'], 
-                              img_pos=res_poses[i]))
+    processed_input_views = []
+    for i in range(total_num_views):
+        processed_input_views.append(dict(label=image_data_views[i]['label'],
+                              img_tokens=image_features[i], 
+                              true_shape=image_data_views[i]['true_shape'], 
+                              img_pos=image_poses[i]))
     
     # decide the stride of sampling keyframes, as well as other related parameters
     if keyframe_stride == -1:
-        kf_stride = adapt_keyframe_stride(input_views, i2p_model, 
+        keyframe_stride_value = adapt_keyframe_stride(processed_input_views, i2p_model, 
                                           win_r = 3,
                                           adapt_min=1,
                                           adapt_max=20,
                                           adapt_stride=1)
     else:
-        kf_stride = keyframe_stride
+        keyframe_stride_value = keyframe_stride
     
     # initialize the scene with the first several frames
-    initial_winsize = min(initial_winsize, num_views//kf_stride)
-    assert initial_winsize >= 2, "not enough views for initializing the scene reconstruction"
-    initial_pcds, initial_confs, init_ref_id = initialize_scene(input_views[:initial_winsize*kf_stride:kf_stride], 
+    initial_window_size = min(initial_window_size, total_num_views//keyframe_stride_value)
+    assert initial_window_size >= 2, "not enough views for initializing the scene reconstruction"
+    initial_point_clouds, initial_confidences, initial_reference_id = initialize_scene(processed_input_views[:initial_window_size*keyframe_stride_value:keyframe_stride_value], 
                                                    i2p_model, 
-                                                   winsize=initial_winsize,
+                                                   winsize=initial_window_size,
                                                    return_ref_id=True) # 5*(1,224,224,3)
     
     # start reconstrution of the whole scene
-    init_num = len(initial_pcds)
-    per_frame_res = dict(i2p_pcds=[], i2p_confs=[], l2w_pcds=[], l2w_confs=[])
-    for key in per_frame_res:
-        per_frame_res[key] = [None for _ in range(num_views)]
+    initial_frame_count = len(initial_point_clouds)
+    per_frame_results = dict(i2p_pcds=[], i2p_confs=[], l2w_pcds=[], l2w_confs=[])
+    for key in per_frame_results:
+        per_frame_results[key] = [None for _ in range(total_num_views)]
     
-    registered_confs_mean = [_ for _ in range(num_views)]
+    registered_confidence_means = [_ for _ in range(total_num_views)]
     
     # set up the world coordinates with the initial window
-    for i in range(init_num):
-        per_frame_res['l2w_confs'][i*kf_stride] = initial_confs[i][0].to(device)  # 224,224
-        registered_confs_mean[i*kf_stride] = per_frame_res['l2w_confs'][i*kf_stride].mean().cpu()
+    for i in range(initial_frame_count):
+        per_frame_results['l2w_confs'][i*keyframe_stride_value] = initial_confidences[i][0].to(device)  # 224,224
+        registered_confidence_means[i*keyframe_stride_value] = per_frame_results['l2w_confs'][i*keyframe_stride_value].mean().cpu()
 
     # initialize the buffering set with the initial window
-    assert buffer_size <= 0 or buffer_size >= init_num 
-    buffering_set_ids = [i*kf_stride for i in range(init_num)]
+    assert buffer_size <= 0 or buffer_size >= initial_frame_count 
+    buffer_frame_ids = [i*keyframe_stride_value for i in range(initial_frame_count)]
     
     # set up the world coordinates with frames in the initial window
-    for i in range(init_num):
-        input_views[i*kf_stride]['pts3d_world'] = initial_pcds[i]
+    for i in range(initial_frame_count):
+        processed_input_views[i*keyframe_stride_value]['pts3d_world'] = initial_point_clouds[i]
         
-    initial_valid_masks = [conf > conf_thres_i2p for conf in initial_confs] # 1,224,224
-    normed_pts = normalize_views([view['pts3d_world'] for view in input_views[:init_num*kf_stride:kf_stride]],
-                                                initial_valid_masks)
-    for i in range(init_num):
-        input_views[i*kf_stride]['pts3d_world'] = normed_pts[i]
+    initial_confidence_masks = [conf > confidence_threshold_i2p for conf in initial_confidences] # 1,224,224
+    normalized_points = normalize_views([view['pts3d_world'] for view in processed_input_views[:initial_frame_count*keyframe_stride_value:keyframe_stride_value]],
+                                                initial_confidence_masks)
+    for i in range(initial_frame_count):
+        processed_input_views[i*keyframe_stride_value]['pts3d_world'] = normalized_points[i]
         # filter out points with low confidence
-        input_views[i*kf_stride]['pts3d_world'][~initial_valid_masks[i]] = 0       
-        per_frame_res['l2w_pcds'][i*kf_stride] = normed_pts[i]  # 224,224,3
+        processed_input_views[i*keyframe_stride_value]['pts3d_world'][~initial_confidence_masks[i]] = 0       
+        per_frame_results['l2w_pcds'][i*keyframe_stride_value] = normalized_points[i]  # 224,224,3
 
     # recover the pointmap of each view in their local coordinates with the I2P model
     # TODO: batchify
-    local_confs_mean = []
-    adj_distance = kf_stride
-    for view_id in tqdm(range(num_views), desc="I2P resonstruction"):
+    local_confidence_means = []
+    adjacent_frame_distance = keyframe_stride_value
+    for current_view_id in tqdm(range(total_num_views), desc="I2P resonstruction"):
         # skip the views in the initial window
-        if view_id in buffering_set_ids:
+        if current_view_id in buffer_frame_ids:
             # trick to mark the keyframe in the initial window
-            if view_id // kf_stride == init_ref_id:
-                per_frame_res['i2p_pcds'][view_id] = per_frame_res['l2w_pcds'][view_id].cpu()
+            if current_view_id // keyframe_stride_value == initial_reference_id:
+                per_frame_results['i2p_pcds'][current_view_id] = per_frame_results['l2w_pcds'][current_view_id].cpu()
             else:
-                per_frame_res['i2p_pcds'][view_id] = torch.zeros_like(per_frame_res['l2w_pcds'][view_id], device="cpu")
-            per_frame_res['i2p_confs'][view_id] = per_frame_res['l2w_confs'][view_id].cpu()
+                per_frame_results['i2p_pcds'][current_view_id] = torch.zeros_like(per_frame_results['l2w_pcds'][current_view_id], device="cpu")
+            per_frame_results['i2p_confs'][current_view_id] = per_frame_results['l2w_confs'][current_view_id].cpu()
             continue
         # construct the local window 
-        sel_ids = [view_id]
-        for i in range(1,win_r+1):
-            if view_id-i*adj_distance >= 0:
-                sel_ids.append(view_id-i*adj_distance)
-            if view_id+i*adj_distance < num_views:
-                sel_ids.append(view_id+i*adj_distance)
-        local_views = [input_views[id] for id in sel_ids]
-        ref_id = 0 
+        selected_frame_ids = [current_view_id]
+        for i in range(1, window_radius+1):
+            if current_view_id-i*adjacent_frame_distance >= 0:
+                selected_frame_ids.append(current_view_id-i*adjacent_frame_distance)
+            if current_view_id+i*adjacent_frame_distance < total_num_views:
+                selected_frame_ids.append(current_view_id+i*adjacent_frame_distance)
+        local_window_views = [processed_input_views[id] for id in selected_frame_ids]
+        reference_frame_id = 0 
         # recover points in the local window, and save the keyframe points and confs
-        output = i2p_inference_batch([local_views], i2p_model, ref_id=ref_id, 
+        output = i2p_inference_batch([local_window_views], i2p_model, ref_id=reference_frame_id, 
                                     tocpu=False, unsqueeze=False)['preds']
         #save results of the i2p model
-        per_frame_res['i2p_pcds'][view_id] = output[ref_id]['pts3d'].cpu() # 1,224,224,3
-        per_frame_res['i2p_confs'][view_id] = output[ref_id]['conf'][0].cpu() # 224,224
+        per_frame_results['i2p_pcds'][current_view_id] = output[reference_frame_id]['pts3d'].cpu() # 1,224,224,3
+        per_frame_results['i2p_confs'][current_view_id] = output[reference_frame_id]['conf'][0].cpu() # 224,224
 
         # construct the input for L2W model        
-        input_views[view_id]['pts3d_cam'] = output[ref_id]['pts3d'] # 1,224,224,3
-        valid_mask = output[ref_id]['conf'] > conf_thres_i2p # 1,224,224
-        input_views[view_id]['pts3d_cam'] = normalize_views([input_views[view_id]['pts3d_cam']],
+        processed_input_views[current_view_id]['pts3d_cam'] = output[reference_frame_id]['pts3d'] # 1,224,224,3
+        valid_mask = output[reference_frame_id]['conf'] > confidence_threshold_i2p # 1,224,224
+        processed_input_views[current_view_id]['pts3d_cam'] = normalize_views([processed_input_views[current_view_id]['pts3d_cam']],
                                                     [valid_mask])[0]
-        input_views[view_id]['pts3d_cam'][~valid_mask] = 0 
+        processed_input_views[current_view_id]['pts3d_cam'][~valid_mask] = 0 
 
-    local_confs_mean = [conf.mean() for conf in per_frame_res['i2p_confs']] # 224,224
-    print(f'finish recovering pcds of {len(local_confs_mean)} frames in their local coordinates, with a mean confidence of {torch.stack(local_confs_mean).mean():.2f}')
+    local_confidence_means = [conf.mean() for conf in per_frame_results['i2p_confs']] # 224,224
+    print(f'finish recovering pcds of {len(local_confidence_means)} frames in their local coordinates, with a mean confidence of {torch.stack(local_confidence_means).mean():.2f}')
 
     # Special treatment: register the frames within the range of initial window with L2W model
     # TODO: batchify
-    if kf_stride > 1:
-        max_conf_mean = -1
-        for view_id in tqdm(range((init_num-1)*kf_stride), desc="pre-registering"):  
-            if view_id % kf_stride == 0:
+    if keyframe_stride_value > 1:
+        max_confidence_mean = -1
+        for current_view_id in tqdm(range((initial_frame_count-1)*keyframe_stride_value), desc="pre-registering"):  
+            if current_view_id % keyframe_stride_value == 0:
                 continue
             # construct the input for L2W model
-            l2w_input_views = [input_views[view_id]] + [input_views[id] for id in buffering_set_ids]
+            local_to_world_input_views = [processed_input_views[current_view_id]] + [processed_input_views[id] for id in buffer_frame_ids]
             # (for defination of ref_ids, see the doc of l2w_model)
-            output = l2w_inference(l2w_input_views, l2w_model, 
-                                   ref_ids=list(range(1,len(l2w_input_views))), 
+            output = l2w_inference(local_to_world_input_views, l2w_model, 
+                                   ref_ids=list(range(1,len(local_to_world_input_views))), 
                                    device=device,
                                    normalize=False)
             
             # process the output of L2W model
-            input_views[view_id]['pts3d_world'] = output[0]['pts3d_in_other_view'] # 1,224,224,3
-            conf_map = output[0]['conf'] # 1,224,224
-            per_frame_res['l2w_confs'][view_id] = conf_map[0] # 224,224
-            registered_confs_mean[view_id] = conf_map.mean().cpu()
-            per_frame_res['l2w_pcds'][view_id] = input_views[view_id]['pts3d_world']
+            processed_input_views[current_view_id]['pts3d_world'] = output[0]['pts3d_in_other_view'] # 1,224,224,3
+            confidence_map = output[0]['conf'] # 1,224,224
+            per_frame_results['l2w_confs'][current_view_id] = confidence_map[0] # 224,224
+            registered_confidence_means[current_view_id] = confidence_map.mean().cpu()
+            per_frame_results['l2w_pcds'][current_view_id] = processed_input_views[current_view_id]['pts3d_world']
             
-            if registered_confs_mean[view_id] > max_conf_mean:
-                max_conf_mean = registered_confs_mean[view_id]
-        print(f'finish aligning {(init_num-1)*kf_stride} head frames, with a max mean confidence of {max_conf_mean:.2f}')
+            if registered_confidence_means[current_view_id] > max_confidence_mean:
+                max_confidence_mean = registered_confidence_means[current_view_id]
+        print(f'finish aligning {(initial_frame_count-1)*keyframe_stride_value} head frames, with a max mean confidence of {max_confidence_mean:.2f}')
         
-        # A problem is that the registered_confs_mean of the initial window is generated by I2P model,
-        # while the registered_confs_mean of the frames within the initial window is generated by L2W model,
+        # A problem is that the registered_confidence_means of the initial window is generated by I2P model,
+        # while the registered_confidence_means of the frames within the initial window is generated by L2W model,
         # so there exists a gap. Here we try to align it.
-        max_initial_conf_mean = -1
-        for i in range(init_num):
-            if registered_confs_mean[i*kf_stride] > max_initial_conf_mean:
-                max_initial_conf_mean = registered_confs_mean[i*kf_stride]
-        factor = max_conf_mean/max_initial_conf_mean
-        # print(f'align register confidence with a factor {factor}')
-        for i in range(init_num):
-            per_frame_res['l2w_confs'][i*kf_stride] *= factor
-            registered_confs_mean[i*kf_stride] = per_frame_res['l2w_confs'][i*kf_stride].mean().cpu()
+        max_initial_confidence_mean = -1
+        for i in range(initial_frame_count):
+            if registered_confidence_means[i*keyframe_stride_value] > max_initial_confidence_mean:
+                max_initial_confidence_mean = registered_confidence_means[i*keyframe_stride_value]
+        confidence_alignment_factor = max_confidence_mean/max_initial_confidence_mean
+        # print(f'align register confidence with a factor {confidence_alignment_factor}')
+        for i in range(initial_frame_count):
+            per_frame_results['l2w_confs'][i*keyframe_stride_value] *= confidence_alignment_factor
+            registered_confidence_means[i*keyframe_stride_value] = per_frame_results['l2w_confs'][i*keyframe_stride_value].mean().cpu()
 
     # register the rest frames with L2W model
-    next_register_id = (init_num-1)*kf_stride+1 # the next frame to be registered
-    milestone = (init_num-1)*kf_stride+1 # All frames before milestone have undergone the selection process for entry into the buffering set.
-    num_register = max(1,min((kf_stride+1)//2, 10))   # how many frames to register in each round
-    update_buffer_intv = kf_stride*update_buffer_intv   # update the buffering set every update_buffer_intv frames
-    max_buffer_size = buffer_size
-    strategy = buffer_strategy
-    candi_frame_id = len(buffering_set_ids) # used for the reservoir sampling strategy
+    next_registration_frame_id = (initial_frame_count-1)*keyframe_stride_value+1 # the next frame to be registered
+    buffer_selection_milestone = (initial_frame_count-1)*keyframe_stride_value+1 # All frames before milestone have undergone the selection process for entry into the buffering set.
+    frames_per_registration_batch = max(1,min((keyframe_stride_value+1)//2, 10))   # how many frames to register in each round
+    buffer_update_interval = keyframe_stride_value*buffer_update_interval   # update the buffering set every buffer_update_interval frames
+    maximum_buffer_size = buffer_size
+    buffer_management_strategy = buffer_strategy
+    candidate_frame_counter = len(buffer_frame_ids) # used for the reservoir sampling strategy
     
-    pbar = tqdm(total=num_views, desc="registering")
-    pbar.update(next_register_id-1)
+    pbar = tqdm(total=total_num_views, desc="registering")
+    pbar.update(next_registration_frame_id-1)
 
     del i
-    while next_register_id < num_views:
-        ni = next_register_id
-        max_id = min(ni+num_register, num_views)-1  # the last frame to be registered in this round
+    while next_registration_frame_id < total_num_views:
+        batch_start_id = next_registration_frame_id
+        batch_end_id = min(batch_start_id+frames_per_registration_batch, total_num_views)-1  # the last frame to be registered in this round
 
         # select sccene frames in the buffering set to work as a global reference
-        cand_ref_ids = buffering_set_ids
-        ref_views, sel_pool_ids = scene_frame_retrieve(
-            [input_views[i] for i in cand_ref_ids], 
-            input_views[ni:ni+num_register:2], 
-            i2p_model, sel_num=num_scene_frame, 
-            # cand_recon_confs=[per_frame_res['l2w_confs'][i] for i in cand_ref_ids],
+        candidate_reference_ids = buffer_frame_ids
+        reference_views, selected_pool_ids = scene_frame_retrieve(
+            [processed_input_views[i] for i in candidate_reference_ids], 
+            processed_input_views[batch_start_id:batch_start_id+frames_per_registration_batch:2], 
+            i2p_model, sel_num=num_scene_reference_frames, 
+            # cand_recon_confs=[per_frame_results['l2w_confs'][i] for i in candidate_reference_ids],
             depth=2)
         
         # register the source frames in the local coordinates to the world coordinates with L2W model
-        l2w_input_views = ref_views + input_views[ni:max_id+1]
-        input_view_num = len(ref_views) + max_id - ni + 1
-        assert input_view_num == len(l2w_input_views)
+        local_to_world_input_views = reference_views + processed_input_views[batch_start_id:batch_end_id+1]
+        total_input_view_count = len(reference_views) + batch_end_id - batch_start_id + 1
+        assert total_input_view_count == len(local_to_world_input_views)
         
-        output = l2w_inference(l2w_input_views, l2w_model, 
-                               ref_ids=list(range(len(ref_views))), 
+        output = l2w_inference(local_to_world_input_views, l2w_model, 
+                               ref_ids=list(range(len(reference_views))), 
                                device=device,
                                normalize=False)
     
         # process the output of L2W model
-        src_ids_local = [id+len(ref_views) for id in range(max_id-ni+1)]  # the ids of src views in the local window
-        src_ids_global = [id for id in range(ni, max_id+1)]    #the ids of src views in the whole dataset
-        succ_num = 0
-        for id in range(len(src_ids_global)):
-            output_id = src_ids_local[id] # the id of the output in the output list
-            view_id = src_ids_global[id]    # the id of the view in all views
-            conf_map = output[output_id]['conf'] # 1,224,224
-            input_views[view_id]['pts3d_world'] = output[output_id]['pts3d_in_other_view'] # 1,224,224,3
-            per_frame_res['l2w_confs'][view_id] = conf_map[0]
-            registered_confs_mean[view_id] = conf_map[0].mean().cpu()
-            per_frame_res['l2w_pcds'][view_id] = input_views[view_id]['pts3d_world']
-            succ_num += 1
+        source_ids_in_batch = [id+len(reference_views) for id in range(batch_end_id-batch_start_id+1)]  # the ids of src views in the local window
+        source_ids_global = [id for id in range(batch_start_id, batch_end_id+1)]    #the ids of src views in the whole dataset
+        successfully_registered_count = 0
+        for id in range(len(source_ids_global)):
+            batch_output_index = source_ids_in_batch[id] # the id of the output in the output list
+            current_view_id = source_ids_global[id]    # the id of the view in all views
+            confidence_map = output[batch_output_index]['conf'] # 1,224,224
+            processed_input_views[current_view_id]['pts3d_world'] = output[batch_output_index]['pts3d_in_other_view'] # 1,224,224,3
+            per_frame_results['l2w_confs'][current_view_id] = confidence_map[0]
+            registered_confidence_means[current_view_id] = confidence_map[0].mean().cpu()
+            per_frame_results['l2w_pcds'][current_view_id] = processed_input_views[current_view_id]['pts3d_world']
+            successfully_registered_count += 1
         # TODO:refine scene frames together
-        # for j in range(1, input_view_num):
-            # views[i-j]['pts3d_world'] = output[input_view_num-1-j]['pts3d'].permute(0,3,1,2)
+        # for j in range(1, total_input_view_count):
+            # views[i-j]['pts3d_world'] = output[total_input_view_count-1-j]['pts3d'].permute(0,3,1,2)
 
-        next_register_id += succ_num
-        pbar.update(succ_num) 
+        next_registration_frame_id += successfully_registered_count
+        pbar.update(successfully_registered_count) 
         
         # update the buffering set
-        if next_register_id - milestone >= update_buffer_intv:  
-            while(next_register_id - milestone >= kf_stride):
-                candi_frame_id += 1
-                full_flag = max_buffer_size > 0 and len(buffering_set_ids) >= max_buffer_size
-                insert_flag = (not full_flag) or ((strategy == 'fifo') or 
-                                                  (strategy == 'reservoir' and np.random.rand() < max_buffer_size/candi_frame_id))
-                if not insert_flag: 
-                    milestone += kf_stride
+        if next_registration_frame_id - buffer_selection_milestone >= buffer_update_interval:  
+            while(next_registration_frame_id - buffer_selection_milestone >= keyframe_stride_value):
+                candidate_frame_counter += 1
+                buffer_is_full = maximum_buffer_size > 0 and len(buffer_frame_ids) >= maximum_buffer_size
+                should_insert_frame = (not buffer_is_full) or ((buffer_management_strategy == 'fifo') or 
+                                                  (buffer_management_strategy == 'reservoir' and np.random.rand() < maximum_buffer_size/candidate_frame_counter))
+                if not should_insert_frame: 
+                    buffer_selection_milestone += keyframe_stride_value
                     continue
                 # Use offest to ensure the selected view is not too close to the last selected view
                 # If the last selected view is 0, 
-                # the next selected view should be at least kf_stride*3//4 frames away
-                start_ids_offset = max(0, buffering_set_ids[-1]+kf_stride*3//4 - milestone)
+                # the next selected view should be at least keyframe_stride_value*3//4 frames away
+                candidate_start_offset = max(0, buffer_frame_ids[-1]+keyframe_stride_value*3//4 - buffer_selection_milestone)
                     
                 # get the mean confidence of the candidate views
-                mean_cand_recon_confs = torch.stack([registered_confs_mean[i]
-                                         for i in range(milestone+start_ids_offset, milestone+kf_stride)])
-                mean_cand_local_confs = torch.stack([local_confs_mean[i]
-                                         for i in range(milestone+start_ids_offset, milestone+kf_stride)])
+                candidate_reconstruction_confidences = torch.stack([registered_confidence_means[i]
+                                         for i in range(buffer_selection_milestone+candidate_start_offset, buffer_selection_milestone+keyframe_stride_value)])
+                candidate_local_confidences = torch.stack([local_confidence_means[i]
+                                         for i in range(buffer_selection_milestone+candidate_start_offset, buffer_selection_milestone+keyframe_stride_value)])
                 # normalize the confidence to [0,1], to avoid overconfidence
-                mean_cand_recon_confs = (mean_cand_recon_confs - 1)/mean_cand_recon_confs # transform to sigmoid
-                mean_cand_local_confs = (mean_cand_local_confs - 1)/mean_cand_local_confs
+                candidate_reconstruction_confidences = (candidate_reconstruction_confidences - 1)/candidate_reconstruction_confidences # transform to sigmoid
+                candidate_local_confidences = (candidate_local_confidences - 1)/candidate_local_confidences
                 # the final confidence is the product of the two kinds of confidences
-                mean_cand_confs = mean_cand_recon_confs*mean_cand_local_confs
+                combined_candidate_confidences = candidate_reconstruction_confidences*candidate_local_confidences
                 
-                most_conf_id = mean_cand_confs.argmax().item()
-                most_conf_id += start_ids_offset
-                id_to_buffer = milestone + most_conf_id
-                buffering_set_ids.append(id_to_buffer)
-                # print(f"add ref view {id_to_buffer}")                
-                # since we have inserted a new frame, overflow must happen when full_flag is True
-                if full_flag:
-                    if strategy == 'reservoir':
-                        buffering_set_ids.pop(np.random.randint(max_buffer_size))
-                    elif strategy == 'fifo':
-                        buffering_set_ids.pop(0)
-                # print(next_register_id, buffering_set_ids)
-                milestone += kf_stride
+                highest_confidence_index = combined_candidate_confidences.argmax().item()
+                highest_confidence_index += candidate_start_offset
+                frame_id_to_add_to_buffer = buffer_selection_milestone + highest_confidence_index
+                buffer_frame_ids.append(frame_id_to_add_to_buffer)
+                # print(f"add ref view {frame_id_to_add_to_buffer}")                
+                # since we have inserted a new frame, overflow must happen when buffer_is_full is True
+                if buffer_is_full:
+                    if buffer_management_strategy == 'reservoir':
+                        buffer_frame_ids.pop(np.random.randint(maximum_buffer_size))
+                    elif buffer_management_strategy == 'fifo':
+                        buffer_frame_ids.pop(0)
+                # print(next_registration_frame_id, buffer_frame_ids)
+                buffer_selection_milestone += keyframe_stride_value
         # transfer the data to cpu if it is not in the buffering set, to save gpu memory
-        for i in range(next_register_id):
-            to_device(input_views[i], device=device if i in buffering_set_ids else 'cpu')
+        for i in range(next_registration_frame_id):
+            to_device(processed_input_views[i], device=device if i in buffer_frame_ids else 'cpu')
     
     pbar.close()
     
-    fail_view = {}
-    for i,conf in enumerate(registered_confs_mean):
+    low_confidence_frames = {}
+    for i, conf in enumerate(registered_confidence_means):
         if conf < 10:
-            fail_view[i] = conf.item()
-    print(f'mean confidence for whole scene reconstruction: {torch.tensor(registered_confs_mean).mean().item():.2f}')
-    print(f"{len(fail_view)} views with low confidence: ", {key:round(fail_view[key],2) for key in fail_view.keys()})
+            low_confidence_frames[i] = conf.item()
+    print(f'mean confidence for whole scene reconstruction: {torch.tensor(registered_confidence_means).mean().item():.2f}')
+    print(f"{len(low_confidence_frames)} views with low confidence: ", {key:round(low_confidence_frames[key],2) for key in low_confidence_frames.keys()})
 
-    per_frame_res['rgb_imgs'] = rgb_imgs
+    per_frame_results['rgb_imgs'] = preprocessed_rgb_images
 
-    save_path = get_model_from_scene(per_frame_res=per_frame_res, 
+    save_path = get_model_from_scene(per_frame_res=per_frame_results, 
                                      save_dir=save_dir, 
-                                     num_points_save=num_points_save, 
-                                     conf_thres_res=conf_thres_l2w)
+                                     num_points_save=num_points_to_save, 
+                                     conf_thres_res=confidence_threshold_l2w)
 
-    return save_path, per_frame_res
+    return save_path, per_frame_results
     
     
 def get_model_from_scene(per_frame_res, save_dir, 
@@ -479,125 +479,168 @@ def change_buffer_strategy(buffer_strategy):
     return buffer_size
 
 def main_demo(i2p_model, l2w_model, device, tmpdirname, server_name, server_port):
+    """
+    Main demo function that creates and launches the SLAM3R Gradio interface.
+    
+    Args:
+        i2p_model: Image2Points model for local 3D reconstruction
+        l2w_model: Local2World model for global registration
+        device: Device to run models on (CPU/GPU)
+        tmpdirname: Temporary directory for storing results
+        server_name: Server hostname/IP
+        server_port: Server port number
+    """
+    # Create a partial function with fixed model and device parameters
     recon_scene_func = functools.partial(recon_scene, i2p_model, l2w_model, device)
     
     with gradio.Blocks(css=""".gradio-container {margin: 0 !important; min-width: 100%};""", title="SLAM3R Demo") as demo:
-        # scene state is save so that you can change num_points_save... without rerunning the inference
+        # State variables to persist data between interactions
+        # per_frame_res stores reconstruction results to avoid re-running inference
         per_frame_res = gradio.State(None)
+        # tmpdir_name stores the temporary directory path
         tmpdir_name = gradio.State(tmpdirname)
         
+        # Main header
         gradio.HTML('<h2 style="text-align: center;">SLAM3R Demo</h2>')
+        
         with gradio.Column():
+            # Input file selection section
             with gradio.Row():
+                # Input type selector (directory, images, or video)
                 input_type = gradio.Dropdown([ "directory", "images", "video"],
                                              scale=1,
                                              value='directory', label="select type of input files")
+                # FPS setting for video frame extraction (hidden by default)
                 video_extract_fps = gradio.Number(value=5,
                                                   scale=0,
                                                   interactive=True,
                                                   visible=False,
                                                   label="fps for extracting frames from video")
+                # File upload component (defaults to directory selection)
                 inputfiles = gradio.File(file_count="directory", file_types=["image"],
                                          scale=2,
                                          height=200,
                                          label="Select a directory containing images")
               
+                # Image gallery for previewing uploaded images
                 image_gallery = gradio.Gallery(label="Click or use the left/right arrow keys to browse images",
                                             visible=False,
                                             selected_index=0,
                                             preview=True, 
                                             height=300,
                                             scale=2)
+                # Video player for uploaded videos
                 video_gallery = gradio.Video(label="Uploaded Video",
                                             visible=False,
                                             height=300,
                                             scale=2)
 
+            # I2P (Image2Points) reconstruction parameters
             with gradio.Row():
+                # Keyframe stride selection (auto or manual)
                 kf_stride = gradio.Dropdown(["auto", "manual setting"], label="how to choose stride between keyframes",
                                            value='auto', interactive=True,  
                                            info="For I2P reconstruction!")
+                # Manual keyframe stride slider (hidden when auto is selected)
                 kf_stride_fix = gradio.Slider(value=-1, minimum=-1, maximum=-1, step=1, 
                                               visible=False, interactive=True, 
                                               label="stride between keyframes",
                                               info="For I2P reconstruction!")
+                # Window radius for local reconstruction
                 win_r = gradio.Number(value=5, precision=0, minimum=1, maximum=200,
                                       interactive=True, 
                                       label="the radius of the input window",
                                       info="For I2P reconstruction!")
+                # Number of frames for scene initialization
                 initial_winsize = gradio.Number(value=5, precision=0, minimum=2, maximum=200,
                                       interactive=True, 
                                       label="the number of frames for initialization",
                                       info="For I2P reconstruction!")
+                # Confidence threshold for I2P model
                 conf_thres_i2p = gradio.Slider(value=1.5, minimum=1., maximum=10,
                                       interactive=True, 
                                       label="confidence threshold for the i2p model",
                                       info="For I2P reconstruction!")
             
+            # L2W (Local2World) reconstruction parameters
             with gradio.Row():
+                # Number of scene frames to use as reference
                 num_scene_frame = gradio.Slider(value=10, minimum=1., maximum=100, step=1,
                                       interactive=True, 
                                       label="the number of scene frames for reference",
                                       info="For L2W reconstruction!")
+                # Buffer management strategy
                 buffer_strategy = gradio.Dropdown(["reservoir", "fifo","unbounded"], 
                                            value='reservoir', interactive=True,  
                                            label="strategy for buffer management",
                                            info="For L2W reconstruction!")
+                # Buffer size for storing reference frames
                 buffer_size = gradio.Number(value=100, precision=0, minimum=1,
                                       interactive=True, 
                                       visible=True,
                                       label="size of the buffering set",
                                       info="For L2W reconstruction!")
+                # Interval for updating the buffer
                 update_buffer_intv = gradio.Number(value=1, precision=0, minimum=1,
                                       interactive=True, 
                                       label="the interval of updating the buffering set",
                                       info="For L2W reconstruction!")
             
+            # Main execution button
             run_btn = gradio.Button("Run")
 
+            # Post-processing parameters
             with gradio.Row():
-                # adjust the confidence threshold
+                # Confidence threshold for final result filtering
                 conf_thres_l2w = gradio.Slider(value=12, minimum=1., maximum=100,
                                       interactive=True, 
                                       label="confidence threshold for the result",
                                       )
-                # adjust the camera size in the output pointcloud
+                # Number of points to sample from final reconstruction
                 num_points_save = gradio.Number(value=1000000, precision=0, minimum=1,
                                       interactive=True, 
                                       label="number of points sampled from the result",
                                       )
 
+            # 3D model viewer for displaying reconstruction results
             outmodel = gradio.Model3D(height=500,
                                       clear_color=(0.,0.,0.,0.3)) 
             
-            # events
+            # Event handlers for interactive components
+            # Update display when input files change
             inputfiles.change(display_inputs,
                                 inputs=[inputfiles],
                                 outputs=[image_gallery, video_gallery])
+            # Update file input type and show/hide related components
             input_type.change(change_inputfile_type,
                                 inputs=[input_type],
                                 outputs=[inputfiles, video_extract_fps])
+            # Show/hide manual keyframe stride slider based on selection
             kf_stride.change(change_kf_stride_type,
                                 inputs=[kf_stride, inputfiles, win_r],
                                 outputs=[kf_stride_fix])
+            # Update buffer size visibility based on strategy
             buffer_strategy.change(change_buffer_strategy,
                                 inputs=[buffer_strategy],
                                 outputs=[buffer_size])
+            # Main reconstruction execution
             run_btn.click(fn=recon_scene_func,
                           inputs=[tmpdir_name, video_extract_fps,
                                   inputfiles, kf_stride_fix, win_r, initial_winsize, conf_thres_i2p,
                                   num_scene_frame, update_buffer_intv, buffer_strategy, buffer_size,
                                   conf_thres_l2w, num_points_save],
                           outputs=[outmodel, per_frame_res])
+            # Update 3D model when confidence threshold changes
             conf_thres_l2w.release(fn=get_model_from_scene,
                                  inputs=[per_frame_res, tmpdir_name, num_points_save, conf_thres_l2w],
                                  outputs=outmodel)
+            # Update 3D model when number of points changes
             num_points_save.change(fn=get_model_from_scene,
                             inputs=[per_frame_res, tmpdir_name, num_points_save, conf_thres_l2w],
                             outputs=outmodel)
 
+    # Launch the Gradio interface
     demo.launch(share=False, server_name=server_name, server_port=server_port)
-
 
 if __name__ == '__main__':
     parser = get_args_parser()

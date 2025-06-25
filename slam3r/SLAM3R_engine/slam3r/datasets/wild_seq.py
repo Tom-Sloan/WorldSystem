@@ -10,7 +10,7 @@ import torch
 SLAM3R_DIR = osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__))))
 import sys # noqa: E402
 sys.path.insert(0, SLAM3R_DIR) # noqa: E402
-from slam3r.utils.image import load_images
+from slam3r.utils.image import load_images, load_images_with_padding
 
 class Seq_Data():
     def __init__(self, 
@@ -22,22 +22,31 @@ class Seq_Data():
                  start_freq=1,  
                  postfix=None,   # the postfix of the img in the img_dir(.jpg, .png, ...)
                  to_tensor=False,
-                 start_idx=0):
+                 start_idx=0,
+                 use_padding=False):  # NEW: option to preserve entire image
         
         # Note that only img_size=224 is supported now.
-        # Imgs will be cropped and resized to 224x224, thus losing the information in the border.
+        # With use_padding=True: Imgs will be resized and padded to 224x224, preserving all content.
+        # With use_padding=False: Imgs will be cropped and resized to 224x224, losing border information.
         assert img_size==224, "Sorry, only img_size=224 is supported now."
 
         # load imgs with sequential number.
         # Imgs in the img_dir should have number in their names to indicate the order,
         # such as frame-0031.color.png, output_414.jpg, ...
-        self.imgs = load_images(img_dir, size=img_size, 
-                                verbose=not silent, img_freq=sample_freq,
-                                postfix=postfix, start_idx=start_idx, img_num=num_views)
+        if use_padding:
+            self.imgs = load_images_with_padding(img_dir, size=img_size, 
+                                    verbose=not silent, img_freq=sample_freq,
+                                    postfix=postfix, start_idx=start_idx, 
+                                    img_num=num_views, use_padding=True)
+        else:
+            self.imgs = load_images(img_dir, size=img_size, 
+                                    verbose=not silent, img_freq=sample_freq,
+                                    postfix=postfix, start_idx=start_idx, img_num=num_views)
         
         self.num_views = num_views if num_views > 0 else len(self.imgs)
         self.stride = start_freq
         self.img_num = len(self.imgs)
+        self.use_padding = use_padding
         if to_tensor:
             for img in self.imgs:
                 img['true_shape'] = torch.tensor(img['true_shape'])

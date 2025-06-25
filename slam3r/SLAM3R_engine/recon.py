@@ -344,53 +344,64 @@ def scene_recon_pipeline(i2p_model:Image2PointsModel,
                          l2w_model:Local2WorldModel, 
                          dataset, args, 
                          save_dir="results"):
+    """
+    Main pipeline for 3D scene reconstruction from image sequences.
+    Uses a two-stage approach: Image2Points (I2P) for local reconstruction and Local2World (L2W) for global registration.
+    """
 
-    win_r = args.win_r
-    num_scene_frame = args.num_scene_frame
-    initial_winsize = args.initial_winsize
-    conf_thres_l2w = args.conf_thres_l2w
-    conf_thres_i2p = args.conf_thres_i2p
-    num_points_save = args.num_points_save
+    # Extract configuration parameters from args
+    win_r = args.win_r                    # Window radius for local reconstruction
+    num_scene_frame = args.num_scene_frame # Number of scene frames to use as reference
+    initial_winsize = args.initial_winsize # Number of initial frames to bootstrap reconstruction
+    conf_thres_l2w = args.conf_thres_l2w   # Confidence threshold for L2W model
+    conf_thres_i2p = args.conf_thres_i2p   # Confidence threshold for I2P model
+    num_points_save = args.num_points_save # Number of points to save in final output
 
+    # Get scene data - assumes single scene reconstruction
     scene_id = dataset.scene_names[0]
-    data_views = dataset[0][:]
+    data_views = dataset[0][:]            # Extract all views from the scene
     num_views = len(data_views)
     
-    # Pre-save the RGB images along with their corresponding masks 
-    # in preparation for visualization at last.
+    # Pre-save RGB images for final visualization
+    # Convert images to proper format and store for later use
     rgb_imgs = []
     for i in range(len(data_views)):
         if data_views[i]['img'].shape[0] == 1:
-            data_views[i]['img'] = data_views[i]['img'][0]        
-        rgb_imgs.append(transform_img(dict(img=data_views[i]['img'][None]))[...,::-1])
+            data_views[i]['img'] = data_views[i]['img'][0]        # Remove singleton dimension
+        rgb_imgs.append(transform_img(dict(img=data_views[i]['img'][None]))[...,::-1])  # BGR to RGB conversion
+    
+    # Extract valid masks if available (for filtering invalid regions)
     if 'valid_mask' not in data_views[0]:
         valid_masks = None
     else:
         valid_masks = [view['valid_mask'] for view in data_views]   
     
-    #preprocess data for extracting their img tokens with encoder
+    # Preprocess data for image token extraction
+    # Convert to tensors and remove unnecessary fields to prepare for encoder
     for view in data_views:
         view['img'] = torch.tensor(view['img'][None])
         view['true_shape'] = torch.tensor(view['true_shape'][None])
         for key in ['valid_mask', 'pts3d_cam', 'pts3d']:
             if key in view:
-                del view[key]
-        to_device(view, device=args.device)
-    # pre-extract img tokens by encoder, which can be reused 
-    # in the following inference by both i2p and l2w models
-    res_shapes, res_feats, res_poses = get_img_tokens(data_views, i2p_model)    # 300+fps
+                del view[key]  # Remove fields not needed for token extraction
+        to_device(view, device=args.device)  # Move to GPU for processing
+    
+    # Pre-extract image tokens using encoder for efficiency
+    # These tokens can be reused by both I2P and L2W models, avoiding redundant computation
+    res_shapes, res_feats, res_poses = get_img_tokens(data_views, i2p_model)    # ~300+ fps
     print('finish pre-extracting img tokens')
 
-    # re-organize input views for the following inference.
-    # Keep necessary attributes only.
+    # Reorganize input views for subsequent inference
+    # Keep only necessary attributes to reduce memory usage
     input_views = []
     for i in range(num_views):
         input_views.append(dict(label=data_views[i]['label'],
-                              img_tokens=res_feats[i], 
+                              img_tokens=res_feats[i],      # Pre-computed image features
                               true_shape=data_views[i]['true_shape'], 
-                              img_pos=res_poses[i]))
+                              img_pos=res_poses[i]))        # Positional encodings
     
-    # decide the stride of sampling keyframes, as well as other related parameters
+    # Determine optimal keyframe sampling stride
+    # Adaptive stride selection ensures suitable camera motion between keyframes
     if args.keyframe_stride == -1:
         kf_stride = adapt_keyframe_stride(input_views, i2p_model, 
                                           win_r = 3,
@@ -400,59 +411,66 @@ def scene_recon_pipeline(i2p_model:Image2PointsModel,
     else:
         kf_stride = args.keyframe_stride
     
-    # initialize the scene with the first several frames
-    initial_winsize = min(initial_winsize, num_views//kf_stride)
+    # Initialize scene reconstruction with first several frames
+    # This creates the initial world coordinate system and reference frames
+    initial_winsize = min(initial_winsize, num_views//kf_stride)  # Ensure we don't exceed available frames
     assert initial_winsize >= 2, "not enough views for initializing the scene reconstruction"
     initial_pcds, initial_confs, init_ref_id = initialize_scene(input_views[:initial_winsize*kf_stride:kf_stride], 
                                                    i2p_model, 
                                                    winsize=initial_winsize,
                                                    return_ref_id=True) # 5*(1,224,224,3)
     
-    # start reconstrution of the whole scene
+    # Initialize data structures for tracking reconstruction results
     init_num = len(initial_pcds)
     per_frame_res = dict(i2p_pcds=[], i2p_confs=[], l2w_pcds=[], l2w_confs=[])
     for key in per_frame_res:
-        per_frame_res[key] = [None for _ in range(num_views)]
+        per_frame_res[key] = [None for _ in range(num_views)]  # Pre-allocate storage for all frames
     
-    registered_confs_mean = [_ for _ in range(num_views)]
+    registered_confs_mean = [_ for _ in range(num_views)]  # Track mean confidence per frame
     
-    # set up the world coordinates with the initial window
+    # Set up world coordinates with the initial window
+    # Store confidence scores and establish initial reference frames
     for i in range(init_num):
         per_frame_res['l2w_confs'][i*kf_stride] = initial_confs[i][0].to(args.device)  # 224,224
         registered_confs_mean[i*kf_stride] = per_frame_res['l2w_confs'][i*kf_stride].mean().cpu()
 
-    # initialize the buffering set with the initial window
+    # Initialize buffering set with initial window frames
+    # Buffering set maintains a subset of frames in GPU memory for efficient reference
     assert args.buffer_size <= 0 or args.buffer_size >= init_num 
     buffering_set_ids = [i*kf_stride for i in range(init_num)]
     
-    # set up the world coordinates with frames in the initial window
+    # Set up world coordinates for frames in initial window
+    # Assign 3D points to each frame in world coordinate system
     for i in range(init_num):
         input_views[i*kf_stride]['pts3d_world'] = initial_pcds[i]
         
+    # Normalize and filter initial point clouds based on confidence
     initial_valid_masks = [conf > conf_thres_i2p for conf in initial_confs] # 1,224,224
     normed_pts = normalize_views([view['pts3d_world'] for view in input_views[:init_num*kf_stride:kf_stride]],
                                                 initial_valid_masks)
     for i in range(init_num):
         input_views[i*kf_stride]['pts3d_world'] = normed_pts[i]
-        # filter out points with low confidence
+        # Filter out low-confidence points by setting them to zero
         input_views[i*kf_stride]['pts3d_world'][~initial_valid_masks[i]] = 0       
         per_frame_res['l2w_pcds'][i*kf_stride] = normed_pts[i]  # 224,224,3
 
-    # recover the pointmap of each view in their local coordinates with the I2P model
-    # TODO: batchify
+    # Phase 1: Recover point clouds in local coordinates using I2P model
+    # Process each frame to get its local 3D reconstruction
     local_confs_mean = []
     adj_distance = kf_stride
-    for view_id in tqdm(range(num_views), desc="I2P resonstruction"):
-        # skip the views in the initial window
+    for view_id in tqdm(range(num_views), desc="I2P reconstruction"):
+        # Skip views already processed in initial window
         if view_id in buffering_set_ids:
-            # trick to mark the keyframe in the initial window
+            # Special handling for keyframes in initial window
             if view_id // kf_stride == init_ref_id:
                 per_frame_res['i2p_pcds'][view_id] = per_frame_res['l2w_pcds'][view_id].cpu()
             else:
                 per_frame_res['i2p_pcds'][view_id] = torch.zeros_like(per_frame_res['l2w_pcds'][view_id], device="cpu")
             per_frame_res['i2p_confs'][view_id] = per_frame_res['l2w_confs'][view_id].cpu()
             continue
-        # construct the local window 
+        
+        # Construct local window for I2P reconstruction
+        # Include neighboring frames within window radius for context
         sel_ids = [view_id]
         for i in range(1,win_r+1):
             if view_id-i*adj_distance >= 0:
@@ -461,10 +479,12 @@ def scene_recon_pipeline(i2p_model:Image2PointsModel,
                 sel_ids.append(view_id+i*adj_distance)
         local_views = [input_views[id] for id in sel_ids]
         ref_id = 0 
-        # recover points in the local window, and save the keyframe points and confs
+        
+        # Perform I2P inference to get local 3D reconstruction
         output = i2p_inference_batch([local_views], i2p_model, ref_id=ref_id, 
                                     tocpu=False, unsqueeze=False)['preds']
-        #save results of the i2p model
+        
+        # Save I2P results
         per_frame_res['i2p_pcds'][view_id] = output[ref_id]['pts3d'].cpu() # 1,224,224,3
         per_frame_res['i2p_confs'][view_id] = output[ref_id]['conf'][0].cpu() # 224,224
 

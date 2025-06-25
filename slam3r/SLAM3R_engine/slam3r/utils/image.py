@@ -69,6 +69,40 @@ def _resize_pil_image(img, long_edge_size):
     return img.resize(new_size, interp)
 
 
+def _resize_and_pad_image(img, target_size=224, pad_value=0.5):
+    """
+    Resize image maintaining aspect ratio, then pad to square.
+    This preserves all image content unlike center cropping.
+    
+    Args:
+        img: PIL Image
+        target_size: Target square size (default 224)
+        pad_value: Padding value 0-1 (default 0.5 for neutral gray)
+    
+    Returns:
+        PIL Image of size (target_size, target_size) with preserved content
+    """
+    W, H = img.size
+    
+    # Calculate scale to fit longer side to target_size
+    scale = target_size / max(W, H)
+    new_W, new_H = int(W * scale), int(H * scale)
+    
+    # Resize maintaining aspect ratio
+    img = img.resize((new_W, new_H), PIL.Image.LANCZOS)
+    
+    # Create square canvas with padding color
+    pad_color = tuple(int(pad_value * 255) for _ in range(3))
+    square_img = PIL.Image.new('RGB', (target_size, target_size), color=pad_color)
+    
+    # Center the resized image on the square canvas
+    offset_x = (target_size - new_W) // 2
+    offset_y = (target_size - new_H) // 2
+    square_img.paste(img, (offset_x, offset_y))
+    
+    return square_img, (offset_x, offset_y, new_W, new_H)  # Return padding info for potential use
+
+
 def load_images(folder_or_list, size, square_ok=False, 
                 verbose=1, img_num=0, img_freq=0, 
                 postfix=None, start_idx=0):
@@ -155,7 +189,6 @@ def load_images(folder_or_list, size, square_ok=False,
     if verbose > 0:
         print(f' ({len(imgs)} images loaded)')
     return imgs
-
 
 
 def crop_and_resize(image, depthmap, intrinsics, long_size, rng=None, info=None, use_crop=False):
@@ -269,3 +302,97 @@ def load_scannetpp_images_pts3dcam(folder_or_list, size, square_ok=False, verbos
         print(f' (Found {len(imgs)} images)')
     return imgs            
             
+
+def load_images_with_padding(folder_or_list, size, square_ok=False, 
+                verbose=1, img_num=0, img_freq=0, 
+                postfix=None, start_idx=0, use_padding=True):
+    """ 
+    Alternative to load_images that preserves entire image content using padding.
+    Same interface as load_images but with use_padding option.
+    """
+    if isinstance(folder_or_list, str):
+        if verbose > 0:
+            print(f'>> Loading images from {folder_or_list}')
+        img_names = [name for name in os.listdir(folder_or_list) if not "depth" in name]
+        if postfix is not None:
+            img_names = [name for name in img_names if name.endswith(postfix)]
+        root, folder_content = folder_or_list, img_names
+        
+    elif isinstance(folder_or_list, list):
+        if verbose > 0:
+            print(f'>> Loading a list of {len(folder_or_list)} images')
+        root, folder_content = '', folder_or_list
+
+    else:
+        raise ValueError(f'bad {folder_or_list=} ({type(folder_or_list)})')
+   
+    # sort images by number in name
+    len_postfix = len(postfix) if postfix is not None \
+        else len(folder_content[0]) - folder_content[0].rfind('.')
+
+    img_numbers = []
+    for name in folder_content:
+        dot_index = len(name) - len_postfix
+        number_start = 0
+        for i in range(dot_index-1, 0, -1):
+            if not name[i].isdigit():
+                number_start = i + 1
+                break
+        img_numbers.append(float(name[number_start:dot_index]))
+    folder_content = [x for _, x in sorted(zip(img_numbers, folder_content))]
+
+    if start_idx > 0:
+        folder_content = folder_content[start_idx:]
+    if(img_freq > 0):
+        folder_content = folder_content[::img_freq]
+    if(img_num > 0):
+        folder_content = folder_content[:img_num]
+
+    supported_images_extensions = ['.jpg', '.jpeg', '.png']
+    if heif_support_enabled:
+        supported_images_extensions += ['.heic', '.heif']
+    supported_images_extensions = tuple(supported_images_extensions)
+
+    imgs = []
+    if verbose > 0:
+        folder_content = tqdm(folder_content, desc='Loading images')
+    for path in folder_content:
+        if not path.lower().endswith(supported_images_extensions):
+            continue
+        img = exif_transpose(PIL.Image.open(os.path.join(root, path))).convert('RGB')
+        W1, H1 = img.size
+        
+        if use_padding and size == 224:
+            # Use padding approach to preserve entire image
+            img, padding_info = _resize_and_pad_image(img, size)
+            W2, H2 = img.size
+            if verbose > 1:
+                print(f' - adding {path} with resolution {W1}x{H1} --> {W2}x{H2} (padded)')
+        else:
+            # Fall back to original cropping approach
+            if size == 224:
+                img = _resize_pil_image(img, round(size * max(W1/H1, H1/W1)))
+            else:
+                img = _resize_pil_image(img, size)
+            W, H = img.size
+            cx, cy = W//2, H//2
+            if size == 224:
+                half = min(cx, cy)
+                img = img.crop((cx-half, cy-half, cx+half, cy+half))
+            else:
+                halfw, halfh = ((2*cx)//16)*8, ((2*cy)//16)*8
+                if not (square_ok) and W == H:
+                    halfh = 3*halfw/4
+                img = img.crop((cx-halfw, cy-halfh, cx+halfw, cy+halfh))
+            W2, H2 = img.size
+            if verbose > 1:
+                print(f' - adding {path} with resolution {W1}x{H1} --> {W2}x{H2} (cropped)')
+        
+        imgs.append(dict(img=ImgNorm(img)[None], true_shape=np.int32(
+            [img.size[::-1]]), idx=len(imgs), instance=str(len(imgs)), label=path))
+            
+    assert imgs, 'no images foud at '+ root 
+    if verbose > 0:
+        print(f' ({len(imgs)} images loaded)')
+    return imgs
+

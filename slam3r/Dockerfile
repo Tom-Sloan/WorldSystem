@@ -74,7 +74,7 @@ RUN pip3 install -r /app/SLAM3R_engine/requirements.txt
 RUN apt-get update && apt-get install -y libgl1-mesa-glx && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install other necessary Python packages for the processor script
-RUN pip3 install aio-pika PyYAML psutil
+RUN pip3 install aio-pika PyYAML psutil py-spy
 
 # --- Rerun SDK (visualization) ---
 RUN pip3 install --no-cache-dir "numpy>=2.2,<3" rerun-sdk==0.23.2

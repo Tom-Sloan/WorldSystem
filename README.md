@@ -133,18 +133,8 @@ docker run -it --rm \
   -e RABBITMQ_URL=amqp://host.docker.internal \
   server:latest
 ```
-### Reconstruction
-```bash
-# Build
-docker build -t reconstruction:latest ./reconstruction
-
-# Run
-docker run -it --rm \
-  --gpus all \
-  -v $(pwd)/reconstruction:/app \
-  -e RABBITMQ_URL=amqp://host.docker.internal \
-  reconstruction:latest
-```
+### slam3r
+sudo /home/sam3/anaconda3/envs/3dreconstruction/bin/py-spy top --pid 331272
 
 ### Fantasy Builder
 ```bash

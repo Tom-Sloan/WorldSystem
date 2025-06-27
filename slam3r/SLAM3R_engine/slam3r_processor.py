@@ -389,16 +389,7 @@ async def adaptive_keyframe_selection(current_pose, last_keyframe_pose, scene_ty
     
     return current_frame_index % active_kf_stride == 0, active_kf_stride
 
-async def periodic_memory_cleanup():
-    """Periodically clean up GPU memory."""
-    gc_interval = int(os.getenv("SLAM3R_GC_INTERVAL", "30"))
-    while True:
-        await asyncio.sleep(gc_interval)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gc.collect()
-            logger.info(f"GPU memory: {torch.cuda.memory_allocated()/1e9:.2f}GB allocated, "
-                       f"{torch.cuda.memory_reserved()/1e9:.2f}GB reserved")
+
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Initialisation
@@ -790,9 +781,6 @@ async def on_restart_message(msg: aio_pika.IncomingMessage):
 # ────────────────────────────────────────────────────────────────────────────────
 async def main():
     await initialise_models_and_params()
-    
-    # Start memory cleanup task
-    cleanup_task = asyncio.create_task(periodic_memory_cleanup())
     
     connection = await aio_pika.connect_robust(RABBITMQ_URL, timeout=30, heartbeat=60)
     async with connection:

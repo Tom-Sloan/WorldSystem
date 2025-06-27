@@ -175,6 +175,9 @@ services:
         GID: ${GID}
     container_name: slam3r
     runtime: nvidia
+    pid: host
+    cap_add:
+     - SYS_PTRACE
 
     # Mount source and checkpoints
     volumes:

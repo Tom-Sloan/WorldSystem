@@ -389,8 +389,6 @@ async def adaptive_keyframe_selection(current_pose, last_keyframe_pose, scene_ty
     
     return current_frame_index % active_kf_stride == 0, active_kf_stride
 
-
-
 # ───────────────────────────────────────────────────────────────────────────────
 # Initialisation
 # ───────────────────────────────────────────────────────────────────────────────
@@ -443,13 +441,14 @@ async def initialise_models_and_params():
     })
     is_slam_system_initialized = True
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Per‑frame processing
-# ───────────────────────────────────────────────────────────────────────────────
-async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
-    global current_frame_index, is_slam_initialized_for_session, slam_initialization_buffer, active_kf_stride, last_keyframe_pose
+# ============================================================
+# SLAM3R Processing Helper Functions
+# ============================================================
 
-    # Memory management
+def _perform_memory_management():
+    """Perform memory cleanup and logging for GPU/RAM usage."""
+    global current_frame_index, rerun_logger
+    
     if current_frame_index % 50 == 0 and current_frame_index > 0:
         torch.cuda.empty_cache()
         gc.collect()
@@ -474,9 +473,11 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
             except:
                 pass
 
-    start = time.time()
+def _preprocess_frame_data(img_bgr: np.ndarray, ts_ns: int):
+    """Preprocess image and create initial view and record structures."""
     tensor = preprocess_image(img_bgr)
     img_rgb_u8 = (tensor.permute(1,2,0).cpu().numpy()*255).astype(np.uint8)
+    
     if rerun_connected:
         rr.log("camera_lowres/rgb", rr.Image(img_rgb_u8))
 
@@ -486,67 +487,73 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
               "true_shape": view["true_shape"].squeeze(0),
               "timestamp_ns": ts_ns,
               "raw_pose_matrix": np.eye(4).tolist()}
+    
+    return view, record, tensor, img_rgb_u8
 
-    temp_world_pts: list = []; keyframe_id_out = None
-
-    # ───────── bootstrap ─────────
-    if not is_slam_initialized_for_session:
-        slam_initialization_buffer.append(view)
-        if len(slam_initialization_buffer) < slam_params["initial_winsize"]:
-            processed_frames_history.append(record); current_frame_index += 1
-            return None, None, None
-
-        # We have enough frames for initialization
-        # IMPORTANT: Add the current (final) frame to history first
+def _handle_slam_bootstrap(view, record):
+    """Handle SLAM system bootstrap initialization phase."""
+    global slam_initialization_buffer, is_slam_initialized_for_session, current_frame_index
+    
+    slam_initialization_buffer.append(view)
+    if len(slam_initialization_buffer) < slam_params["initial_winsize"]:
         processed_frames_history.append(record)
-
-        init_views = []
-        for v in slam_initialization_buffer:
-            _, tok, pos = slam3r_get_img_tokens([{
-                "img": v["img"].to(device),
-                "true_shape": v["true_shape"].unsqueeze(0).to(device)}], i2p_model)
-            init_views.append({"img_tokens": tok[0], "img_pos": pos[0], "true_shape": v["true_shape"]})
-
-        pcs, confs, _ = slam3r_initialize_scene(init_views, i2p_model,
-                                                winsize=slam_params["initial_winsize"],
-                                                conf_thres=slam_params["conf_thres_i2p"],
-                                                return_ref_id=True)
-        valid_counts = [(c > slam_params["conf_thres_i2p"]).sum().item() for c in confs]
-        if sum(valid_counts) < INIT_QUALITY_MIN_POINTS:
-            slam_initialization_buffer.clear()
-            current_frame_index += 1
-            return None, None, None
-
-        for idx, (pc, conf) in enumerate(zip(pcs, confs)):
-            # Calculate correct history index
-            # All 5 frames are now in history, starting at index (current_frame_index - 4)
-            hist_idx = current_frame_index - len(slam_initialization_buffer) + 1 + idx
-            
-            # Update the frame using .update() instead of |=
-            processed_frames_history[hist_idx].update({
-                "img_tokens":   init_views[idx]["img_tokens"],
-                "img_pos":      init_views[idx]["img_pos"],
-                "pts3d_world": pc,
-                "conf_world": conf,
-                "keyframe_id": f"kf_{len(keyframe_indices)}",
-            })
-            keyframe_indices.append(hist_idx)
-            pts_np = pc.cpu().numpy().reshape(-1, 3)
-            mask   = conf.cpu().numpy().reshape(-1) > slam_params["conf_thres_i2p"]
-            cols   = np.tile(np.array([[0,0,255]], np.uint8), (pts_np.shape[0],1))[mask]  # bootstrap → blue
-            world_point_cloud_buffer.extend(list(zip(pts_np[mask], cols)))
-            
-        slam_initialization_buffer.clear()
-        is_slam_initialized_for_session = True
-        logger.info("Bootstrap complete with %d keyframes.", len(keyframe_indices))
         current_frame_index += 1
         return None, None, None
 
-    # ────────────────────────── incremental ────────────────────────────
+    # We have enough frames for initialization
+    # IMPORTANT: Add the current (final) frame to history first
+    processed_frames_history.append(record)
+
+    init_views = []
+    for v in slam_initialization_buffer:
+        _, tok, pos = slam3r_get_img_tokens([{
+            "img": v["img"].to(device),
+            "true_shape": v["true_shape"].unsqueeze(0).to(device)}], i2p_model)
+        init_views.append({"img_tokens": tok[0], "img_pos": pos[0], "true_shape": v["true_shape"]})
+
+    pcs, confs, _ = slam3r_initialize_scene(init_views, i2p_model,
+                                            winsize=slam_params["initial_winsize"],
+                                            conf_thres=slam_params["conf_thres_i2p"],
+                                            return_ref_id=True)
+    valid_counts = [(c > slam_params["conf_thres_i2p"]).sum().item() for c in confs]
+    if sum(valid_counts) < INIT_QUALITY_MIN_POINTS:
+        slam_initialization_buffer.clear()
+        current_frame_index += 1
+        return None, None, None
+
+    for idx, (pc, conf) in enumerate(zip(pcs, confs)):
+        # Calculate correct history index
+        # All 5 frames are now in history, starting at index (current_frame_index - 4)
+        hist_idx = current_frame_index - len(slam_initialization_buffer) + 1 + idx
+        
+        # Update the frame using .update() instead of |=
+        processed_frames_history[hist_idx].update({
+            "img_tokens":   init_views[idx]["img_tokens"],
+            "img_pos":      init_views[idx]["img_pos"],
+            "pts3d_world": pc,
+            "conf_world": conf,
+            "keyframe_id": f"kf_{len(keyframe_indices)}",
+        })
+        keyframe_indices.append(hist_idx)
+        pts_np = pc.cpu().numpy().reshape(-1, 3)
+        mask   = conf.cpu().numpy().reshape(-1) > slam_params["conf_thres_i2p"]
+        cols   = np.tile(np.array([[0,0,255]], np.uint8), (pts_np.shape[0],1))[mask]  # bootstrap → blue
+        world_point_cloud_buffer.extend(list(zip(pts_np[mask], cols)))
+        
+    slam_initialization_buffer.clear()
+    is_slam_initialized_for_session = True
+    logger.info("Bootstrap complete with %d keyframes.", len(keyframe_indices))
+    current_frame_index += 1
+    return None, None, None
+
+def _perform_incremental_processing(view, record):
+    """Perform incremental SLAM processing on the current frame."""
+    # Generate tokens for current frame
     _, tok, pos = slam3r_get_img_tokens([{"img": view["img"].to(device),
                                           "true_shape": view["true_shape"].to(device)}], i2p_model)
     record["img_tokens"], record["img_pos"] = tok[0], pos[0]
 
+    # Ensure keyframe tokens are available
     for kf_idx in list(keyframe_indices):
         if kf_idx >= len(processed_frames_history): continue
         kf_hist = processed_frames_history[kf_idx]
@@ -556,10 +563,12 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
             _, tok_kf, pos_kf = slam3r_get_img_tokens([{"img": bi, "true_shape": bt}], i2p_model)
             kf_hist["img_tokens"], kf_hist["img_pos"] = tok_kf[0], pos_kf[0]
 
+    # Prepare reference keyframe and current frame
     ref_kf = processed_frames_history[keyframe_indices[-1]]
     if "img" not in ref_kf: ref_kf["img"] = ref_kf["img_tensor"].unsqueeze(0)
     record["img"] = record["img_tensor"].unsqueeze(0)
 
+    # I2P inference
     window_pair = [
         {k: ref_kf[k] for k in ("img", "img_tokens", "img_pos", "true_shape")},
         {k: record[k] for k in ("img", "img_tokens", "img_pos", "true_shape")},
@@ -567,10 +576,7 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
     pred = i2p_inference_batch([window_pair]*INFERENCE_WINDOW_BATCH, i2p_model, ref_id=0)["preds"][0]
     record["pts3d_cam"], record["conf_cam"] = pred["pts3d"], pred["conf"]
 
-    # ---------------- colours -----------------
-    rgb_flat = colors_from_image(tensor)
-
-    # Build device-safe reference & source views
+    # Build candidate views for L2W inference
     cand_views = []
     for idx in keyframe_indices:
         hv = processed_frames_history[idx]
@@ -579,9 +585,10 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
                            ("img_tokens", "img_pos", "true_shape", "pts3d_world")})
 
     if not cand_views:
-        processed_frames_history.append(record); current_frame_index += 1
-        return None, None, None
+        processed_frames_history.append(record)
+        return None
 
+    # L2W inference
     src_view = {
         "img_tokens": _to_dev(record["img_tokens"]),
         "img_pos":    _to_dev(record["img_pos"]),
@@ -595,125 +602,198 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
                             ref_ids=list(range(len(ref_views))),
                             device=device, normalize=slam_params["norm_input_l2w"])[-1]
     record["pts3d_world"], record["conf_world"] = l2w_out["pts3d_in_other_view"], l2w_out["conf"]
+    
+    return record
 
-    # -------- pose SVD --------
+def _estimate_camera_pose(record):
+    """Estimate camera pose using SVD alignment between camera and world points."""
     P_cam   = record["pts3d_cam"].squeeze(0).cpu().reshape(-1, 3).numpy()
     P_world = record["pts3d_world"].squeeze(0).cpu().reshape(-1, 3).numpy()
     conf_cam_flat   = record["conf_cam"].squeeze().cpu().numpy().reshape(-1)
     conf_world_flat = record["conf_world"].squeeze().cpu().numpy().reshape(-1)
+    
     mask = ((conf_cam_flat > slam_params["conf_thres_i2p"]) &
             (conf_world_flat > slam_params["conf_thres_l2w"]))
     if mask.sum() < 3:
         mask = ((conf_cam_flat > slam_params["conf_thres_i2p"]) &
                 (conf_world_flat > 0.5 * slam_params["conf_thres_l2w"]))
+    
     R, t = estimate_rigid_transform_svd(P_cam[mask], P_world[mask]) if mask.sum() >=3 else (np.eye(3), np.zeros((3,1)))
-    T = np.eye(4); T[:3,:3], T[:3,3] = R, t.squeeze()
+    T = np.eye(4)
+    T[:3,:3], T[:3,3] = R, t.squeeze()
     record["raw_pose_matrix"] = T.tolist()
+    
+    return T
 
+async def _update_scene_and_keyframe_logic(pose_matrix, record_index):
+    """Update scene type detection and determine if current frame should be a keyframe."""
+    global active_kf_stride, last_keyframe_pose
+    
     # Update scene type detection
-    scene_type = scene_detector.update(T)
+    scene_type = scene_detector.update(pose_matrix)
     
     # Adaptive keyframe selection
     should_be_keyframe, active_kf_stride = await adaptive_keyframe_selection(
-        T, last_keyframe_pose, scene_type, current_frame_index, active_kf_stride
+        pose_matrix, last_keyframe_pose, scene_type, current_frame_index, active_kf_stride
     )
-
-    # -------------- accumulate points --------------
-    mask_world = conf_world_flat > slam_params["conf_thres_l2w"]
-    if mask_world.sum() < 3:
-        mask_world = conf_world_flat > 0.5 * slam_params["conf_thres_l2w"]
-    new_pts  = P_world[mask_world]
-    cols_flat = rgb_flat[mask_world]
-    pts_col_pairs = list(zip(new_pts.tolist(), cols_flat.tolist()))
-    world_point_cloud_buffer.extend(pts_col_pairs)
-    temp_world_pts.extend(pts_col_pairs)
-
-    # ---------- push history ----------
-    record_index = len(processed_frames_history)
-    processed_frames_history.append(record)
-
-    # ---------- keyframe selection ----------
+    
+    keyframe_id_out = None
     if should_be_keyframe:
+        record = processed_frames_history[record_index]
         record["keyframe_id"] = f"kf_{len(keyframe_indices)}"
         keyframe_indices.append(record_index)
         keyframe_id_out = record["keyframe_id"]
-        last_keyframe_pose = T.copy()
+        last_keyframe_pose = pose_matrix.copy()
+    
+    return keyframe_id_out, scene_type
 
-    # ---------- Rerun logging ----------
-    if rerun_connected:
-        # Camera pose logging
-        rr.log("world/camera",
-               rr.Transform3D(translation=T[:3,3],
-                              rotation=rr.Quaternion(xyzw=matrix_to_quaternion(T[:3,:3]))))
-        
-        # Update camera path
-        camera_positions.append(T[:3,3].copy())
-        if len(camera_positions) > 1:
-            rr.log("world/camera_path",
-                   rr.LineStrips3D(np.stack(camera_positions, dtype=np.float32)[None]))
-        
-        # Batch point logging
-        if temp_world_pts and rerun_logger:
-            xyz_list = [p for p, _ in temp_world_pts]
-            rgb_list = [c for _, c in temp_world_pts]
-            rerun_logger.add_points(xyz_list, rgb_list)
-        
-        # Log keyframes with higher quality
-        if keyframe_id_out and temp_world_pts:
-            kf_pts = np.array([p for p, _ in temp_world_pts])
-            kf_cols = np.array([c for _, c in temp_world_pts])
-            kf_voxel = float(os.getenv("SLAM3R_RERUN_KEYFRAME_VOXEL_SIZE", "0.005"))
-            kf_pts_down, kf_cols_down = downsample_pointcloud_voxel(
-                kf_pts, kf_cols, voxel_size=kf_voxel
-            )
-            if len(kf_pts_down) > 0:
-                rr.log(f"world/keyframes/{keyframe_id_out}",
-                       rr.Points3D(
-                           positions=cv_to_rerun_xyz(kf_pts_down),
-                           colors=kf_cols_down.astype(np.uint8),
-                           radii=np.full(len(kf_pts_down), 0.004, np.float32)
-                       ))
-        
-        # Scene type logging
-        if current_frame_index % 10 == 0:
-            rr.log("diagnostics/scene_type", 
-                   rr.TextLog(f"Scene: {scene_type}, Stride: {active_kf_stride}"))
+def _accumulate_world_points(record, tensor):
+    """Accumulate world points from current frame into global point cloud buffer."""
+    conf_world_flat = record["conf_world"].squeeze().cpu().numpy().reshape(-1)
+    P_world = record["pts3d_world"].squeeze(0).cpu().reshape(-1, 3).numpy()
+    
+    mask_world = conf_world_flat > slam_params["conf_thres_l2w"]
+    if mask_world.sum() < 3:
+        mask_world = conf_world_flat > 0.5 * slam_params["conf_thres_l2w"]
+    
+    new_pts = P_world[mask_world]
+    rgb_flat = colors_from_image(tensor)
+    cols_flat = rgb_flat[mask_world]
+    pts_col_pairs = list(zip(new_pts.tolist(), cols_flat.tolist()))
+    
+    world_point_cloud_buffer.extend(pts_col_pairs)
+    
+    return pts_col_pairs
 
-        # Log camera frustum
-        if camera_intrinsics:
-            frustum_path = f"world/camera_frustums/frame_{current_frame_index}"
-            rr.log(
-                frustum_path,
-                rr.Transform3D(
-                    translation=T[:3, 3],
-                    rotation=rr.Quaternion(xyzw=matrix_to_quaternion(T[:3, :3])),
-                ),
-            )
-            rr.log(
-                frustum_path + "/pinhole",
-                rr.Pinhole(
-                    focal_length=[camera_intrinsics['fx'], camera_intrinsics['fy']],
-                    principal_point=[camera_intrinsics['cx'], camera_intrinsics['cy']],
-                    resolution=[TARGET_IMAGE_WIDTH, TARGET_IMAGE_HEIGHT],
-                ),
-            )
-            rr.log(frustum_path + "/image", rr.Image(img_rgb_u8))    
+def _log_to_rerun(pose_matrix, temp_world_pts, keyframe_id_out, img_rgb_u8):
+    """Log camera pose, points, and visualization data to Rerun."""
+    global rerun_logger
+    
+    if not rerun_connected:
+        return
+    
+    # Camera pose logging
+    rr.log("world/camera",
+           rr.Transform3D(translation=pose_matrix[:3,3],
+                          rotation=rr.Quaternion(xyzw=matrix_to_quaternion(pose_matrix[:3,:3]))))
+    
+    # Update camera path
+    camera_positions.append(pose_matrix[:3,3].copy())
+    if len(camera_positions) > 1:
+        rr.log("world/camera_path",
+               rr.LineStrips3D(np.stack(camera_positions, dtype=np.float32)[None]))
+    
+    # Batch point logging
+    if temp_world_pts and rerun_logger:
+        xyz_list = [p for p, _ in temp_world_pts]
+        rgb_list = [c for _, c in temp_world_pts]
+        rerun_logger.add_points(xyz_list, rgb_list)
+    
+    # Log keyframes with higher quality
+    if keyframe_id_out and temp_world_pts:
+        kf_pts = np.array([p for p, _ in temp_world_pts])
+        kf_cols = np.array([c for _, c in temp_world_pts])
+        kf_voxel = float(os.getenv("SLAM3R_RERUN_KEYFRAME_VOXEL_SIZE", "0.005"))
+        kf_pts_down, kf_cols_down = downsample_pointcloud_voxel(
+            kf_pts, kf_cols, voxel_size=kf_voxel
+        )
+        if len(kf_pts_down) > 0:
+            rr.log(f"world/keyframes/{keyframe_id_out}",
+                   rr.Points3D(
+                       positions=cv_to_rerun_xyz(kf_pts_down),
+                       colors=kf_cols_down.astype(np.uint8),
+                       radii=np.full(len(kf_pts_down), 0.004, np.float32)
+                   ))
+    
+    # Scene type logging
+    if current_frame_index % 10 == 0:
+        scene_type = scene_detector.scene_type
+        rr.log("diagnostics/scene_type", 
+               rr.TextLog(f"Scene: {scene_type}, Stride: {active_kf_stride}"))
 
-    # ---------- RabbitMQ payloads ----------
+    # Log camera frustum
+    if camera_intrinsics:
+        frustum_path = f"world/camera_frustums/frame_{current_frame_index}"
+        rr.log(
+            frustum_path,
+            rr.Transform3D(
+                translation=pose_matrix[:3, 3],
+                rotation=rr.Quaternion(xyzw=matrix_to_quaternion(pose_matrix[:3, :3])),
+            ),
+        )
+        rr.log(
+            frustum_path + "/pinhole",
+            rr.Pinhole(
+                focal_length=[camera_intrinsics['fx'], camera_intrinsics['fy']],
+                principal_point=[camera_intrinsics['cx'], camera_intrinsics['cy']],
+                resolution=[TARGET_IMAGE_WIDTH, TARGET_IMAGE_HEIGHT],
+            ),
+        )
+        rr.log(frustum_path + "/image", rr.Image(img_rgb_u8))
+
+def _prepare_rabbitmq_messages(pose_matrix, temp_world_pts, keyframe_id_out, ts_ns, record):
+    """Prepare pose, point cloud, and visualization messages for RabbitMQ."""
     sampled_pairs = random.sample(temp_world_pts, 50_000) if len(temp_world_pts) > 50_000 else temp_world_pts
     xyz_only = [p for p,_ in sampled_pairs]
 
-    q = matrix_to_quaternion(T[:3, :3])
+    q = matrix_to_quaternion(pose_matrix[:3, :3])
     pose_msg = {
         "timestamp_ns": ts_ns,
         "processing_timestamp": str(datetime.now().timestamp()),
-        "position": dict(zip("xyz", T[:3, 3].astype(float))),
+        "position": dict(zip("xyz", pose_matrix[:3, 3].astype(float))),
         "orientation": {"x":float(q[0]), "y":float(q[1]), "z":float(q[2]), "w":float(q[3])},
         "raw_pose_matrix": record["raw_pose_matrix"],
     }
     pc_msg  = {"timestamp_ns": ts_ns, "points": xyz_only}
     vis_msg = {"timestamp_ns": ts_ns, "type": "points_update_incremental",
                "vertices": xyz_only, "faces": [], "keyframe_id": keyframe_id_out}
+    
+    return pose_msg, pc_msg, vis_msg
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Per‑frame processing
+# ───────────────────────────────────────────────────────────────────────────────
+async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
+    global current_frame_index, is_slam_initialized_for_session
+
+    # Memory management
+    _perform_memory_management()
+
+    start = time.time()
+    
+    # Preprocess frame data
+    view, record, tensor, img_rgb_u8 = _preprocess_frame_data(img_bgr, ts_ns)
+    temp_world_pts: list = []
+    keyframe_id_out = None
+
+    # ───────── bootstrap ─────────
+    if not is_slam_initialized_for_session:
+        return _handle_slam_bootstrap(view, record)
+
+    # ────────────────────────── incremental ────────────────────────────
+    record = _perform_incremental_processing(view, record)
+    if record is None:
+        current_frame_index += 1
+        return None, None, None
+
+    # -------- pose SVD --------
+    pose_matrix = _estimate_camera_pose(record)
+
+    # -------------- accumulate points --------------
+    temp_world_pts = _accumulate_world_points(record, tensor)
+
+    # ---------- push history ----------
+    record_index = len(processed_frames_history)
+    processed_frames_history.append(record)
+
+    # ---------- keyframe selection ----------
+    keyframe_id_out, scene_type = await _update_scene_and_keyframe_logic(pose_matrix, record_index)
+
+    # ---------- Rerun logging ----------
+    _log_to_rerun(pose_matrix, temp_world_pts, keyframe_id_out, img_rgb_u8)
+
+    # ---------- RabbitMQ payloads ----------
+    pose_msg, pc_msg, vis_msg = _prepare_rabbitmq_messages(pose_matrix, temp_world_pts, keyframe_id_out, ts_ns, record)
 
     current_frame_index += 1
     logger.info("Frame %d processed in %.2fs", current_frame_index-1, time.time()-start)

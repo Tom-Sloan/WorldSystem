@@ -134,7 +134,12 @@ docker run -it --rm \
   server:latest
 ```
 ### slam3r
+#### Monitor SLAM3R process performance in real-time using py-spy
 sudo /home/sam3/anaconda3/envs/3dreconstruction/bin/py-spy top --pid 331272
+
+#### Get the process ID of the running slam3r container
+docker inspect --format '{{.State.Pid}}' slam3r
+
 
 ### Fantasy Builder
 ```bash

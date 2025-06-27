@@ -1,0 +1,24 @@
+III.	EXPERIMENTAL DESIGN
+A.	Data Collection
+The proposed system comprises several interconnected components designed to facilitate real-time control and visualization. Each component plays a crucial role in ensuring the system's overall effectiveness and accessibility. The architecture of the system is shown in Figure 1.
+
+Drone
+Purpose: The drone serves as the primary platform for real-time control and data acquisition. We employ a consumer-grade drone, such as the DJI Mini 3, which is equipped with a standard RGB camera and an Inertial Measurement Unit (IMU). The use of an off-the-shelf drone eliminates the complexities associated with custom-built platforms and specialized hardware, making it easier to deploy and operate in indoor environments.
+   
+Figure 1: System Architecture Overview—Illustrating the integration of the consumer drone, Android application, server, and visualization tool within the proposed framework.
+Android Application
+Purpose: Developed in Kotlin, the Android application acts as an interface between the drone and the rest of the system. It connects to the DJI drone using the DJI Mobile SDK, facilitating command and control operations. A significant amount of documentation is available online for how this can be replicated[17]. For reference, DJI MSDK v5.9 was used. The application streams real-time RGB camera data and IMU readings to the server for processing.
+
+Server
+Purpose: The server, implemented in Python, serves as the central hub that connects all system components. It receives data from the Android application and communicates with the visualization tool. The server also sends control commands back to the drone via the Android application, enabling adaptive navigation. This modular design allows for scalability and easy integration of additional features.
+
+Visualization Tool
+Purpose: To provide users with an intuitive interface for monitoring and controlling the drone system, we have developed a visualization tool using React.js. This web-based application offers real-time visualization of the drone's position and orientation. It enhances user engagement by allowing easy interaction with the system, making it suitable for demonstrations and operational control.
+
+B.	Cloud Architecture
+A Python-based server, running on a local machine with an Nvidia RTX 3090 GPU, orchestrates the key tasks. It employs Docker containers to isolate the visualization modules, with RabbitMQ handling asynchronous data exchange among them. As messages arrive (camera frames, poses), the server updates the model in real time. FastAPI manages HTTP and WebSocket connections for data logging and client communication, while Nginx acts as a reverse proxy to present a unified endpoint. The server also sends control commands back to the drone through the Android application, enabling adaptive navigation.
+
+C.	Visualization Software
+The system offers an intuitive web-based front end, built with React.js, which displays the drone’s live video feed, pose, and incremental map. For an immersive experience, an Oculus Quest 3 headset can be used to visualize the 3D scene invirtual reality, benefiting from its stereoscopic display and inside-out tracking. This interface supports both casual demonstrations on a monitor and in-depth exploration via VR, making the mapping process and results more accessible and engaging. 
+
+

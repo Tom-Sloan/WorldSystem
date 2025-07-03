@@ -22,6 +22,7 @@ services:
       - "443:443"
     depends_on:
       - server
+  
   server:
     image: server:latest
     build:
@@ -57,7 +58,7 @@ services:
       - IMU_DATA_EXCHANGE=imu_data_exchange
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
-      - INITIAL_ANALYSIS_MODE=yolo
+      - INITIAL_ANALYSIS_MODE=none #yolo
 
       # Added Rerun configuration
       - RERUN_VIEWER_ADDRESS=0.0.0.0:9090

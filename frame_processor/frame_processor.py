@@ -12,6 +12,8 @@ from ultralytics import YOLO
 import rerun as rr  # Import Rerun SDK
 from prometheus_client import start_http_server, Counter, Gauge, Histogram, Summary
 import threading
+from collections import deque
+from datetime import datetime
 
 # Prometheus metrics
 PROCESSED_FRAMES = Counter('frame_processor_frames_processed_total', 'Total number of frames processed')
@@ -22,12 +24,22 @@ FRAME_SIZE = Gauge('frame_processor_frame_size_bytes', 'Size of the processed fr
 CONNECTION_STATUS = Gauge('frame_processor_connection_status', 'Connection status (1=connected, 0=disconnected)')
 NTP_TIME_OFFSET = Gauge('frame_processor_ntp_time_offset_seconds', 'NTP time offset in seconds')
 
+# Additional image statistics metrics
+FRAME_WIDTH = Gauge('frame_processor_frame_width_pixels', 'Width of the processed frame in pixels')
+FRAME_HEIGHT = Gauge('frame_processor_frame_height_pixels', 'Height of the processed frame in pixels')
+FRAME_TIMESTAMP = Gauge('frame_processor_latest_timestamp_ms', 'Latest frame timestamp in milliseconds')
+
 # Add NTP client and time offset tracking
 ntp_client = ntplib.NTPClient()
 ntp_time_offset = 0.0  # Offset between system time and NTP time in seconds
 last_ntp_sync = 0
 NTP_SYNC_INTERVAL = 60  # Sync NTP every 60 seconds
 NTP_SERVER = os.getenv("NTP_SERVER", "pool.ntp.org")
+
+# Image statistics tracking
+MAX_STATS_ENTRIES = 20  # Keep last 20 entries like the React component
+image_stats = deque(maxlen=MAX_STATS_ENTRIES)
+stats_lock = threading.Lock()
 
 def sync_ntp_time():
     """Update the NTP time offset by querying an NTP server."""
@@ -167,6 +179,13 @@ def frame_callback(ch, method, properties, body):
         server_received = properties.headers.get("server_received") if properties.headers else None
         ntp_time = properties.headers.get("ntp_time") if properties.headers else server_received
         
+        # Ensure timestamp_ns is an integer if provided
+        if timestamp_ns is not None:
+            try:
+                timestamp_ns = int(timestamp_ns)
+            except (ValueError, TypeError):
+                timestamp_ns = None
+        
         np_arr = np.frombuffer(body, np.uint8)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if frame is None:
@@ -205,6 +224,11 @@ def frame_callback(ch, method, properties, body):
         # Update Prometheus metrics
         PROCESSED_FRAMES.inc()
         PROCESSING_TIME.observe(processing_time_ms)
+        FRAME_WIDTH.set(width)
+        FRAME_HEIGHT.set(height)
+        # Ensure timestamp is int before division
+        ts_for_metric = timestamp_ns if isinstance(timestamp_ns, int) else (int(timestamp_ns) if timestamp_ns else start_time_ns)
+        FRAME_TIMESTAMP.set(ts_for_metric // 1_000_000)
         
         # Log to Rerun if enabled
         if RERUN_ENABLED:
@@ -214,7 +238,7 @@ def frame_callback(ch, method, properties, body):
             rgb_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
             
             # Log the frame to Rerun
-            rr.set_time_nanos("capture_time", timestamp)
+            rr.set_time("sensor_time", timestamp=1e-9 * timestamp)
             rr.log("processed_frame", rr.Image(rgb_frame).compress(jpeg_quality=85))
             
             # If we're using YOLO, also log the detections
@@ -254,6 +278,89 @@ def frame_callback(ch, method, properties, body):
         original_width = properties.headers.get("original_width") if properties.headers else width
         original_height = properties.headers.get("original_height") if properties.headers else height
         resolution = properties.headers.get("resolution") if properties.headers else "Unknown"
+        
+        # Ensure original dimensions are integers
+        try:
+            original_width = int(original_width) if original_width is not None else width
+            original_height = int(original_height) if original_height is not None else height
+        except (ValueError, TypeError):
+            original_width = width
+            original_height = height
+        
+        # Ensure timestamp_ns is an integer for calculations
+        timestamp_ns_int = timestamp_ns if isinstance(timestamp_ns, int) else (int(timestamp_ns) if timestamp_ns else start_time_ns)
+        
+        # Collect image statistics
+        image_stat = {
+            "timestamp_ns": timestamp_ns_int,
+            "timestamp_ms": timestamp_ns_int // 1_000_000,  # Convert to ms
+            "size_bytes": len(annotated_bytes),
+            "width": width,
+            "height": height,
+            "original_width": original_width,
+            "original_height": original_height,
+            "processing_time_ms": processing_time_ms,
+            "detection_count": detection_count,
+            "resolution": resolution
+        }
+        
+        # Add to stats deque (thread-safe)
+        with stats_lock:
+            image_stats.append(image_stat)
+            
+        # Log statistics to Rerun
+        if RERUN_ENABLED:
+            # Create arrays for the table visualization
+            with stats_lock:
+                stats_list = list(image_stats)
+            
+            if stats_list:
+                # Extract data for visualization
+                timestamps_ms = [s["timestamp_ms"] for s in stats_list]
+                sizes_kb = [s["size_bytes"] / 1024 for s in stats_list]  # Convert to KB
+                processing_times = [s["processing_time_ms"] for s in stats_list]
+                detection_counts = [s["detection_count"] for s in stats_list]
+                
+                # Log as time series data
+                rr.set_time("sensor_time", timestamp=1e-9 * timestamp)
+                
+                # Log image size over time
+                rr.log("stats/image_size_kb", rr.Scalars(sizes_kb[-1]))
+                
+                # Log processing time
+                rr.log("stats/processing_time_ms", rr.Scalars(processing_times[-1]))
+                
+                # Log detection count if YOLO is active
+                if current_mode == "yolo":
+                    rr.log("stats/detection_count", rr.Scalars(float(detection_counts[-1])))
+                
+                # Log frame dimensions
+                rr.log("stats/frame_width", rr.Scalars(float(width)))
+                rr.log("stats/frame_height", rr.Scalars(float(height)))
+                
+                # Create a text log with the latest stats
+                latest_stat = stats_list[-1]
+                stats_text = f"""Frame Statistics:
+Timestamp: {latest_stat['timestamp_ms']} ms
+Size: {latest_stat['size_bytes'] / 1024:.1f} KB
+Dimensions: {latest_stat['width']}x{latest_stat['height']}
+Processing Time: {latest_stat['processing_time_ms']:.1f} ms
+Detections: {latest_stat['detection_count']}
+Resolution: {latest_stat['resolution']}"""
+                
+                rr.log("stats/latest_info", rr.TextLog(stats_text))
+                
+                # Log a table view of recent stats (similar to React component)
+                if len(stats_list) > 1:
+                    table_text = "Recent Frame Statistics:\n"
+                    table_text += "Timestamp (ms) | Size (KB) | Dimensions | Proc Time (ms) | Detections\n"
+                    table_text += "-" * 70 + "\n"
+                    for stat in stats_list[-10:]:  # Show last 10 entries
+                        table_text += f"{stat['timestamp_ms']:14} | {stat['size_bytes']/1024:9.1f} | "
+                        table_text += f"{stat['width']:4}x{stat['height']:<4} | {stat['processing_time_ms']:14.1f} | "
+                        table_text += f"{stat['detection_count']:10}\n"
+                    
+                    rr.log("stats/recent_table", rr.TextLog(table_text))
         
         # Include all metadata in the headers including NTP information
         headers = {

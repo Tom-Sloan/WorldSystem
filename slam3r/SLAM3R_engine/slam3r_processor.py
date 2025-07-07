@@ -273,6 +273,9 @@ scene_detector = SceneTypeDetector(
 )
 last_keyframe_pose = None
 
+# Video segment tracking
+current_video_segment = None  # Track current video segment to detect boundaries
+
 # ───────────────────────────────────────────────────────────────────────────────
 # Camera intrinsics helper
 # ───────────────────────────────────────────────────────────────────────────────

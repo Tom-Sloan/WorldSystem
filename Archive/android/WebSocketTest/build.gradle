@@ -1,0 +1,28 @@
+apply from:rootProject.file('dependencies.gradle')
+buildscript {
+    ext.kotlin_version = '1.8.20'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        // Suggested Android Gradle Plugin Version
+        classpath "com.android.tools.build:gradle:7.4.2"
+
+        //Suggested Kotlin version
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        // DJI's Maven repository
+        maven { url 'https://dji-sdk.bintray.com/sdk/deploy/maven2' }
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}

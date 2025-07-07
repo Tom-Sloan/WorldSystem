@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:context=".FirstFragment">
+
+    <!-- Add the SurfaceView at the beginning so it's behind other elements -->
+    <SurfaceView
+        android:id="@+id/video_surface_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <Button
+        android:id="@+id/btn_takeoff"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:text="@string/take_off"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <Button
+        android:id="@+id/btn_startstream"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:text="@string/start_stream"
+        app:layout_constraintEnd_toStartOf="@+id/btn_record"
+        app:layout_constraintStart_toEndOf="@+id/btn_takeoff"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <Button
+        android:id="@+id/btn_record"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:text="Start Recording"
+        app:layout_constraintEnd_toStartOf="@+id/battery_status"
+        app:layout_constraintStart_toEndOf="@+id/btn_startstream"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <TextView
+        android:id="@+id/battery_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:background="@drawable/rounded_white_background"
+        android:padding="8dp"
+        android:text="Battery Status: Unknown"
+        android:textColor="@android:color/black"
+        app:layout_constraintBottom_toBottomOf="@+id/btn_record"
+        app:layout_constraintEnd_toStartOf="@+id/btn_land"
+        app:layout_constraintStart_toEndOf="@+id/btn_record"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintVertical_bias="1.0" />
+
+    <Button
+        android:id="@+id/btn_land"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:text="@string/land"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <com.tomscompany.websockettest.virtualstick.OnScreenJoystick
+        android:id="@+id/joystick_left"
+        android:layout_width="200dp"
+        android:layout_height="200dp"
+        app:layout_constraintBottom_toTopOf="@+id/speed_slider"
+        app:layout_constraintStart_toStartOf="parent"
+        android:layout_margin="16dp" />
+
+    <com.tomscompany.websockettest.virtualstick.OnScreenJoystick
+        android:id="@+id/joystick_right"
+        android:layout_width="200dp"
+        android:layout_height="200dp"
+        app:layout_constraintBottom_toTopOf="@+id/speed_slider"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_margin="16dp" />
+
+    <SeekBar
+        android:id="@+id/speed_slider"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:layout_marginHorizontal="16dp"
+        android:max="90"
+        android:progress="0"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <TextView
+        android:id="@+id/speed_value"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp"
+        android:text="Speed: 0.001"
+        android:background="@drawable/rounded_white_background"
+        android:padding="8dp"
+        android:textColor="@android:color/black"
+        app:layout_constraintBottom_toTopOf="@+id/speed_slider"
+        app:layout_constraintStart_toStartOf="@+id/speed_slider"
+        app:layout_constraintEnd_toEndOf="@+id/speed_slider" />
+
+    <!-- Add this new FAB at the bottom of the layout -->
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/fab_ip_settings"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:src="@android:drawable/ic_menu_manage"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:fabSize="normal" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>

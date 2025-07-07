@@ -383,6 +383,7 @@ services:
     restart: "no"  # Don't restart when simulation completes
     volumes:
       - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
+      - ${USE_FOLDER:-/data}:/simulation_data  # mount specific folder for simulation (defaults to /data)
     environment:
       - PYTHONUNBUFFERED=1  # Ensures Python output is sent straight to the terminal
       - RABBITMQ_URL=amqp://127.0.0.1:5672
@@ -390,12 +391,12 @@ services:
       - IMU_DATA_EXCHANGE=imu_data_exchange
       - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
       - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
+      - USE_FOLDER=${USE_FOLDER:-/home/sam3/Desktop/Toms_Workspace/WorldSystem/20250617_211214_segments}  # Optional path to specific folder for simulation
     depends_on:
       - rabbitmq
 
   website:
     image: website:latest
-    profiles: ["website"]
     build:
       context: ./website
       args:

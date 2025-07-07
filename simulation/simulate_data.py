@@ -31,7 +31,14 @@ TRAJECTORY_DATA_EXCHANGE = os.getenv("TRAJECTORY_DATA_EXCHANGE", "trajectory_dat
 PLY_FANOUT_EXCHANGE = os.getenv("PLY_FANOUT_EXCHANGE", "ply_fanout_exchange")
 
 # The root of your recorded data.
-DATA_ROOT = Path("/data")
+# Check if USE_FOLDER is set to use a specific folder, otherwise use /data or /simulation_data
+USE_FOLDER = os.getenv("USE_FOLDER", "")
+if USE_FOLDER and os.path.exists("/simulation_data"):
+    DATA_ROOT = Path("/simulation_data")
+    print(f"[INFO] Using simulation data from: {DATA_ROOT}")
+else:
+    DATA_ROOT = Path("/data")
+    print(f"[INFO] Using default data path: {DATA_ROOT}")
 
 # Add NTP client and time offset tracking
 ntp_client = ntplib.NTPClient()
@@ -70,6 +77,138 @@ def get_ntp_time_ns():
 print("[NTP] Initializing time synchronization...")
 sys.stdout.flush()
 sync_ntp_time()
+
+# Debug output
+print(f"[DEBUG] USE_FOLDER environment variable: {USE_FOLDER}")
+print(f"[DEBUG] DATA_ROOT path: {DATA_ROOT}")
+sys.stdout.flush()
+
+async def replay_video_segments(video_exchange, video_path: Path):
+    """Replay video segments by extracting frames and publishing them in real time."""
+    # Define common resolutions (width, height)
+    RESOLUTIONS = {
+        "4K": (3840, 2160),    # 4K UHD
+        "2K": (2560, 1440),    # 2K QHD
+        "1080p": (1920, 1080), # Full HD
+        "720p": (1280, 720),   # HD
+        "480p": (854, 480),    # SD
+        "360p": (640, 360),    # LD
+        "240p": (426, 240)     # Very Low
+    }
+    
+    current_resolution = "480p"  # Default resolution
+    
+    # Check if the directory exists
+    if not video_path.exists() or not video_path.is_dir():
+        print(f"[Videos] Directory does not exist or is not a directory: {video_path}")
+        sys.stdout.flush()
+        return
+    
+    # Get sorted list of video files
+    video_files = sorted(video_path.glob("*_segment_*.mp4"))
+    if not video_files:
+        print(f"[Videos] No video segment files found in {video_path}")
+        sys.stdout.flush()
+        return
+    
+    print(f"[Videos] Found {len(video_files)} video segments in {video_path}")
+    sys.stdout.flush()
+    
+    start_time = asyncio.get_event_loop().time()
+    total_frames = 0
+    
+    for video_file in video_files:
+        # Extract timestamp from filename (e.g., "0000_segment_000.mp4" -> 0 seconds)
+        try:
+            timestamp_seconds = int(video_file.name.split('_')[0])
+        except (ValueError, IndexError):
+            print(f"[Videos] Skipping {video_file.name}: invalid filename format")
+            sys.stdout.flush()
+            continue
+        
+        # Open video file
+        cap = cv2.VideoCapture(str(video_file))
+        if not cap.isOpened():
+            print(f"[Videos] Failed to open video file: {video_file.name}")
+            sys.stdout.flush()
+            continue
+        
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        print(f"[Videos] Processing {video_file.name} - {frame_count} frames at {fps} FPS")
+        sys.stdout.flush()
+        
+        frame_idx = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Calculate timestamp for this frame
+            frame_time_offset = frame_idx / fps
+            frame_timestamp_ns = int((timestamp_seconds + frame_time_offset) * 1e9)
+            
+            # Calculate when to publish this frame
+            scheduled_time = start_time + timestamp_seconds + frame_time_offset
+            now = asyncio.get_event_loop().time()
+            if scheduled_time > now:
+                await asyncio.sleep(scheduled_time - now)
+            
+            # Get original dimensions
+            original_height, original_width = frame.shape[:2]
+            
+            # Get target resolution
+            new_width, new_height = RESOLUTIONS[current_resolution]
+            
+            # Resize the frame if needed
+            if (new_width, new_height) != (original_width, original_height):
+                frame = cv2.resize(frame, (new_width, new_height), 
+                                 interpolation=cv2.INTER_AREA if new_width < original_width else cv2.INTER_LINEAR)
+            
+            # Encode frame as JPEG
+            _, encoded_frame = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            frame_bytes = encoded_frame.tobytes()
+            
+            # Get current time for server timestamp using NTP-synchronized time
+            ntp_time_ns = str(get_ntp_time_ns())
+            
+            # Create message with metadata
+            message = aio_pika.Message(
+                body=frame_bytes,
+                content_type="application/octet-stream",
+                headers={
+                    "timestamp_ns": str(frame_timestamp_ns),
+                    "server_received": ntp_time_ns,
+                    "ntp_time": ntp_time_ns,
+                    "width": new_width,
+                    "height": new_height,
+                    "resolution": current_resolution,
+                    "original_width": original_width,
+                    "original_height": original_height,
+                    "source_format": "MP4_FRAME",
+                    "output_format": "JPEG",
+                    "ntp_offset": ntp_time_offset,
+                    "video_segment": video_file.name,
+                    "frame_index": frame_idx
+                }
+            )
+            await video_exchange.publish(message, routing_key="")
+            
+            frame_idx += 1
+            total_frames += 1
+            
+            if frame_idx % 30 == 0:  # Log every 30 frames
+                print(f"[Videos] Published frame {frame_idx} from {video_file.name}")
+                sys.stdout.flush()
+        
+        cap.release()
+        print(f"[Videos] Completed {video_file.name} - published {frame_idx} frames")
+        sys.stdout.flush()
+    
+    print(f"[Videos] Finished publishing {total_frames} total frames from video segments")
+    sys.stdout.flush()
+
 
 async def replay_images(video_exchange, cam_data_path: Path):
     """Replay image messages in real time based on their filename timestamp (in nanoseconds)."""
@@ -499,6 +638,18 @@ async def publish_messages():
         sys.stdout.flush()
         return
     
+    # Check if we're dealing with video segments directly in the root
+    video_segments = list(DATA_ROOT.glob("*_segment_*.mp4"))
+    if video_segments:
+        print(f"[INFO] Found video segments directory with {len(video_segments)} files")
+        sys.stdout.flush()
+        # Handle video segments directly
+        await replay_video_segments(video_exchange, DATA_ROOT)
+        print(f"\n[INFO] Simulation completed! Processed video segments.")
+        sys.stdout.flush()
+        await connection.close()
+        return
+    
     # Build a sorted list of recording folders.
     try:
         folders = sorted([f for f in DATA_ROOT.iterdir() if f.is_dir()])
@@ -521,10 +672,16 @@ async def publish_messages():
         # Create a list of tasks for each data stream in the current recording folder.
         tasks = []
 
-        # Images
-        cam_data_path = mav0_path / "cam0" / "data"
-        if cam_data_path.is_dir():
-            tasks.append(asyncio.create_task(replay_images(video_exchange, cam_data_path)))
+        # Check for video segments first
+        video_segments_path = mav0_path / "video_segments"
+        if video_segments_path.is_dir() and list(video_segments_path.glob("*_segment_*.mp4")):
+            print(f"[INFO] Found video segments in {recording_folder.name}")
+            tasks.append(asyncio.create_task(replay_video_segments(video_exchange, video_segments_path)))
+        else:
+            # Images (fallback to original image replay)
+            cam_data_path = mav0_path / "cam0" / "data"
+            if cam_data_path.is_dir():
+                tasks.append(asyncio.create_task(replay_images(video_exchange, cam_data_path)))
 
         # IMU
         imu_data_path = mav0_path / "imu0" / "data"

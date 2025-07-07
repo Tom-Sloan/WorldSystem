@@ -1,44 +1,98 @@
-# WorldSystem Project Guidelines
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+WorldSystem is a real-time 3D reconstruction and visualization system for drone-based room mapping. It combines SLAM, neural reconstruction, and real-time visualization to create 3D models of indoor spaces with the goal of overlaying fantasy elements in augmented reality.
+
+## Architecture
+
+The system uses a microservices architecture with the following data flow:
+1. **Android App** → **Server** (WebSocket): Streams video (30fps) and IMU data
+2. **Server** → **RabbitMQ** → **Frame Processor/SLAM/Storage**: Distributes data
+3. **SLAM** → **Reconstruction**: Provides camera poses for 3D model generation
+4. **Reconstruction/Server** → **Website** (WebSocket): Real-time visualization
+
+Key services:
+- **Server**: Central hub for data routing (FastAPI, Python)
+- **SLAM/SLAM3R/MAST3R**: Camera pose estimation (C++/Python bindings)
+- **Reconstruction**: Neural 3D reconstruction (PyTorch)
+- **Website**: Real-time 3D visualization (React/Three.js)
+- **Frame Processor**: Video processing with YOLO detection
+- **Fantasy Builder**: Adds game-like elements to 3D models (WIP)
+
+## Build and Development Commands
+
+### Quick Start
+```bash
+./start.sh  # Builds and starts all services
+```
+
+### Docker Commands
+- Full build: `docker-compose build`
+- Single service: `docker-compose build --no-cache <service_name>`
+- Run all services: `docker-compose up`
+- Run with specific profile: `docker-compose --profile slam3r up`
+- Run without specific service: `docker compose up --detach $(docker compose config --services | grep -v slam3r)`
+
+### Development Commands
+- Website: `cd website && npm run dev`
+- Website build: `cd website && npm run build`
+- Reconstruction training: `cd reconstruction && ./train.sh`
+- Reconstruction inference: `cd reconstruction && python main.py --cfg ./config/train.yaml`
+- SLAM: `cd slam/demo && python run_rgbd.py PATH --vocab_file=./Vocabulary/ORBvoc.txt`
+
+### Testing Commands
+- Reconstruction: `cd reconstruction && ./test.sh`
+- Website: `cd website && npm run lint`
+
+### Monitoring URLs (when running)
+- RabbitMQ: http://localhost:15672
+- Grafana: http://localhost:3000 (admin/admin)
+- Prometheus: http://localhost:9090
+- Jaeger: http://localhost:16686
+
+## Code Guidelines
+
 When a file becomes too long, split it into smaller files. When a function becomes too long, split it into smaller functions.
 
 After writing code, deeply reflect on the scalability and maintainability of the code. Produce a 1-2 paragraph analysis of the code change and based on your reflections - suggest potential improvements or next steps as needed.
 
-## Build Commands
-- Full project: `docker-compose build`
-- Single service: `docker-compose build --no-cache <service_name>`
-- Run all services: `docker-compose up`
+### Style Guidelines
+- **Python**: PEP 8, 4-space indentation, docstrings for all functions
+- **JavaScript/React**: ESLint config, camelCase, alphabetical imports
+- **Error handling**: try/except in Python, catch and log in JavaScript
 
-## Development Commands
-- Website: `cd website && npm run dev`
-- Reconstruction: `cd reconstruction && python main.py --cfg ./config/train.yaml`
-- SLAM: `cd slam/demo && python run_rgbd.py PATH --vocab_file=./Vocabulary/ORBvoc.txt`
+### Modifiable Directories
+Only modify code in:
+- `reconstruction/aaa/`, `slam/aaa/` - Custom algorithm implementations
+- `website/`, `server/`, `storage/` - Core services
+- `simulation/`, `fantasy/` - Additional features
+- `nginx/`, `docker/` - Infrastructure
+- `assets/`, `Drone_Camera_Imu_Config/`, `Drone_Calibration/` - Resources
+- Configuration files: `docker-compose.yml`, Dockerfiles, `README.md`, `prometheus.yml`
 
-## Test Commands
-- Reconstruction: `cd reconstruction && ./test.sh`
-- Website: `cd website && npm run lint`
+## Key Technical Details
 
-## Code Style Guidelines
-- **Python**: Use PEP 8 conventions, 4-space indentation, and docstrings
-- **JavaScript/React**: Follow ESLint configuration, organize imports alphabetically
-- **Naming**: Use snake_case for Python variables/functions, camelCase for JavaScript
-- **Error handling**: Use try/except in Python, catch and log errors in JavaScript
-- **Comments**: Add docstrings to Python functions, JSDoc to JavaScript components
+### WebSocket Communication
+- Server receives data from Android on port 5001
+- Website connects to server WebSocket for real-time updates
+- Messages use JSON format with type field for routing
 
-## Only modify the code in:
-- `reconstruction/aaa/`
-- `slam/aaa/`
-- `website/`
-- `server/`
-- `storage/`
-- `simulation/`
-- `nginx/`
-- `fantasy/`
-- `docker/`
-- `assets/`
-- `Drone_Camera_Imu_Config/`
-- `Drone_Calibration/`
-- `docker-compose.yml`
-- any Dockerfile
-- `README.md`
-- `prometheus.yml`
+### SLAM Integration
+- SLAM services load trajectory into shared memory
+- Reconstruction reads trajectory at ~15fps
+- Camera poses must be synchronized with image timestamps
 
+### 3D Reconstruction Pipeline
+1. Images saved to disk by storage service
+2. SLAM processes images → camera poses
+3. Reconstruction uses poses + images → 3D mesh (.ply files)
+4. Website loads and displays meshes in real-time
+
+### Service Dependencies
+- Frame Processor, SLAM, Reconstruction require GPU access
+- All services communicate through RabbitMQ
+- Services use environment variables for configuration
+- Docker networks: backend_network (internal), monitoring

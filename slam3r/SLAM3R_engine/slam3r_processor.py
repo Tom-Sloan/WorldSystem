@@ -8,6 +8,8 @@
 import asyncio, gzip, json, logging, os, random, time
 from datetime import datetime
 from pathlib import Path
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import aio_pika, cv2, numpy as np, torch, yaml
 import rerun as rr
@@ -16,7 +18,15 @@ import rerun as rr
 import gc
 import psutil
 from collections import deque
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
+import trimesh
+
+# Check Open3D availability (will log warning after logger is initialized)
+try:
+    import open3d as o3d
+    OPEN3D_AVAILABLE = True
+except ImportError:
+    OPEN3D_AVAILABLE = False
 
 # Configure PyTorch CUDA allocation for better memory management
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = os.getenv(
@@ -106,12 +116,22 @@ class MemoryAwareFrameHistory:
         self.tensor_cache_indices.clear()
 
 class SpatialPointCloudBuffer:
-    """Spatially-aware point cloud buffer with automatic downsampling."""
-    def __init__(self, max_points=1_000_000, downsample_voxel=0.005):
+    """Spatially-aware point cloud buffer with mesh generation for visualization."""
+    def __init__(self, max_points=1_000_000, downsample_voxel=0.005, mesh_simplification_ratio=0.1):
         self.max_points = max_points
         self.voxel_size = downsample_voxel
+        self.mesh_simplification_ratio = mesh_simplification_ratio
         self.points = []
         self.colors = []
+        self.mesh = None
+        self.mesh_update_counter = 0
+        self.mesh_update_frequency = int(os.getenv("SLAM3R_MESH_UPDATE_FREQUENCY", "30"))
+        self.use_mesh_visualization = os.getenv("SLAM3R_USE_MESH_VIS", "true").lower() == "true"
+        self.last_mesh_update_size = 0
+        self.mesh_size_threshold = int(os.getenv("SLAM3R_MESH_SIZE_THRESHOLD", "10000"))
+        self.mesh_generation_in_progress = False
+        self.mesh_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mesh_gen")
+        self.mesh_lock = threading.Lock()
         
     def extend(self, point_color_pairs):
         new_points = [p for p, _ in point_color_pairs]
@@ -120,20 +140,170 @@ class SpatialPointCloudBuffer:
         self.colors.extend(new_colors)
         if len(self.points) > self.max_points:
             self._downsample()
+        
+        # Update mesh periodically if enabled
+        self.mesh_update_counter += 1
+        points_added_since_mesh = len(self.points) - self.last_mesh_update_size
+        
+        if (self.use_mesh_visualization and 
+            not self.mesh_generation_in_progress and
+            (self.mesh_update_counter >= self.mesh_update_frequency or 
+             points_added_since_mesh > self.mesh_size_threshold)):
+            self._trigger_mesh_update()
+            self.mesh_update_counter = 0
+            self.last_mesh_update_size = len(self.points)
     
     def _downsample(self):
-        pts_array = np.array(self.points)
-        cols_array = np.array(self.colors)
-        downsampled_pts, downsampled_cols = downsample_pointcloud_voxel(
-            pts_array, cols_array, self.voxel_size
-        )
-        self.points = downsampled_pts.tolist()
-        self.colors = downsampled_cols.tolist()
-        logger.info(f"Downsampled point cloud from {len(pts_array)} to {len(self.points)} points")
+        if OPEN3D_AVAILABLE:
+            # Use Open3D for faster voxel downsampling
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(np.array(self.points))
+            pcd.colors = o3d.utility.Vector3dVector(np.array(self.colors) / 255.0)
+            
+            downsampled = pcd.voxel_down_sample(self.voxel_size)
+            
+            self.points = np.asarray(downsampled.points).tolist()
+            self.colors = (np.asarray(downsampled.colors) * 255).astype(np.uint8).tolist()
+        else:
+            # Fallback to original method
+            pts_array = np.array(self.points)
+            cols_array = np.array(self.colors)
+            downsampled_pts, downsampled_cols = downsample_pointcloud_voxel(
+                pts_array, cols_array, self.voxel_size
+            )
+            self.points = downsampled_pts.tolist()
+            self.colors = downsampled_cols.tolist()
+        
+        logger.info(f"Downsampled point cloud to {len(self.points)} points")
+    
+    def _trigger_mesh_update(self):
+        """Trigger asynchronous mesh generation."""
+        if len(self.points) < 4:  # Need at least 4 points for mesh
+            return
+        
+        if not OPEN3D_AVAILABLE:
+            return
+        
+        # Copy point data for thread-safe mesh generation
+        points_copy = self.points.copy()
+        colors_copy = self.colors.copy()
+        
+        self.mesh_generation_in_progress = True
+        self.mesh_executor.submit(self._generate_mesh_async, points_copy, colors_copy)
+    
+    def _generate_mesh_async(self, points, colors):
+        """Generate mesh asynchronously in background thread."""
+        try:
+            start_time = time.time()
+            
+            # Downsample points for mesh generation if too many
+            mesh_points = points
+            mesh_colors = colors
+            if len(points) > 50000:  # Reduced from 100k for faster generation
+                # Subsample for mesh generation
+                indices = np.random.choice(len(points), 50000, replace=False)
+                mesh_points = [points[i] for i in indices]
+                mesh_colors = [colors[i] for i in indices]
+            
+            # Create Open3D point cloud
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(np.array(mesh_points))
+            pcd.colors = o3d.utility.Vector3dVector(np.array(mesh_colors) / 255.0)
+            
+            # Estimate normals with smaller radius for speed
+            pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                radius=0.05, max_nn=20))
+            
+            # Poisson surface reconstruction with lower depth for speed
+            mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                pcd, depth=7, width=0, scale=1.1, linear_fit=False
+            )
+            
+            # Crop mesh to remove artifacts
+            bbox = pcd.get_axis_aligned_bounding_box()
+            mesh = mesh.crop(bbox)
+            
+            # Simplify mesh for faster transmission
+            target_triangles = int(len(mesh.triangles) * self.mesh_simplification_ratio)
+            target_triangles = max(target_triangles, 1000)  # Keep at least 1000 triangles
+            if len(mesh.triangles) > target_triangles:
+                mesh = mesh.simplify_quadric_decimation(target_triangles)
+            
+            # Convert to simple format
+            vertices = np.asarray(mesh.vertices)
+            faces = np.asarray(mesh.triangles)
+            
+            # Get vertex colors by sampling from point cloud
+            vertex_colors = self._compute_vertex_colors(vertices, np.array(points), np.array(colors))
+            
+            new_mesh = {
+                "vertices": vertices,
+                "faces": faces,
+                "vertex_colors": vertex_colors
+            }
+            
+            # Update mesh with thread lock
+            with self.mesh_lock:
+                self.mesh = new_mesh
+            
+            elapsed = time.time() - start_time
+            logger.info(f"Mesh generation completed in {elapsed:.2f}s: {len(vertices)} vertices, {len(faces)} faces")
+            
+        except Exception as e:
+            logger.warning(f"Mesh generation failed: {e}")
+            with self.mesh_lock:
+                self.mesh = None
+        finally:
+            self.mesh_generation_in_progress = False
+    
+    def _compute_vertex_colors(self, vertices, points, colors):
+        """Compute vertex colors by finding nearest point colors."""
+        vertex_colors = np.zeros((len(vertices), 3), dtype=np.uint8)
+        
+        if OPEN3D_AVAILABLE:
+            # Use KDTree for efficient nearest neighbor search
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(points)
+            kdtree = o3d.geometry.KDTreeFlann(pcd)
+            
+            for i, vertex in enumerate(vertices):
+                [_, idx, _] = kdtree.search_knn_vector_3d(vertex, 1)
+                vertex_colors[i] = colors[idx[0]]
+        else:
+            # Fallback to simple nearest neighbor
+            for i, vertex in enumerate(vertices):
+                distances = np.linalg.norm(points - vertex, axis=1)
+                nearest_idx = np.argmin(distances)
+                vertex_colors[i] = colors[nearest_idx]
+        
+        return vertex_colors
+    
+    def get_visualization_data(self):
+        """Get data for visualization (mesh or downsampled points)."""
+        if self.use_mesh_visualization:
+            with self.mesh_lock:
+                if self.mesh is not None:
+                    # Return a copy to avoid race conditions
+                    return {"type": "mesh", "data": self.mesh.copy()}
+        
+        # Return downsampled points for visualization
+        if len(self.points) > 50000:
+            # Further downsample for visualization only
+            indices = np.random.choice(len(self.points), 50000, replace=False)
+            viz_points = [self.points[i] for i in indices]
+            viz_colors = [self.colors[i] for i in indices]
+            return {"type": "points", "data": {"points": viz_points, "colors": viz_colors}}
+        else:
+            return {"type": "points", "data": {"points": self.points, "colors": self.colors}}
     
     def clear(self):
         self.points.clear()
         self.colors.clear()
+        with self.mesh_lock:
+            self.mesh = None
+        self.mesh_update_counter = 0
+        self.last_mesh_update_size = 0
+        self.mesh_generation_in_progress = False
     
     def __len__(self):
         return len(self.points)
@@ -213,6 +383,10 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s  %(levelname)s  %(message)s")
 logger = logging.getLogger("slam3r_processor")
 
+# Check for Open3D availability
+if not OPEN3D_AVAILABLE:
+    logger.warning("Open3D not available - mesh generation disabled")
+
 # ───────────────────────────────────────────────────────────────────────────────
 # Environment / config (with sane defaults)
 # ───────────────────────────────────────────────────────────────────────────────
@@ -255,7 +429,8 @@ processed_frames_history = MemoryAwareFrameHistory(
 keyframe_indices         : list = []
 world_point_cloud_buffer = SpatialPointCloudBuffer(
     max_points=int(os.getenv("SLAM3R_MAX_POINTCLOUD_SIZE", "750000")),
-    downsample_voxel=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008"))
+    downsample_voxel=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008")),
+    mesh_simplification_ratio=float(os.getenv("SLAM3R_MESH_SIMPLIFICATION_RATIO", "0.1"))
 )
 camera_positions         : list = []
 
@@ -355,20 +530,34 @@ def downsample_pointcloud_voxel(points, colors, voxel_size=0.01):
     if len(points) == 0:
         return np.array([]), np.array([])
     
-    points = np.asarray(points)
-    colors = np.asarray(colors)
-    voxel_indices = np.floor(points / voxel_size).astype(np.int32)
-    voxel_dict = {}
-    
-    for i, voxel_idx in enumerate(voxel_indices):
-        key = tuple(voxel_idx)
-        if key not in voxel_dict:
-            voxel_dict[key] = (points[i], colors[i])
-    
-    if voxel_dict:
-        downsampled = list(voxel_dict.values())
-        return np.array([p for p, _ in downsampled]), np.array([c for _, c in downsampled])
-    return np.array([]), np.array([])
+    if OPEN3D_AVAILABLE:
+        # Use Open3D for efficient voxel downsampling
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(np.asarray(points))
+        pcd.colors = o3d.utility.Vector3dVector(np.asarray(colors) / 255.0)
+        
+        downsampled = pcd.voxel_down_sample(voxel_size)
+        
+        points_down = np.asarray(downsampled.points)
+        colors_down = (np.asarray(downsampled.colors) * 255).astype(np.uint8)
+        
+        return points_down, colors_down
+    else:
+        # Original implementation as fallback
+        points = np.asarray(points)
+        colors = np.asarray(colors)
+        voxel_indices = np.floor(points / voxel_size).astype(np.int32)
+        voxel_dict = {}
+        
+        for i, voxel_idx in enumerate(voxel_indices):
+            key = tuple(voxel_idx)
+            if key not in voxel_dict:
+                voxel_dict[key] = (points[i], colors[i])
+        
+        if voxel_dict:
+            downsampled = list(voxel_dict.values())
+            return np.array([p for p, _ in downsampled]), np.array([c for _, c in downsampled])
+        return np.array([]), np.array([])
 
 async def adaptive_keyframe_selection(current_pose, last_keyframe_pose, scene_type, 
                                     current_frame_index, active_kf_stride):
@@ -737,9 +926,9 @@ def _log_to_rerun(pose_matrix, temp_world_pts, keyframe_id_out, img_rgb_u8):
 
 def _prepare_rabbitmq_messages(pose_matrix, temp_world_pts, keyframe_id_out, ts_ns, record):
     """Prepare pose, point cloud, and visualization messages for RabbitMQ."""
-    sampled_pairs = random.sample(temp_world_pts, 50_000) if len(temp_world_pts) > 50_000 else temp_world_pts
-    xyz_only = [p for p,_ in sampled_pairs]
-
+    # Get visualization data (mesh or points)
+    viz_data = world_point_cloud_buffer.get_visualization_data()
+    
     q = matrix_to_quaternion(pose_matrix[:3, :3])
     pose_msg = {
         "timestamp_ns": ts_ns,
@@ -748,9 +937,33 @@ def _prepare_rabbitmq_messages(pose_matrix, temp_world_pts, keyframe_id_out, ts_
         "orientation": {"x":float(q[0]), "y":float(q[1]), "z":float(q[2]), "w":float(q[3])},
         "raw_pose_matrix": record["raw_pose_matrix"],
     }
-    pc_msg  = {"timestamp_ns": ts_ns, "points": xyz_only}
-    vis_msg = {"timestamp_ns": ts_ns, "type": "points_update_incremental",
-               "vertices": xyz_only, "faces": [], "keyframe_id": keyframe_id_out}
+    
+    # Point cloud message (full resolution for reconstruction)
+    sampled_pairs = random.sample(temp_world_pts, 50_000) if len(temp_world_pts) > 50_000 else temp_world_pts
+    xyz_only = [p for p,_ in sampled_pairs]
+    pc_msg = {"timestamp_ns": ts_ns, "points": xyz_only}
+    
+    # Visualization message (mesh or downsampled points)
+    if viz_data["type"] == "mesh":
+        mesh_data = viz_data["data"]
+        vis_msg = {
+            "timestamp_ns": ts_ns,
+            "type": "mesh_update",
+            "vertices": mesh_data["vertices"].tolist(),
+            "faces": mesh_data["faces"].tolist(),
+            "vertex_colors": [c.tolist() for c in mesh_data["vertex_colors"]],
+            "keyframe_id": keyframe_id_out
+        }
+    else:
+        point_data = viz_data["data"]
+        vis_msg = {
+            "timestamp_ns": ts_ns,
+            "type": "points_update_incremental",
+            "vertices": point_data["points"],
+            "colors": point_data["colors"],
+            "faces": [],
+            "keyframe_id": keyframe_id_out
+        }
     
     return pose_msg, pc_msg, vis_msg
 

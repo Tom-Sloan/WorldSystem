@@ -274,7 +274,8 @@ scene_detector = SceneTypeDetector(
 last_keyframe_pose = None
 
 # Video segment tracking
-current_video_segment = None  # Track current video segment to detect boundaries
+current_video_segment = None  # Track current video segment name
+segment_transition_count = 0  # Count segment transitions for logging
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Camera intrinsics helper
@@ -753,6 +754,44 @@ def _prepare_rabbitmq_messages(pose_matrix, temp_world_pts, keyframe_id_out, ts_
     
     return pose_msg, pc_msg, vis_msg
 
+def reset_slam_session_state(reason=""):
+    """Reset SLAM session state - used for restarts and video segment boundaries."""
+    global processed_frames_history, keyframe_indices, world_point_cloud_buffer
+    global current_frame_index, slam_initialization_buffer, is_slam_initialized_for_session
+    global active_kf_stride, last_keyframe_pose, rerun_logger, scene_detector
+    global current_video_segment, camera_positions
+    
+    logger.info(f"Resetting SLAM session state{' - ' + reason if reason else ''}")
+    
+    # Clear all data structures
+    processed_frames_history.clear()
+    keyframe_indices.clear()
+    world_point_cloud_buffer.clear()
+    slam_initialization_buffer.clear()
+    camera_positions.clear()
+    
+    # Reset state variables
+    current_frame_index = 0
+    is_slam_initialized_for_session = False
+    active_kf_stride = 1
+    last_keyframe_pose = None
+    current_video_segment = None
+    
+    # Reset components
+    if rerun_logger:
+        rerun_logger.flush()
+        rerun_logger = RerunBatchLogger(
+            batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15")),
+            downsample_voxel_size=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008"))
+        )
+    
+    scene_detector.recent_poses.clear()
+    scene_detector.scene_type = "room"
+    
+    # Clear GPU cache for memory management
+    torch.cuda.empty_cache()
+    gc.collect()
+
 # ───────────────────────────────────────────────────────────────────────────────
 # Per‑frame processing
 # ───────────────────────────────────────────────────────────────────────────────
@@ -803,12 +842,134 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
     return pose_msg, pc_msg, vis_msg
 
 # ────────────────────────────────────────────────────────────────────────────────
+#  Segment management functions
+# ────────────────────────────────────────────────────────────────────────────────
+async def save_segment_data(segment_name: str):
+    """Save current point cloud and camera poses before segment transition."""
+    global world_point_cloud_buffer, camera_positions
+    
+    if not segment_name:
+        return
+        
+    # Extract segment identifier from filename (e.g., "0000_segment_000.mp4" -> "0000_segment_000")
+    segment_id = segment_name.replace('.mp4', '') if segment_name.endswith('.mp4') else segment_name
+    
+    # Log segment statistics
+    logger.info(f"Segment {segment_id} completed - Points: {len(world_point_cloud_buffer)}, "
+                f"Poses: {len(camera_positions)}, Keyframes: {len(keyframe_indices)}")
+    
+    # Optional: Save point cloud to file if enabled
+    if os.getenv("SLAM3R_SAVE_SEGMENT_POINTCLOUDS", "false").lower() == "true":
+        output_dir = Path(os.getenv("SLAM3R_SEGMENT_OUTPUT_DIR", "/tmp/slam3r_segments"))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save point cloud as simple text file (could be PLY format)
+        if len(world_point_cloud_buffer) > 0:
+            pc_file = output_dir / f"{segment_id}_pointcloud.txt"
+            with open(pc_file, 'w') as f:
+                for point, color in zip(world_point_cloud_buffer.points, world_point_cloud_buffer.colors):
+                    f.write(f"{point[0]} {point[1]} {point[2]} {color[0]} {color[1]} {color[2]}\n")
+            logger.info(f"Saved point cloud to {pc_file}")
+        
+        # Save camera trajectory
+        if len(camera_positions) > 0:
+            traj_file = output_dir / f"{segment_id}_trajectory.txt"
+            with open(traj_file, 'w') as f:
+                for i, pos in enumerate(camera_positions):
+                    f.write(f"{i} {pos[0]} {pos[1]} {pos[2]}\n")
+            logger.info(f"Saved trajectory to {traj_file}")
+
+async def reset_for_new_segment(new_segment_name: str):
+    """Reset SLAM system for new video segment."""
+    global is_slam_system_initialized, processed_frames_history, keyframe_indices
+    global world_point_cloud_buffer, current_frame_index, slam_initialization_buffer
+    global is_slam_initialized_for_session, active_kf_stride, last_keyframe_pose
+    global rerun_logger, scene_detector, camera_positions, current_video_segment
+    global segment_transition_count
+    
+    # Save data from previous segment if requested
+    if current_video_segment:
+        await save_segment_data(current_video_segment)
+    
+    logger.info(f"Resetting SLAM for new segment: {new_segment_name} (transition #{segment_transition_count + 1})")
+    
+    # Reset all state (similar to on_restart_message but keeping models loaded)
+    processed_frames_history.clear()
+    keyframe_indices.clear()
+    world_point_cloud_buffer.clear()
+    camera_positions.clear()
+    slam_initialization_buffer.clear()
+    current_frame_index = 0
+    is_slam_initialized_for_session = False
+    active_kf_stride = 1
+    last_keyframe_pose = None
+    
+    # Reset enhanced components
+    if rerun_logger:
+        rerun_logger.flush()
+        rerun_logger = RerunBatchLogger(
+            batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15")),
+            downsample_voxel_size=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008"))
+        )
+    scene_detector.recent_poses.clear()
+    scene_detector.scene_type = "room"
+    
+    # Update segment tracking
+    current_video_segment = new_segment_name
+    segment_transition_count += 1
+    
+    # Clear GPU cache for fresh start
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    # Log segment transition in Rerun if connected
+    if rerun_connected:
+        rr.log("diagnostics/segment_transition", 
+               rr.TextLog(f"New segment: {new_segment_name}"))
+
+# ────────────────────────────────────────────────────────────────────────────────
 #  RabbitMQ callbacks
 # ────────────────────────────────────────────────────────────────────────────────
 async def on_video_frame_message(msg: aio_pika.IncomingMessage, exchanges):
     async with msg.process():
         try:
             ts_ns = int(msg.headers.get("timestamp_ns", "0"))
+            
+            # Check for video segment change
+            video_segment = msg.headers.get("video_segment", None)
+            global current_video_segment
+            
+            # Handle segment transitions
+            if video_segment != current_video_segment:
+                # Check if this is a meaningful transition (not just None to None)
+                if video_segment is not None or current_video_segment is not None:
+                    if current_video_segment is not None and video_segment is not None:
+                        # Transitioning between segments
+                        logger.info(f"Video segment boundary detected: {current_video_segment} → {video_segment}")
+                        await reset_for_new_segment(video_segment)
+                        
+                        # Publish segment change notification
+                        if OUTPUT_TO_RABBITMQ and SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT in exchanges:
+                            segment_change_msg = {
+                                "type": "segment_boundary",
+                                "previous_segment": current_video_segment,
+                                "new_segment": video_segment,
+                                "timestamp_ns": ts_ns
+                            }
+                            await exchanges[SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT].publish(
+                                aio_pika.Message(json.dumps(segment_change_msg).encode(), 
+                                               content_type="application/json"),
+                                routing_key="")
+                    elif video_segment is not None:
+                        # Starting first segment
+                        logger.info(f"Starting SLAM processing for video segment: {video_segment}")
+                        current_video_segment = video_segment
+                    elif current_video_segment is not None:
+                        # Transitioning from segmented to non-segmented video
+                        logger.info(f"Transitioning from segmented video to non-segmented stream")
+                        await reset_for_new_segment(None)
+            
+            # Decode and process the frame
             img   = cv2.imdecode(np.frombuffer(msg.body, np.uint8), cv2.IMREAD_COLOR)
             if img is None:
                 logger.warning("Image decode failed – skipping frame")
@@ -838,11 +999,13 @@ async def on_restart_message(msg: aio_pika.IncomingMessage):
         global is_slam_system_initialized, processed_frames_history, keyframe_indices
         global world_point_cloud_buffer, current_frame_index, slam_initialization_buffer
         global is_slam_initialized_for_session, active_kf_stride, last_keyframe_pose, rerun_logger
+        global current_video_segment, segment_transition_count
         
         logger.info("Restart requested – resetting session state.")
         processed_frames_history.clear()
         keyframe_indices.clear()
         world_point_cloud_buffer.clear()
+        camera_positions.clear()
         slam_initialization_buffer.clear()
         current_frame_index = 0
         is_slam_initialized_for_session = False
@@ -858,6 +1021,10 @@ async def on_restart_message(msg: aio_pika.IncomingMessage):
         scene_detector.recent_poses.clear()
         scene_detector.scene_type = "room"
         last_keyframe_pose = None
+        
+        # Reset segment tracking
+        current_video_segment = None
+        segment_transition_count = 0
 
 # ────────────────────────────────────────────────────────────────────────────────
 #  Main service loop

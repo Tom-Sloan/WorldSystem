@@ -83,6 +83,106 @@ print(f"[DEBUG] USE_FOLDER environment variable: {USE_FOLDER}")
 print(f"[DEBUG] DATA_ROOT path: {DATA_ROOT}")
 sys.stdout.flush()
 
+async def replay_single_video(video_exchange, video_file: Path):
+    """Replay a single video file by extracting frames and publishing them in real time."""
+    # Define common resolutions (width, height)
+    RESOLUTIONS = {
+        "4K": (3840, 2160),    # 4K UHD
+        "2K": (2560, 1440),    # 2K QHD
+        "1080p": (1920, 1080), # Full HD
+        "720p": (1280, 720),   # HD
+        "480p": (854, 480),    # SD
+        "360p": (640, 360),    # LD
+        "240p": (426, 240)     # Very Low
+    }
+    
+    current_resolution = "480p"  # Default resolution
+    
+    print(f"[SingleVideo] Processing {video_file.name}")
+    sys.stdout.flush()
+    
+    # Open video file
+    cap = cv2.VideoCapture(str(video_file))
+    if not cap.isOpened():
+        print(f"[SingleVideo] Failed to open video file: {video_file.name}")
+        sys.stdout.flush()
+        return
+    
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    print(f"[SingleVideo] Video info: {frame_count} frames at {fps} FPS")
+    sys.stdout.flush()
+    
+    start_time = asyncio.get_event_loop().time()
+    frame_idx = 0
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Calculate timestamp for this frame
+        frame_time_offset = frame_idx / fps
+        frame_timestamp_ns = int(frame_time_offset * 1e9)
+        
+        # Calculate when to publish this frame
+        scheduled_time = start_time + frame_time_offset
+        now = asyncio.get_event_loop().time()
+        if scheduled_time > now:
+            await asyncio.sleep(scheduled_time - now)
+        
+        # Get original dimensions
+        original_height, original_width = frame.shape[:2]
+        
+        # Get target resolution
+        new_width, new_height = RESOLUTIONS[current_resolution]
+        
+        # Resize the frame if needed
+        if (new_width, new_height) != (original_width, original_height):
+            frame = cv2.resize(frame, (new_width, new_height), 
+                             interpolation=cv2.INTER_AREA if new_width < original_width else cv2.INTER_LINEAR)
+        
+        # Encode frame as JPEG
+        _, encoded_frame = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        frame_bytes = encoded_frame.tobytes()
+        
+        # Get current time for server timestamp using NTP-synchronized time
+        ntp_time_ns = str(get_ntp_time_ns())
+        
+        # Create message with metadata
+        message = aio_pika.Message(
+            body=frame_bytes,
+            content_type="application/octet-stream",
+            headers={
+                "timestamp_ns": str(frame_timestamp_ns),
+                "server_received": ntp_time_ns,
+                "ntp_time": ntp_time_ns,
+                "width": new_width,
+                "height": new_height,
+                "resolution": current_resolution,
+                "original_width": original_width,
+                "original_height": original_height,
+                "source_format": "MP4_SINGLE",
+                "output_format": "JPEG",
+                "ntp_offset": ntp_time_offset,
+                "video_name": video_file.name,  # Include video name
+                "frame_index": frame_idx
+            }
+        )
+        await video_exchange.publish(message, routing_key="")
+        
+        frame_idx += 1
+        
+        if frame_idx % 30 == 0:  # Log every 30 frames
+            print(f"[SingleVideo] Published frame {frame_idx}/{frame_count} from {video_file.name}")
+            sys.stdout.flush()
+    
+    cap.release()
+    print(f"[SingleVideo] Completed {video_file.name} - published {frame_idx} frames")
+    sys.stdout.flush()
+
+
 async def replay_video_segments(video_exchange, video_path: Path):
     """Replay video segments by extracting frames and publishing them in real time."""
     # Define common resolutions (width, height)
@@ -638,7 +738,23 @@ async def publish_messages():
         sys.stdout.flush()
         return
     
-    # Check if we're dealing with video segments directly in the root
+    # Check for different video file patterns
+    # 1. Check for single video file (*.mp4)
+    single_videos = list(DATA_ROOT.glob("*.mp4"))
+    if single_videos and not any("_segment_" in v.name for v in single_videos):
+        # Found single video file(s), not segments
+        print(f"[INFO] Found {len(single_videos)} single video file(s)")
+        sys.stdout.flush()
+        for video_file in sorted(single_videos):
+            print(f"[INFO] Processing single video: {video_file.name}")
+            sys.stdout.flush()
+            await replay_single_video(video_exchange, video_file)
+        print(f"\n[INFO] Simulation completed! Processed {len(single_videos)} single video(s).")
+        sys.stdout.flush()
+        await connection.close()
+        return
+    
+    # 2. Check if we're dealing with video segments directly in the root
     video_segments = list(DATA_ROOT.glob("*_segment_*.mp4"))
     if video_segments:
         print(f"[INFO] Found video segments directory with {len(video_segments)} files")

@@ -322,6 +322,11 @@ services:
       - INITIALIZATION_QUALITY_MIN_AVG_CONFIDENCE=1.2
       - INITIALIZATION_QUALITY_MIN_TOTAL_VALID_POINTS=150
 
+      # ========== VIDEO SEGMENT HANDLING ==========
+      # Save point clouds and trajectories when transitioning between segments
+      - SLAM3R_SAVE_SEGMENT_POINTCLOUDS=${SLAM3R_SAVE_SEGMENT_POINTCLOUDS:-false}
+      - SLAM3R_SEGMENT_OUTPUT_DIR=${SLAM3R_SEGMENT_OUTPUT_DIR:-/tmp/slam3r_segments}
+
       # ========== MISC ==========
       - HOME=${HOME}
       - TZ=${TZ:-UTC}
@@ -391,7 +396,8 @@ services:
       - IMU_DATA_EXCHANGE=imu_data_exchange
       - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
       - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
-      - USE_FOLDER=${USE_FOLDER:-/home/sam3/Desktop/Toms_Workspace/WorldSystem/20250617_211214_segments}  # Optional path to specific folder for simulation
+
+      - USE_FOLDER=${USE_FOLDER:-/home/sam3/Desktop/Toms_Workspace/WorldSystem/20250617_211214_segments}  # set in .env file!!!
     depends_on:
       - rabbitmq
 

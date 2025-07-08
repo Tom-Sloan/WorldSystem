@@ -140,6 +140,33 @@ sudo /home/sam3/anaconda3/envs/3dreconstruction/bin/py-spy top --pid 331272
 #### Get the process ID of the running slam3r container
 docker inspect --format '{{.State.Pid}}' slam3r
 
+#### Automatic Video Segment Reset
+SLAM3R now automatically detects video segment boundaries and resets its state when transitioning between segments. This prevents drift and maintains clean reconstruction for each segment.
+
+**Features:**
+- Automatic detection of video segment changes via RabbitMQ message headers
+- Complete SLAM state reset between segments
+- Optional saving of point clouds and trajectories per segment
+- Segment boundary notifications published to reconstruction visualization exchange
+
+**Configuration:**
+```bash
+# Enable saving point clouds when segments change (default: false)
+export SLAM3R_SAVE_SEGMENT_POINTCLOUDS=true
+
+# Directory to save segment data (default: /tmp/slam3r_segments)
+export SLAM3R_SEGMENT_OUTPUT_DIR=/path/to/output
+```
+
+**Testing segment reset:**
+```bash
+# Run the test monitor script
+python test_segment_reset.py
+
+# Check SLAM3R logs for reset messages
+docker logs slam3r | grep -E "(segment|reset)"
+```
+
 
 ### Fantasy Builder
 ```bash

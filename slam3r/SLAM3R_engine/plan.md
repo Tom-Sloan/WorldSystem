@@ -255,9 +255,9 @@ def _log_to_rerun(mesh_data, frame_index):
 
 ## Alternative Approaches Considered
 
-1. **WebGPU in Browser**: Generate mesh client-side
-   - Pro: Zero server load
-   - Con: Requires modern browser, complex implementation
+1. **Rerun Desktop Integration**: Stream meshes directly to Rerun viewer
+   - Pro: Better debugging, native performance, existing infrastructure
+   - Con: Requires Rerun desktop app running
 
 2. **Rust-based Service**: Better memory safety
    - Pro: No segfaults, great performance
@@ -332,9 +332,9 @@ mesh_service:
     - MESH_STREAM_EXCHANGE=mesh_stream_exchange
     - MESH_UPDATE_EXCHANGE=mesh_update_exchange
     
-    # WebSocket for direct streaming to website
-    - WEBSOCKET_HOST=0.0.0.0
-    - WEBSOCKET_PORT=8005
+    # Rerun for direct mesh visualization
+    - RERUN_HOST=host.docker.internal
+    - RERUN_PORT=9876
     
     # Shared memory IPC settings
     - SHM_KEYFRAME_PREFIX=/slam3r_keyframe_
@@ -546,9 +546,8 @@ SLAM3R (25 fps capable)
     └─[Keyframes]→ Shared Memory + slam3r_keyframe_exchange
                         ↓
                   Mesh Service (C++/CUDA)
-                        ├─[PLY Stream]→ WebSocket :8005 → Website
                         ├─[Mesh Updates]→ mesh_update_exchange → Storage
-                        └─[Mesh3D]→ Rerun Visualization
+                        └─[Mesh3D]→ Rerun Desktop Visualization
 ```
 
 ### Prometheus Monitoring Configuration
@@ -569,7 +568,7 @@ mesh_service_metrics:
   - mesh_vertex_count
   - mesh_face_count  
   - compression_ratio
-  - websocket_clients_connected
+  - rerun_connection_status
   - keyframes_processed_total
   - octree_nodes_active
   - gpu_memory_usage_bytes
@@ -595,7 +594,7 @@ RUN apt-get update && apt-get install -y \
     # Compression
     libdraco-dev \
     # Networking
-    libwebsocketpp-dev \
+    librerun-sdk-dev \
     libboost-all-dev \
     # RabbitMQ C++ client
     librabbitmq-dev \
@@ -818,47 +817,51 @@ __device__ uint64_t computeSpatialHash(float3 min, float3 max) {
 }
 ```
 
-### WebSocket Streaming Implementation
+### Rerun Streaming Implementation
 
 ```cpp
-// mesh_service/src/websocket_server.cpp
-#include <websocketpp/config/asio_no_tls.hpp>
-#include <websocketpp/server.hpp>
+// mesh_service/src/rerun_streamer.cpp
+#include <rerun.hpp>
+#include <rerun/demo_utils.hpp>
 
-class MeshStreamingServer {
-    typedef websocketpp::server<websocketpp::config::asio> server;
-    server m_endpoint;
+class RerunMeshStreamer {
+    std::shared_ptr<rerun::RecordingStream> rec;
     
 public:
+    RerunMeshStreamer() {
+        rec = std::make_shared<rerun::RecordingStream>("mesh_service");
+        rec->connect("tcp://host.docker.internal:9876").throw_on_failure();
+    }
+    
     void streamMeshUpdate(const MeshUpdate& update) {
-        // Compress with Draco
-        draco::Encoder encoder;
-        encoder.SetSpeedOptions(7, 7);  // Compression level
+        // Convert mesh data to Rerun format
+        std::vector<rerun::Position3D> vertices;
+        vertices.reserve(update.vertices.size() / 3);
         
-        draco::PointCloud pc;
-        pc.set_num_points(update.vertices.size());
-        
-        // Add positions
-        draco::PointAttribute pos_att;
-        pos_att.Init(draco::GeometryAttribute::POSITION, 3, draco::DT_FLOAT32);
-        pc.AddAttribute(pos_att);
-        
-        // Encode
-        draco::EncoderBuffer buffer;
-        encoder.EncodePointCloudToBuffer(pc, &buffer);
-        
-        // Create streaming PLY header
-        StreamingPLY ply_msg;
-        ply_msg.header.keyframe_id = update.keyframe_id;
-        ply_msg.header.vertex_count = update.vertices.size();
-        ply_msg.header.face_count = update.faces.size();
-        ply_msg.header.compression = 1;  // Draco
-        
-        // Send to all connected clients
-        for (auto& conn : m_connections) {
-            m_endpoint.send(conn, buffer.data(), buffer.size(),
-                          websocketpp::frame::opcode::binary);
+        for (size_t i = 0; i < update.vertices.size(); i += 3) {
+            vertices.push_back({
+                update.vertices[i],
+                update.vertices[i + 1],
+                update.vertices[i + 2]
+            });
         }
+        
+        // Convert faces to triangle indices
+        std::vector<rerun::TriangleIndices> triangles;
+        triangles.reserve(update.faces.size() / 3);
+        
+        for (size_t i = 0; i < update.faces.size(); i += 3) {
+            triangles.push_back({
+                update.faces[i],
+                update.faces[i + 1],
+                update.faces[i + 2]
+            });
+        }
+        
+        // Log mesh to Rerun
+        rec->log("world/mesh",
+            rerun::Mesh3D(vertices, triangles)
+                .with_vertex_colors(update.colors));
     }
 };
 ```
@@ -918,48 +921,6 @@ async def _stream_keyframe_points(record, keyframe_id):
 # DELETE: RerunBatchLogger
 ```
 
-### Website Integration
-
-```javascript
-// website/src/MeshStreamClient.js
-class MeshStreamClient {
-    constructor() {
-        this.ws = new WebSocket('ws://localhost:8005');
-        this.ws.binaryType = 'arraybuffer';
-        this.meshCache = new Map();
-        this.dracoLoader = new DRACOLoader();
-    }
-    
-    onMessage(event) {
-        // Decode Draco compressed mesh
-        const buffer = new Uint8Array(event.data);
-        
-        // Parse streaming PLY header
-        const header = parseStreamingPLYHeader(buffer);
-        
-        if (header.compression === 1) {  // Draco
-            this.dracoLoader.decodeDracoFile(buffer, (geometry) => {
-                this.updateMesh(header.keyframe_id, geometry);
-            });
-        }
-    }
-    
-    updateMesh(keyframeId, geometry) {
-        // Progressive mesh update
-        if (this.meshCache.has(keyframeId)) {
-            // Update existing mesh
-            const mesh = this.meshCache.get(keyframeId);
-            mesh.geometry.dispose();
-            mesh.geometry = geometry;
-        } else {
-            // Create new mesh
-            const mesh = new THREE.Mesh(geometry, material);
-            scene.add(mesh);
-            this.meshCache.set(keyframeId, mesh);
-        }
-    }
-}
-```
 
 ## Implementation Roadmap
 
@@ -970,10 +931,10 @@ class MeshStreamClient {
 4. Implement CUDA mesh generation kernels
 5. Add Draco compression pipeline
 
-### Phase 2: Networking & Streaming (Days 4-5)
+### Phase 2: Integration & Streaming (Days 4-5)
 1. Implement RabbitMQ consumer for keyframes
-2. Build WebSocket streaming server
-3. Create streaming PLY protocol
+2. Build Rerun streaming integration
+3. Create efficient mesh update protocol
 4. Add Prometheus metrics endpoint
 5. Implement health check endpoint
 
@@ -988,7 +949,7 @@ class MeshStreamClient {
 ### Phase 4: Full System Integration (Days 8-10)
 1. Update docker-compose.yml
 2. Modify prometheus.yml
-3. Update website to receive mesh streams
+3. Configure Rerun for mesh visualization
 4. Performance testing and optimization
 5. Documentation and deployment
 
@@ -1019,8 +980,8 @@ class MeshStreamClient {
 3. **`/home/sam3/Desktop/Toms_Workspace/WorldSystem/prometheus.yml`**
    - Add mesh_service job configuration
 
-4. **`/home/sam3/Desktop/Toms_Workspace/WorldSystem/website/src/components/ThreeScene.jsx`** (or similar)
-   - Add MeshStreamClient for WebSocket connection
+4. **`/home/sam3/Desktop/Toms_Workspace/WorldSystem/mesh_service/src/rerun_logger.cpp`**
+   - Add Rerun C++ SDK integration for mesh streaming
    - Replace point cloud rendering with mesh rendering
 
 5. **`/home/sam3/Desktop/Toms_Workspace/WorldSystem/.env`**
@@ -1031,7 +992,7 @@ class MeshStreamClient {
 
 1. **`/home/sam3/Desktop/Toms_Workspace/WorldSystem/mesh_service/Dockerfile`**
    - Base image: nvidia/cuda:12.1.1-devel-ubuntu22.04
-   - Install CGAL, Draco, WebSocket++ libraries
+   - Install CGAL, Draco, Rerun SDK libraries
 
 2. **`/home/sam3/Desktop/Toms_Workspace/WorldSystem/mesh_service/CMakeLists.txt`**
    - Configure C++ build with CUDA support
@@ -1042,8 +1003,8 @@ class MeshStreamClient {
 4. **`/home/sam3/Desktop/Toms_Workspace/WorldSystem/mesh_service/src/mesh_generator.cu`**
    - CUDA kernels for GPU mesh generation
 
-5. **`/home/sam3/Desktop/Toms_Workspace/WorldSystem/mesh_service/src/websocket_server.cpp`**
-   - WebSocket streaming implementation
+5. **`/home/sam3/Desktop/Toms_Workspace/WorldSystem/mesh_service/src/rerun_streamer.cpp`**
+   - Rerun streaming implementation for mesh visualization
 
 6. **`/home/sam3/Desktop/Toms_Workspace/WorldSystem/mesh_service/src/rabbitmq_consumer.cpp`**
    - RabbitMQ keyframe consumer
@@ -1060,7 +1021,7 @@ class MeshStreamClient {
 ### Key Libraries Documentation
 - **CGAL (Mesh Generation)**: https://www.cgal.org/
 - **Draco (Compression)**: https://google.github.io/draco/
-- **WebSocket++**: https://github.com/zaphoyd/websocketpp
+- **Rerun C++ SDK**: https://github.com/rerun-io/rerun
 - **POSIX Shared Memory**: https://man7.org/linux/man-pages/man7/shm_overview.7.html
 
 ## Conclusion

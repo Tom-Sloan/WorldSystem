@@ -15,9 +15,9 @@ The frame_processor is a GPU-accelerated video processing service that:
 ## Architecture & Integration
 
 This service is part of the WorldSystem microservices architecture:
-- **Input**: Raw video frames from `video_frames_exchange` 
-- **Output**: Processed frames to `processed_frames_exchange`
-- **Control**: Analysis mode updates from `analysis_mode_exchange`
+- **Input**: Raw video frames from `sensor_data` exchange (routing key: `sensor.video`)
+- **Output**: Processed frames to `processing_results` exchange (routing key: `result.frames.yolo`)
+- **Control**: Analysis mode updates from `control_commands` exchange (routing key: `control.analysis_mode`)
 - **Monitoring**: Prometheus metrics on port 8003
 - **Visualization**: Rerun viewer integration on port 9090
 

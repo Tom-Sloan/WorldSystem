@@ -14,6 +14,7 @@ from prometheus_client import start_http_server, Counter, Gauge, Histogram, Summ
 import threading
 from collections import deque
 from datetime import datetime
+from rabbitmq_config import EXCHANGES, ROUTING_KEYS
 
 # Prometheus metrics
 PROCESSED_FRAMES = Counter('frame_processor_frames_processed_total', 'Total number of frames processed')
@@ -129,10 +130,8 @@ print("Connecting to RabbitMQ...")
 connection = connect_rabbitmq_with_retry()
 channel = connection.channel()
 
-# Read exchange names from environment variables (with defaults)
-VIDEO_FRAMES_EXCHANGE   = os.getenv("VIDEO_FRAMES_EXCHANGE", "video_frames_exchange")
-PROCESSED_FRAMES_EXCHANGE = os.getenv("PROCESSED_FRAMES_EXCHANGE", "processed_frames_exchange")
-ANALYSIS_MODE_EXCHANGE  = os.getenv("ANALYSIS_MODE_EXCHANGE", "analysis_mode_exchange")
+# RabbitMQ configuration
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq")
 # We assume YOLO is installed
 model = YOLO("yolov8n.pt")
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -141,20 +140,24 @@ print(f"Using device: {device}")
 
 current_mode = os.getenv("INITIAL_ANALYSIS_MODE", "none").lower()
 
-# Declare exchanges using the variables
-channel.exchange_declare(exchange=VIDEO_FRAMES_EXCHANGE, exchange_type="fanout", durable=True)
-channel.exchange_declare(exchange=PROCESSED_FRAMES_EXCHANGE, exchange_type="fanout", durable=True)
-channel.exchange_declare(exchange=ANALYSIS_MODE_EXCHANGE, exchange_type="fanout", durable=True)
+# Declare new topic exchanges
+for exchange_config in EXCHANGES.values():
+    channel.exchange_declare(
+        exchange=exchange_config['name'],
+        exchange_type=exchange_config['type'],
+        durable=exchange_config['durable'],
+        auto_delete=exchange_config['auto_delete']
+    )
 
 # Create queue for video frames with meaningful name
 q = channel.queue_declare(queue='frame_processor_video_input', exclusive=True)
 queue_name = q.method.queue
-channel.queue_bind(exchange=VIDEO_FRAMES_EXCHANGE, queue=queue_name)
+channel.queue_bind(exchange='sensor_data', queue=queue_name, routing_key=ROUTING_KEYS['VIDEO_FRAMES'])
 
 # Create queue for analysis mode updates
 analysis_queue = channel.queue_declare(queue='frame_processor_analysis_mode', exclusive=True)
 analysis_queue_name = analysis_queue.method.queue
-channel.queue_bind(exchange=ANALYSIS_MODE_EXCHANGE, queue=analysis_queue_name)
+channel.queue_bind(exchange='control_commands', queue=analysis_queue_name, routing_key=ROUTING_KEYS['ANALYSIS_MODE'])
 
 print("frame_processor: Listening for raw frames...")
 
@@ -377,8 +380,8 @@ Resolution: {latest_stat['resolution']}"""
         }
         
         channel.basic_publish(
-            exchange=PROCESSED_FRAMES_EXCHANGE,
-            routing_key='',
+            exchange='processing_results',
+            routing_key=ROUTING_KEYS['YOLO_FRAMES'],
             body=annotated_bytes,
             properties=pika.BasicProperties(
                 content_type="application/octet-stream",

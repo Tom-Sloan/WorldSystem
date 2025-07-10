@@ -20,6 +20,7 @@ import psutil
 from collections import deque
 from typing import Optional, Tuple, List, Dict
 import trimesh
+from rabbitmq_config import EXCHANGES, ROUTING_KEYS, declare_exchanges
 
 # Check Open3D availability (will log warning after logger is initialized)
 try:
@@ -390,15 +391,8 @@ if not OPEN3D_AVAILABLE:
 # ───────────────────────────────────────────────────────────────────────────────
 # Environment / config (with sane defaults)
 # ───────────────────────────────────────────────────────────────────────────────
-RABBITMQ_URL                       = os.getenv("RABBITMQ_URL", "amqp://rabbitmq")
-VIDEO_FRAMES_EXCHANGE_IN           = os.getenv("VIDEO_FRAMES_EXCHANGE", "video_frames_exchange")
-RESTART_EXCHANGE_IN                = os.getenv("RESTART_EXCHANGE",    "restart_exchange")
-
-SLAM3R_POSE_EXCHANGE_OUT           = os.getenv("SLAM3R_POSE_EXCHANGE",              "slam3r_pose_exchange")
-SLAM3R_POINTCLOUD_EXCHANGE_OUT     = os.getenv("SLAM3R_POINTCLOUD_EXCHANGE",        "slam3r_pointcloud_exchange")
-SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT = os.getenv("SLAM3R_RECONSTRUCTION_VIS_EXCHANGE",
-                                                   "slam3r_reconstruction_vis_exchange")
-OUTPUT_TO_RABBITMQ                 = os.getenv("SLAM3R_OUTPUT_TO_RABBITMQ", "false").lower() == "true"
+RABBITMQ_URL       = os.getenv("RABBITMQ_URL", "amqp://rabbitmq")
+OUTPUT_TO_RABBITMQ = os.getenv("SLAM3R_OUTPUT_TO_RABBITMQ", "false").lower() == "true"
 
 CHECKPOINTS_DIR                    = os.getenv("SLAM3R_CHECKPOINTS_DIR", "/checkpoints_mount")
 SLAM3R_CONFIG_FILE_PATH_IN_CONTAINER= os.getenv("SLAM3R_CONFIG_FILE", "/app/SLAM3R_engine/configs/wild.yaml")
@@ -1162,17 +1156,17 @@ async def on_video_frame_message(msg: aio_pika.IncomingMessage, exchanges):
                         await reset_for_new_segment(video_segment)
                         
                         # Publish segment change notification
-                        if OUTPUT_TO_RABBITMQ and SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT in exchanges:
+                        if OUTPUT_TO_RABBITMQ and 'processing_results' in exchanges:
                             segment_change_msg = {
                                 "type": "segment_boundary",
                                 "previous_segment": current_video_segment,
                                 "new_segment": video_segment,
                                 "timestamp_ns": ts_ns
                             }
-                            await exchanges[SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT].publish(
+                            await exchanges['processing_results'].publish(
                                 aio_pika.Message(json.dumps(segment_change_msg).encode(), 
                                                content_type="application/json"),
-                                routing_key="")
+                                routing_key=ROUTING_KEYS['SLAM_MESH'])
                     elif video_segment is not None:
                         # Starting first segment
                         logger.info(f"Starting SLAM processing for video segment: {video_segment}")
@@ -1191,19 +1185,19 @@ async def on_video_frame_message(msg: aio_pika.IncomingMessage, exchanges):
             if not OUTPUT_TO_RABBITMQ:
                 return
             if pose:
-                await exchanges[SLAM3R_POSE_EXCHANGE_OUT].publish(
+                await exchanges['processing_results'].publish(
                     aio_pika.Message(json.dumps(pose).encode(), content_type="application/json"),
-                    routing_key="")
+                    routing_key=ROUTING_KEYS['SLAM_POSE'])
             if pc:
-                await exchanges[SLAM3R_POINTCLOUD_EXCHANGE_OUT].publish(
+                await exchanges['processing_results'].publish(
                     aio_pika.Message(gzip.compress(json.dumps(pc).encode()),
                                      content_type="application/json+gzip"),
-                    routing_key="")
+                    routing_key=ROUTING_KEYS['SLAM_POINTCLOUD'])
             if vis:
-                await exchanges[SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT].publish(
+                await exchanges['processing_results'].publish(
                     aio_pika.Message(gzip.compress(json.dumps(vis).encode()),
                                      content_type="application/json+gzip"),
-                    routing_key="")
+                    routing_key=ROUTING_KEYS['SLAM_MESH'])
         except Exception as e:
             logger.exception("Frame processing error: %s", e)
 
@@ -1250,22 +1244,21 @@ async def main():
         ch = await connection.channel()
         await ch.set_qos(prefetch_count=1)
 
-        ex_in_frames   = await ch.declare_exchange(VIDEO_FRAMES_EXCHANGE_IN, aio_pika.ExchangeType.FANOUT, durable=True)
-        ex_in_restart  = await ch.declare_exchange(RESTART_EXCHANGE_IN,      aio_pika.ExchangeType.FANOUT, durable=True)
-        ex_out_pose    = await ch.declare_exchange(SLAM3R_POSE_EXCHANGE_OUT,        aio_pika.ExchangeType.FANOUT, durable=True)
-        ex_out_pc      = await ch.declare_exchange(SLAM3R_POINTCLOUD_EXCHANGE_OUT,  aio_pika.ExchangeType.FANOUT, durable=True)
-        ex_out_vis     = await ch.declare_exchange(SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT,
-                                                   aio_pika.ExchangeType.FANOUT, durable=True)
-
-        exchanges = {SLAM3R_POSE_EXCHANGE_OUT: ex_out_pose,
-                     SLAM3R_POINTCLOUD_EXCHANGE_OUT: ex_out_pc,
-                     SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT: ex_out_vis}
+        # Declare new topic exchanges
+        await declare_exchanges(ch)
+        
+        # Get exchange references
+        exchanges = {}
+        for exchange_name in EXCHANGES.keys():
+            exchanges[exchange_name] = await ch.get_exchange(
+                EXCHANGES[exchange_name]['name']
+            )
 
         q_frames  = await ch.declare_queue("slam3r_video_frames_queue", durable=True)
         q_restart = await ch.declare_queue("slam3r_restart_queue",      durable=True)
 
-        await q_frames.bind(ex_in_frames)
-        await q_restart.bind(ex_in_restart)
+        await q_frames.bind(exchanges['sensor_data'], routing_key=ROUTING_KEYS['VIDEO_FRAMES'])
+        await q_restart.bind(exchanges['control_commands'], routing_key=ROUTING_KEYS['RESTART'])
 
         await q_frames.consume(lambda m: on_video_frame_message(m, exchanges))
         await q_restart.consume(on_restart_message)

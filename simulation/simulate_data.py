@@ -22,13 +22,10 @@ import socket
 import threading
 
 import aio_pika
+from rabbitmq_config import EXCHANGES, ROUTING_KEYS, declare_exchanges
 
 # Configuration: Use the same environment variables and exchange names as your live system.
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq")
-VIDEO_FRAMES_EXCHANGE = os.getenv("VIDEO_FRAMES_EXCHANGE", "video_frames_exchange")
-IMU_DATA_EXCHANGE = os.getenv("IMU_DATA_EXCHANGE", "imu_data_exchange")
-TRAJECTORY_DATA_EXCHANGE = os.getenv("TRAJECTORY_DATA_EXCHANGE", "trajectory_data_exchange")
-PLY_FANOUT_EXCHANGE = os.getenv("PLY_FANOUT_EXCHANGE", "ply_fanout_exchange")
 
 # The root of your recorded data.
 # Check if USE_FOLDER is set to use a specific folder, otherwise use /data or /simulation_data
@@ -170,7 +167,7 @@ async def replay_single_video(video_exchange, video_file: Path):
                 "frame_index": frame_idx
             }
         )
-        await video_exchange.publish(message, routing_key="")
+        await exchanges['sensor_data'].publish(message, routing_key=ROUTING_KEYS['VIDEO_FRAMES'])
         
         frame_idx += 1
         
@@ -183,7 +180,7 @@ async def replay_single_video(video_exchange, video_file: Path):
     sys.stdout.flush()
 
 
-async def replay_video_segments(video_exchange, video_path: Path):
+async def replay_video_segments(exchanges, video_path: Path):
     """Replay video segments by extracting frames and publishing them in real time."""
     # Define common resolutions (width, height)
     RESOLUTIONS = {
@@ -293,7 +290,7 @@ async def replay_video_segments(video_exchange, video_path: Path):
                     "frame_index": frame_idx
                 }
             )
-            await video_exchange.publish(message, routing_key="")
+            await exchanges['sensor_data'].publish(message, routing_key=ROUTING_KEYS['VIDEO_FRAMES'])
             
             frame_idx += 1
             total_frames += 1
@@ -310,7 +307,7 @@ async def replay_video_segments(video_exchange, video_path: Path):
     sys.stdout.flush()
 
 
-async def replay_images(video_exchange, cam_data_path: Path):
+async def replay_images(exchanges, cam_data_path: Path):
     """Replay image messages in real time based on their filename timestamp (in nanoseconds)."""
     # Define common resolutions (width, height)
     RESOLUTIONS = {
@@ -465,7 +462,7 @@ async def replay_images(video_exchange, cam_data_path: Path):
                 "ntp_offset": ntp_time_offset  # Include the NTP offset for debugging
             }
         )
-        await video_exchange.publish(message, routing_key="")
+        await exchanges['sensor_data'].publish(message, routing_key=ROUTING_KEYS['VIDEO_FRAMES'])
         conversion_note = f" (converted {image_format}→JPEG)" if image_format == "PNG" else ""
         print(f"[Images] Published {img_file.name} (timestamp {ts}, NTP time {ntp_time_ns}, resolution {current_resolution}{conversion_note})")
         sys.stdout.flush()
@@ -537,12 +534,12 @@ async def replay_imu(imu_exchange, imu_data_path: Path):
             body=json.dumps(msg).encode(),
             content_type="application/json"
         )
-        await imu_exchange.publish(message, routing_key="")
+        # IMU data no longer needed - skip publishing
         print(f"[IMU] Published {imu_file.name} (timestamp {ts})")
         sys.stdout.flush()
 
 
-async def replay_trajectory(trajectory_exchange, trajectory_file: Path):
+async def replay_trajectory(exchanges, trajectory_file: Path):
     """
     Replay trajectory records in real time.
     Each line in trajectory.txt is expected to be a JSON record with a "timestamp_ns" key.
@@ -581,12 +578,12 @@ async def replay_trajectory(trajectory_exchange, trajectory_file: Path):
             body=json.dumps(record).encode(),
             content_type="application/json"
         )
-        await trajectory_exchange.publish(message, routing_key="")
+        await exchanges['assets'].publish(message, routing_key=ROUTING_KEYS['TRAJECTORY'])
         print(f"[Trajectory] Published record with timestamp {ts}")
         sys.stdout.flush()
 
 
-async def replay_ply(ply_exchange, ply_folder: Path):
+async def replay_ply(exchanges, ply_folder: Path):
     """
     Replay PLY files.
     If the filenames are numeric (indicating a timestamp), they will be replayed in real time.
@@ -653,7 +650,7 @@ async def replay_ply(ply_exchange, ply_folder: Path):
                 body=json.dumps(msg).encode(),
                 content_type="application/json"
             )
-            await ply_exchange.publish(message, routing_key="")
+            await exchanges['assets'].publish(message, routing_key=ROUTING_KEYS['PLY_FILE'])
             print(f"[PLY] Published {ply_file.name} (timestamp {ts})")
             sys.stdout.flush()
     else:
@@ -685,7 +682,7 @@ async def replay_ply(ply_exchange, ply_folder: Path):
                 body=json.dumps(msg).encode(),
                 content_type="application/json"
             )
-            await ply_exchange.publish(message, routing_key="")
+            await exchanges['assets'].publish(message, routing_key=ROUTING_KEYS['PLY_FILE'])
             print(f"[PLY] Published {ply_file.name} with fixed delay")
             sys.stdout.flush()
             await asyncio.sleep(1)  # Fixed delay of 1 second
@@ -714,18 +711,15 @@ async def publish_messages():
     channel = await connection.channel()
 
     # Declare the exchanges (fanout and durable).
-    video_exchange = await channel.declare_exchange(
-        VIDEO_FRAMES_EXCHANGE, aio_pika.ExchangeType.FANOUT, durable=True
-    )
-    imu_exchange = await channel.declare_exchange(
-        IMU_DATA_EXCHANGE, aio_pika.ExchangeType.FANOUT, durable=True
-    )
-    trajectory_exchange = await channel.declare_exchange(
-        TRAJECTORY_DATA_EXCHANGE, aio_pika.ExchangeType.FANOUT, durable=True
-    )
-    ply_exchange = await channel.declare_exchange(
-        PLY_FANOUT_EXCHANGE, aio_pika.ExchangeType.FANOUT, durable=True
-    )
+    # Declare new topic exchanges
+    await declare_exchanges(channel)
+    
+    # Get exchange references
+    exchanges = {}
+    for exchange_name in EXCHANGES.keys():
+        exchanges[exchange_name] = await channel.get_exchange(
+            EXCHANGES[exchange_name]['name']
+        )
 
     # Check if data root exists
     if not DATA_ROOT.exists():
@@ -792,27 +786,24 @@ async def publish_messages():
         video_segments_path = mav0_path / "video_segments"
         if video_segments_path.is_dir() and list(video_segments_path.glob("*_segment_*.mp4")):
             print(f"[INFO] Found video segments in {recording_folder.name}")
-            tasks.append(asyncio.create_task(replay_video_segments(video_exchange, video_segments_path)))
+            tasks.append(asyncio.create_task(replay_video_segments(exchanges, video_segments_path)))
         else:
             # Images (fallback to original image replay)
             cam_data_path = mav0_path / "cam0" / "data"
             if cam_data_path.is_dir():
-                tasks.append(asyncio.create_task(replay_images(video_exchange, cam_data_path)))
+                tasks.append(asyncio.create_task(replay_images(exchanges, cam_data_path)))
 
-        # IMU
-        imu_data_path = mav0_path / "imu0" / "data"
-        if imu_data_path.is_dir():
-            tasks.append(asyncio.create_task(replay_imu(imu_exchange, imu_data_path)))
+        # IMU replay removed - no longer needed
 
         # Trajectory
         trajectory_file = mav0_path / "trajectory.txt"
         if trajectory_file.is_file():
-            tasks.append(asyncio.create_task(replay_trajectory(trajectory_exchange, trajectory_file)))
+            tasks.append(asyncio.create_task(replay_trajectory(exchanges, trajectory_file)))
 
         # PLY
         ply_folder = mav0_path / "ply"
         if ply_folder.is_dir():
-            tasks.append(asyncio.create_task(replay_ply(ply_exchange, ply_folder)))
+            tasks.append(asyncio.create_task(replay_ply(exchanges, ply_folder)))
 
         if tasks:
             # Run all streams concurrently for this recording folder.

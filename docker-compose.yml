@@ -31,11 +31,6 @@ services:
       - ${XAUTHORITY}:${XAUTHORITY}
     environment:
       - RABBITMQ_URL=amqp://127.0.0.1:5672
-      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
-      - IMU_DATA_EXCHANGE=imu_data_exchange
-      - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
-      - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
-      - RESTART_EXCHANGE=restart_exchange
     depends_on:
       - rabbitmq
 
@@ -46,10 +41,6 @@ services:
     network_mode: host
     environment:
       - RABBITMQ_URL=amqp://127.0.0.1:5672
-      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
-      - IMU_DATA_EXCHANGE=imu_data_exchange
-      - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
-      - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
       - INITIAL_ANALYSIS_MODE=none #yolo
 
       # Added Rerun configuration
@@ -90,12 +81,6 @@ services:
     # RabbitMQ now reached on the host‑published port
     environment:
       RABBITMQ_URL: amqp://127.0.0.1:5672
-      VIDEO_FRAMES_EXCHANGE: video_frames_exchange
-      IMU_DATA_EXCHANGE: imu_data_exchange
-      TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
-      PLY_FANOUT_EXCHANGE: ply_fanout_exchange
-      RESTART_EXCHANGE: restart_exchange
-      PROCESSED_IMU_EXCHANGE: processed_imu_exchange
     depends_on:
       - rabbitmq
 
@@ -153,16 +138,7 @@ services:
       # RabbitMQ now reached on the host‑published port
       - RABBITMQ_URL=amqp://127.0.0.1:5672
 
-      # Input exchanges
-      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
-      - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
-      - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
-      - RESTART_EXCHANGE=restart_exchange
-
-      # Output exchanges
-      - SLAM3R_POSE_EXCHANGE=${SLAM3R_POSE_EXCHANGE:-slam3r_pose_exchange}
-      - SLAM3R_POINTCLOUD_EXCHANGE=${SLAM3R_POINTCLOUD_EXCHANGE:-slam3r_pointcloud_exchange}
-      - SLAM3R_RECONSTRUCTION_VIS_EXCHANGE=${SLAM3R_RECONSTRUCTION_VIS_EXCHANGE:-slam3r_reconstruction_vis_exchange}
+      # RabbitMQ output configuration
       - SLAM3R_OUTPUT_TO_RABBITMQ=${SLAM3R_OUTPUT_TO_RABBITMQ:-false}
 
       # Paths & checkpoints
@@ -287,10 +263,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1  # Ensures Python output is sent straight to the terminal
       - RABBITMQ_URL=amqp://127.0.0.1:5672
-      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
-      - IMU_DATA_EXCHANGE=imu_data_exchange
-      - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
-      - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
 
       - USE_FOLDER=${USE_FOLDER:-/home/sam3/Desktop/Toms_Workspace/WorldSystem/20250617_211214_segments}  # set in .env file!!!
     depends_on:

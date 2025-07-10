@@ -52,3 +52,10 @@ scrape_configs:
   - job_name: 'mast3r'
     static_configs:
       - targets: ['host.docker.internal:8001']
+
+  # Mesh Service (uses host network mode, when running)
+  - job_name: 'mesh_service'
+    static_configs:
+      - targets: ['host.docker.internal:8006']
+    metrics_path: '/metrics'
+    scrape_interval: 5s

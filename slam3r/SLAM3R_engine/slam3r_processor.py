@@ -536,18 +536,27 @@ async def adaptive_keyframe_selection(current_pose, last_keyframe_pose, scene_ty
             -1, 1
         ))
         
+        logger.debug(f"Keyframe decision - Frame {current_frame_index}: pos_change={position_change:.3f}m, "
+                    f"rot_change={np.degrees(rotation_change):.1f}°, scene={scene_type}, stride={active_kf_stride}")
+        
         if scene_type == "corridor":
             pos_thresh = float(os.getenv("SLAM3R_CORRIDOR_POSITION_THRESHOLD", "0.4"))
             rot_thresh = np.radians(float(os.getenv("SLAM3R_CORRIDOR_ROTATION_THRESHOLD", "12")))
             if position_change > pos_thresh or rotation_change > rot_thresh:
+                logger.info(f"✓ KEYFRAME triggered (corridor): pos={position_change:.3f}>{pos_thresh:.3f} or rot={np.degrees(rotation_change):.1f}>{np.degrees(rot_thresh):.1f}")
                 return True, min(active_kf_stride, 3)
         else:
             pos_thresh = float(os.getenv("SLAM3R_ROOM_POSITION_THRESHOLD", "0.8"))
             rot_thresh = np.radians(float(os.getenv("SLAM3R_ROOM_ROTATION_THRESHOLD", "25")))
             if position_change > pos_thresh or rotation_change > rot_thresh:
+                logger.info(f"✓ KEYFRAME triggered (room): pos={position_change:.3f}>{pos_thresh:.3f} or rot={np.degrees(rotation_change):.1f}>{np.degrees(rot_thresh):.1f}")
                 return True, active_kf_stride
     
-    return current_frame_index % active_kf_stride == 0, active_kf_stride
+    # Stride-based keyframe
+    is_stride_kf = current_frame_index % active_kf_stride == 0
+    if is_stride_kf:
+        logger.info(f"✓ KEYFRAME triggered (stride): frame {current_frame_index} % {active_kf_stride} == 0")
+    return is_stride_kf, active_kf_stride
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Initialisation
@@ -700,10 +709,11 @@ def _handle_slam_bootstrap(view, record):
         world_point_cloud_buffer.add_points(pts_np[mask], cols, keyframe_id=f"bootstrap_{hist_idx}")
         
         # Stream keyframe if enabled
-        if keyframe_publisher is not None and "raw_pose_matrix" in hv:
+        record = processed_frames_history[hist_idx]
+        if keyframe_publisher is not None and "raw_pose_matrix" in record:
             asyncio.create_task(keyframe_publisher.publish_keyframe(
                 f"bootstrap_{hist_idx}",
-                np.array(hv["raw_pose_matrix"]).reshape(4, 4),
+                np.array(record["raw_pose_matrix"]).reshape(4, 4),
                 pts_np[mask],
                 cols
             ))
@@ -812,6 +822,7 @@ async def _update_scene_and_keyframe_logic(pose_matrix, record_index):
         keyframe_indices.append(record_index)
         keyframe_id_out = record["keyframe_id"]
         last_keyframe_pose = pose_matrix.copy()
+        logger.info(f"📸 Created keyframe {keyframe_id_out} at frame {current_frame_index}")
     
     return keyframe_id_out, scene_type
 
@@ -1213,8 +1224,7 @@ async def on_restart_message(msg: aio_pika.IncomingMessage):
         if rerun_logger:
             rerun_logger.flush()
             rerun_logger = RerunBatchLogger(
-                batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15")),
-                downsample_voxel_size=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008"))
+                batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15"))
             )
         scene_detector.recent_poses.clear()
         scene_detector.scene_type = "room"

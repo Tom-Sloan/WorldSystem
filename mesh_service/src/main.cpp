@@ -39,29 +39,41 @@ int main(int argc, char* argv[]) {
         
         // Main loop - poll for shared memory segments
         while (g_running) {
-            // Check for test keyframe
-            std::string test_shm_key = "/slam3r_keyframe_test";
-            auto* keyframe = shared_memory->open_keyframe(test_shm_key);
-            
-            if (keyframe) {
-                frame_count++;
-                std::cout << "Found keyframe " << frame_count 
-                         << ": " << keyframe->point_count << " points" << std::endl;
+            // Check for any test keyframes (simple polling for now)
+            for (int i = 0; i < 10; i++) {
+                // Try different keyframe patterns
+                std::string patterns[] = {
+                    "/slam3r_keyframe_test_" + std::to_string(time(nullptr) * 1000 + i),
+                    "/slam3r_keyframe_test",
+                    "/slam3r_keyframe_" + std::to_string(i)
+                };
                 
-                // Generate mesh (placeholder)
-                mesh_service::MeshUpdate update;
-                mesh_generator->generateIncrementalMesh(keyframe, update);
-                
-                std::cout << "Generated mesh with " 
-                         << update.vertices.size() / 3 << " vertices, "
-                         << update.faces.size() / 3 << " faces" << std::endl;
-                
-                // Close shared memory
-                shared_memory->close_keyframe(keyframe);
+                for (const auto& shm_key : patterns) {
+                    auto* keyframe = shared_memory->open_keyframe(shm_key);
+                    
+                    if (keyframe) {
+                        frame_count++;
+                        std::cout << "\nProcessing keyframe " << frame_count 
+                                 << " from " << shm_key
+                                 << ": " << keyframe->point_count << " points" << std::endl;
+                        
+                        // Generate mesh
+                        mesh_service::MeshUpdate update;
+                        mesh_generator->generateIncrementalMesh(keyframe, update);
+                        
+                        std::cout << "Generated mesh with " 
+                                 << update.vertices.size() / 3 << " vertices, "
+                                 << update.faces.size() / 3 << " faces" << std::endl;
+                        
+                        // Close shared memory
+                        shared_memory->close_keyframe(keyframe);
+                        // Note: unlink would be done by SLAM3R after confirmation
+                    }
+                }
             }
             
             // Sleep briefly
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
         
         // Shutdown

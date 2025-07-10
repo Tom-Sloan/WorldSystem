@@ -47,6 +47,21 @@ public:
 private:
     class Impl;
     std::unique_ptr<Impl> pImpl;
+    
+    // Internal mesh generation methods
+    void generateIncrementalPoissonMesh(
+        const SharedKeyframe* keyframe,
+        float3* d_points,
+        float3* d_normals,
+        MeshUpdate& update
+    );
+    
+    void generateMarchingCubesMesh(
+        const SharedKeyframe* keyframe,
+        float3* d_points,
+        float3* d_normals,
+        MeshUpdate& update
+    );
 };
 
 // CUDA kernels

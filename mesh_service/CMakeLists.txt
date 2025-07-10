@@ -27,11 +27,17 @@ include_directories(
     /usr/local/include
 )
 
-# Source files - start with minimal set
+# Source files
 set(SOURCES
     src/main.cpp
-    src/mesh_generator.cu
+    src/simple_mesh_generator.cu
     src/shared_memory.cpp
+    # Temporarily disabled for build
+    # src/mesh_generator.cu
+    # src/poisson_reconstruction.cpp
+    # src/marching_cubes.cu
+    # src/normal_estimation.cu
+    # src/marching_cubes_tables.cu
 )
 
 # Create executable

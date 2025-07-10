@@ -11,7 +11,8 @@ import os
 import time
 
 # Add SLAM3R to path
-sys.path.append('/home/sam3/Desktop/Toms_Workspace/WorldSystem/slam3r/SLAM3R_engine')
+slam3r_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../slam3r/SLAM3R_engine'))
+sys.path.append(slam3r_path)
 
 # Activate conda environment
 os.environ['CONDA_DEFAULT_ENV'] = '3dreconstruction'

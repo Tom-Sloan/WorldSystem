@@ -3,7 +3,7 @@
 ## Executive Summary
 
 The SLAM3R system receives images at ~14.5 fps but can process at 25 fps when running offline. The bottleneck is not SLAM processing but the visualization pipeline - specifically point cloud downsampling (47% CPU time) and synchronous mesh generation. This plan proposes the optimal solution: **decouple visualization from SLAM processing entirely** using a dedicated mesh service that integrates with the existing WorldSystem architecture via RabbitMQ and Docker Compose.
-
+https://rerun.io/docs/getting-started/quick-start/cpp
 ## Core Problem Analysis
 
 ### The Real Issue

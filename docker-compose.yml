@@ -343,7 +343,6 @@ services:
 
   mesh_service:
     image: mesh_service:latest
-    profiles: ["mesh_service"]  # Optional profile like slam3r/mast3r
     build:
       context: ./mesh_service
       args:
@@ -354,9 +353,10 @@ services:
     runtime: nvidia
     network_mode: host  # Same as SLAM3R for shared memory access
     
-    # Volume mounts for code and shared memory
+    # Volume mounts for shared memory only (code is built into image)
     volumes:
-      - ${WORKSPACE}/mesh_service:/app
+      # Don't mount source code - it's built into the image
+      # - ${WORKSPACE}/mesh_service:/app
       - /dev/shm:/dev/shm  # Shared memory for zero-copy IPC with SLAM3R
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}

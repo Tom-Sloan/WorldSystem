@@ -80,7 +80,10 @@ RUN groupadd -g ${GID} ${USERNAME} && \
 
 # Build mesh service
 WORKDIR /app
-COPY --chown=${USERNAME}:${USERNAME} . .
+COPY . .
+
+# Fix permissions
+RUN chown -R ${USERNAME}:${USERNAME} /app
 
 # Create build directory and compile
 USER ${USERNAME}

@@ -1,15 +1,17 @@
 #include "mesh_generator.h"
+#include "poisson_reconstruction.h"
+#include "marching_cubes.h"
+#include "normal_estimation.h"
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <iostream>
 #include <chrono>
 #include <cmath>
+#include <unordered_map>
 
 namespace mesh_service {
 
 // Forward declarations
-void generatePoissonMesh(float3* d_points, uint32_t num_points, MeshUpdate& update);
-void generateMarchingCubesMesh(float3* d_points, uint32_t num_points, MeshUpdate& update);
 uint64_t computeSpatialHashCPU(const float bbox[6]);
 
 // Constants for RTX 3090 optimization
@@ -38,6 +40,16 @@ public:
     // Previous camera position for velocity calculation
     float prev_camera_pos[3] = {0, 0, 0};
     
+    // Mesh generation components
+    std::unique_ptr<PoissonReconstruction> poisson;
+    std::unique_ptr<IncrementalPoissonReconstruction> incremental_poisson;
+    std::unique_ptr<MarchingCubesGPU> marching_cubes;
+    std::unique_ptr<IncrementalTSDFFusion> tsdf_fusion;
+    std::unique_ptr<NormalEstimation> normal_estimator;
+    
+    // Device memory for normals
+    thrust::device_vector<float3> d_normals;
+    
     Impl() {
         // Create CUDA streams
         for (int i = 0; i < 5; i++) {
@@ -47,6 +59,33 @@ public:
         // Allocate memory pool (1GB for RTX 3090)
         memory_pool_size = 1024 * 1024 * 1024;
         cudaMalloc(&d_memory_pool, memory_pool_size);
+        
+        // Initialize mesh generation components
+        poisson = std::make_unique<PoissonReconstruction>();
+        incremental_poisson = std::make_unique<IncrementalPoissonReconstruction>();
+        marching_cubes = std::make_unique<MarchingCubesGPU>();
+        tsdf_fusion = std::make_unique<IncrementalTSDFFusion>();
+        normal_estimator = std::make_unique<NormalEstimation>();
+        
+        // Configure components
+        PoissonReconstruction::Parameters poisson_params;
+        poisson_params.octree_depth = 8;
+        poisson_params.point_weight = 4.0f;
+        poisson->setParameters(poisson_params);
+        
+        MarchingCubesGPU::Parameters mc_params;
+        mc_params.voxel_size = 0.05f;
+        mc_params.truncation_distance = 0.1f;
+        marching_cubes->setParameters(mc_params);
+        
+        NormalEstimation::Parameters normal_params;
+        normal_params.method = NormalEstimation::PCA;
+        normal_params.k_neighbors = 30;
+        normal_estimator->setParameters(normal_params);
+        
+        // Initialize incremental systems
+        incremental_poisson->initialize(10.0f, 8);  // 10m scene, 8x8x8 grid
+        tsdf_fusion->setVoxelSize(0.05f);
     }
     
     ~Impl() {
@@ -133,16 +172,27 @@ void GPUMeshGenerator::generateIncrementalMesh(
     cudaMemcpyAsync(d_points, h_points, points_size, 
                     cudaMemcpyHostToDevice, pImpl->streams[0]);
     
+    // Allocate device memory for normals
+    pImpl->d_normals.resize(keyframe->point_count);
+    
+    // Estimate normals first (required for Poisson)
+    pImpl->normal_estimator->estimateNormals(
+        d_points, 
+        keyframe->point_count,
+        pImpl->d_normals.data().get(),
+        pImpl->streams[0]
+    );
+    
     // Generate mesh based on selected method
     switch (pImpl->method) {
         case MeshMethod::INCREMENTAL_POISSON:
-            generatePoissonMesh(d_points, keyframe->point_count, update);
+            generateIncrementalPoissonMesh(keyframe, d_points, pImpl->d_normals.data().get(), update);
             break;
         case MeshMethod::TSDF_MARCHING_CUBES:
-            generateMarchingCubesMesh(d_points, keyframe->point_count, update);
+            generateMarchingCubesMesh(keyframe, d_points, pImpl->d_normals.data().get(), update);
             break;
         default:
-            generatePoissonMesh(d_points, keyframe->point_count, update);
+            generateIncrementalPoissonMesh(keyframe, d_points, pImpl->d_normals.data().get(), update);
     }
     
     // Copy colors
@@ -176,23 +226,66 @@ void GPUMeshGenerator::generateIncrementalMesh(
               << update.faces.size()/3 << " faces" << std::endl;
 }
 
-// Simple placeholder mesh generation
-void generatePoissonMesh(float3* d_points, uint32_t num_points, MeshUpdate& update) {
-    // Placeholder: Create a simple mesh
-    // In production, this would use CGAL or similar library
+void GPUMeshGenerator::generateIncrementalPoissonMesh(
+    const SharedKeyframe* keyframe,
+    float3* d_points, 
+    float3* d_normals,
+    MeshUpdate& update
+) {
+    // Copy points and normals to host for CGAL processing
+    std::vector<float> h_points(keyframe->point_count * 3);
+    std::vector<float> h_normals(keyframe->point_count * 3);
     
-    // For now, just create a simple point cloud visualization
-    update.vertices.resize(num_points * 3);
-    cudaMemcpy(update.vertices.data(), d_points, num_points * sizeof(float3),
+    cudaMemcpy(h_points.data(), d_points, keyframe->point_count * sizeof(float3),
+               cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_normals.data(), d_normals, keyframe->point_count * sizeof(float3),
                cudaMemcpyDeviceToHost);
     
-    // No faces for point cloud
-    update.faces.clear();
+    // Add points to incremental reconstruction
+    pImpl->incremental_poisson->addPoints(
+        h_points.data(),
+        h_normals.data(),
+        keyframe->point_count,
+        keyframe->timestamp_ns
+    );
+    
+    // Update only dirty blocks
+    pImpl->incremental_poisson->updateDirtyBlocks(update);
 }
 
-void generateMarchingCubesMesh(float3* d_points, uint32_t num_points, MeshUpdate& update) {
-    // Placeholder for marching cubes
-    generatePoissonMesh(d_points, num_points, update);
+void GPUMeshGenerator::generateMarchingCubesMesh(
+    const SharedKeyframe* keyframe,
+    float3* d_points,
+    float3* d_normals, 
+    MeshUpdate& update
+) {
+    // Initialize grid if needed
+    if (pImpl->tsdf_fusion->getMemoryUsage() == 0) {
+        float3 min_bounds = make_float3(keyframe->bbox[0], keyframe->bbox[1], keyframe->bbox[2]);
+        float3 max_bounds = make_float3(keyframe->bbox[3], keyframe->bbox[4], keyframe->bbox[5]);
+        
+        // Expand bounds for room
+        min_bounds.x -= 1.0f;
+        min_bounds.y -= 1.0f;
+        min_bounds.z -= 1.0f;
+        max_bounds.x += 1.0f;
+        max_bounds.y += 1.0f;
+        max_bounds.z += 1.0f;
+        
+        pImpl->marching_cubes->initializeGrid(min_bounds, max_bounds);
+    }
+    
+    // Integrate points into TSDF
+    pImpl->marching_cubes->integrateTSDF(
+        d_points,
+        d_normals,
+        keyframe->point_count,
+        keyframe->pose_matrix,
+        pImpl->streams[0]
+    );
+    
+    // Extract mesh
+    pImpl->marching_cubes->extractMesh(update, pImpl->streams[0]);
 }
 
 uint64_t computeSpatialHashCPU(const float bbox[6]) {

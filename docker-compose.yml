@@ -341,6 +341,107 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  mesh_service:
+    image: mesh_service:latest
+    profiles: ["mesh_service"]  # Optional profile like slam3r/mast3r
+    build:
+      context: ./mesh_service
+      args:
+        USERNAME: ${USERNAME}
+        UID: ${UID}
+        GID: ${GID}
+    container_name: mesh_service
+    runtime: nvidia
+    network_mode: host  # Same as SLAM3R for shared memory access
+    
+    # Volume mounts for code and shared memory
+    volumes:
+      - ${WORKSPACE}/mesh_service:/app
+      - /dev/shm:/dev/shm  # Shared memory for zero-copy IPC with SLAM3R
+      - ${X11SOCKET}:${X11SOCKET}
+      - ${XAUTHORITY}:${XAUTHORITY}
+    
+    # Shared memory size for large point clouds
+    shm_size: '4gb'
+    
+    environment:
+      # RabbitMQ Configuration (matching existing pattern)
+      - RABBITMQ_URL=amqp://127.0.0.1:5672
+      
+      # Input exchanges from SLAM3R
+      - SLAM3R_KEYFRAME_EXCHANGE=slam3r_keyframe_exchange
+      - SLAM3R_POSE_EXCHANGE=slam3r_pose_exchange
+      
+      # Output exchanges for visualization
+      - MESH_STREAM_EXCHANGE=mesh_stream_exchange
+      - MESH_UPDATE_EXCHANGE=mesh_update_exchange
+      
+      # WebSocket for direct streaming to website
+      - WEBSOCKET_HOST=0.0.0.0
+      - WEBSOCKET_PORT=8005
+      
+      # Shared memory IPC settings
+      - SHM_KEYFRAME_PREFIX=/slam3r_keyframe_
+      - SHM_MAX_FRAMES=10
+      
+      # GPU Configuration (matching SLAM3R)
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_PATH=${CUDA_PATH}
+      - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
+      - DISPLAY=${DISPLAY}
+      
+      # Mesh Generation Settings
+      - MESH_UPDATE_FREQUENCY=30  # Target fps
+      - MESH_COMPRESSION=draco    # draco, none
+      - MESH_COMPRESSION_LEVEL=7  # 0-10
+      - MESH_QUALITY_ADAPTIVE=true
+      - MESH_SIMPLIFICATION_RATIO=0.1
+      
+      # Spatial indexing
+      - OCTREE_MAX_DEPTH=8
+      - OCTREE_MIN_POINTS=100
+      
+      # Performance settings
+      - OMP_NUM_THREADS=4
+      - CUDA_LAUNCH_BLOCKING=0
+      
+      # Prometheus metrics
+      - METRICS_PORT=8006
+      
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+      
+    # GPU resource allocation
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    # Health check for mesh service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Auto-restart on failure
+    restart: unless-stopped
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    depends_on:
+      - rabbitmq
+
   reconstruction:
     image: reconstruction:latest
     profiles: ["reconstruction"]

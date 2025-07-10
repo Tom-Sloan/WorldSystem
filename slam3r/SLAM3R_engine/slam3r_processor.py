@@ -13,13 +13,20 @@ from concurrent.futures import ThreadPoolExecutor
 
 import aio_pika, cv2, numpy as np, torch, yaml
 import rerun as rr
+import msgpack  # For efficient serialization
 
 # Add these imports for memory management and optimization
 import gc
 import psutil
-from collections import deque
-from typing import Optional, Tuple, List, Dict
-import trimesh
+# Removed unused imports: deque, Optional, Tuple, List, Dict, trimesh
+
+# Import shared memory manager for keyframe streaming
+try:
+    from shared_memory import StreamingKeyframePublisher
+    STREAMING_AVAILABLE = True
+except ImportError:
+    STREAMING_AVAILABLE = False
+    logging.warning("Shared memory streaming not available")
 
 # Check Open3D availability (will log warning after logger is initialized)
 try:
@@ -115,66 +122,65 @@ class MemoryAwareFrameHistory:
         self.history.clear()
         self.tensor_cache_indices.clear()
 
-class SpatialPointCloudBuffer:
-    """Spatially-aware point cloud buffer with mesh generation for visualization."""
-    def __init__(self, max_points=1_000_000, downsample_voxel=0.005, mesh_simplification_ratio=0.1):
+class OptimizedPointCloudBuffer:
+    """Optimized point cloud buffer without downsampling overhead."""
+    def __init__(self, max_points=2_000_000):
         self.max_points = max_points
-        self.voxel_size = downsample_voxel
-        self.mesh_simplification_ratio = mesh_simplification_ratio
-        self.points = []
-        self.colors = []
+        # Use numpy arrays for efficient memory management
+        self.points = np.empty((0, 3), dtype=np.float32)
+        self.colors = np.empty((0, 3), dtype=np.uint8)
+        self.keyframe_contributions = {}  # Track keyframe ownership
         self.mesh = None
         self.mesh_update_counter = 0
         self.mesh_update_frequency = int(os.getenv("SLAM3R_MESH_UPDATE_FREQUENCY", "30"))
         self.use_mesh_visualization = os.getenv("SLAM3R_USE_MESH_VIS", "true").lower() == "true"
-        self.last_mesh_update_size = 0
-        self.mesh_size_threshold = int(os.getenv("SLAM3R_MESH_SIZE_THRESHOLD", "10000"))
         self.mesh_generation_in_progress = False
         self.mesh_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mesh_gen")
         self.mesh_lock = threading.Lock()
         
-    def extend(self, point_color_pairs):
-        new_points = [p for p, _ in point_color_pairs]
-        new_colors = [c for _, c in point_color_pairs]
-        self.points.extend(new_points)
-        self.colors.extend(new_colors)
+    def add_points(self, new_points, new_colors, keyframe_id=None):
+        """Add points efficiently using numpy operations."""
+        if len(new_points) == 0:
+            return
+            
+        # Convert to numpy arrays if needed
+        new_points = np.asarray(new_points, dtype=np.float32)
+        new_colors = np.asarray(new_colors, dtype=np.uint8)
+        
+        # Efficiently append using numpy
+        self.points = np.vstack([self.points, new_points])
+        self.colors = np.vstack([self.colors, new_colors])
+        
+        # Track keyframe contributions
+        if keyframe_id is not None:
+            start_idx = len(self.points) - len(new_points)
+            self.keyframe_contributions[keyframe_id] = (start_idx, len(self.points))
+        
+        # Hard limit with FIFO removal (no downsampling)
         if len(self.points) > self.max_points:
-            self._downsample()
+            # Remove oldest points
+            keep_count = int(self.max_points * 0.9)  # Keep 90% when pruning
+            self.points = self.points[-keep_count:]
+            self.colors = self.colors[-keep_count:]
+            # Update keyframe indices
+            removed_count = len(self.points) - keep_count
+            new_contributions = {}
+            for kf_id, (start, end) in self.keyframe_contributions.items():
+                new_start = max(0, start - removed_count)
+                new_end = max(0, end - removed_count)
+                if new_end > new_start:
+                    new_contributions[kf_id] = (new_start, new_end)
+            self.keyframe_contributions = new_contributions
         
         # Update mesh periodically if enabled
         self.mesh_update_counter += 1
-        points_added_since_mesh = len(self.points) - self.last_mesh_update_size
-        
         if (self.use_mesh_visualization and 
             not self.mesh_generation_in_progress and
-            (self.mesh_update_counter >= self.mesh_update_frequency or 
-             points_added_since_mesh > self.mesh_size_threshold)):
+            self.mesh_update_counter >= self.mesh_update_frequency):
             self._trigger_mesh_update()
             self.mesh_update_counter = 0
-            self.last_mesh_update_size = len(self.points)
     
-    def _downsample(self):
-        if OPEN3D_AVAILABLE:
-            # Use Open3D for faster voxel downsampling
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(np.array(self.points))
-            pcd.colors = o3d.utility.Vector3dVector(np.array(self.colors) / 255.0)
-            
-            downsampled = pcd.voxel_down_sample(self.voxel_size)
-            
-            self.points = np.asarray(downsampled.points).tolist()
-            self.colors = (np.asarray(downsampled.colors) * 255).astype(np.uint8).tolist()
-        else:
-            # Fallback to original method
-            pts_array = np.array(self.points)
-            cols_array = np.array(self.colors)
-            downsampled_pts, downsampled_cols = downsample_pointcloud_voxel(
-                pts_array, cols_array, self.voxel_size
-            )
-            self.points = downsampled_pts.tolist()
-            self.colors = downsampled_cols.tolist()
-        
-        logger.info(f"Downsampled point cloud to {len(self.points)} points")
+    # REMOVED: _downsample method - no longer needed
     
     def _trigger_mesh_update(self):
         """Trigger asynchronous mesh generation."""
@@ -279,30 +285,24 @@ class SpatialPointCloudBuffer:
         return vertex_colors
     
     def get_visualization_data(self):
-        """Get data for visualization (mesh or downsampled points)."""
+        """Get data for visualization (mesh or points)."""
         if self.use_mesh_visualization:
             with self.mesh_lock:
                 if self.mesh is not None:
                     # Return a copy to avoid race conditions
                     return {"type": "mesh", "data": self.mesh.copy()}
         
-        # Return downsampled points for visualization
-        if len(self.points) > 50000:
-            # Further downsample for visualization only
-            indices = np.random.choice(len(self.points), 50000, replace=False)
-            viz_points = [self.points[i] for i in indices]
-            viz_colors = [self.colors[i] for i in indices]
-            return {"type": "points", "data": {"points": viz_points, "colors": viz_colors}}
-        else:
-            return {"type": "points", "data": {"points": self.points, "colors": self.colors}}
+        # Return points without downsampling
+        # For large point clouds, let the visualization handle it
+        return {"type": "points", "data": {"points": self.points, "colors": self.colors}}
     
     def clear(self):
-        self.points.clear()
-        self.colors.clear()
+        self.points = np.empty((0, 3), dtype=np.float32)
+        self.colors = np.empty((0, 3), dtype=np.uint8)
+        self.keyframe_contributions.clear()
         with self.mesh_lock:
             self.mesh = None
         self.mesh_update_counter = 0
-        self.last_mesh_update_size = 0
         self.mesh_generation_in_progress = False
     
     def __len__(self):
@@ -310,9 +310,8 @@ class SpatialPointCloudBuffer:
 
 class RerunBatchLogger:
     """Batch logger for Rerun to improve visualization performance."""
-    def __init__(self, batch_size=10, downsample_voxel_size=0.005):
+    def __init__(self, batch_size=10):
         self.batch_size = batch_size
-        self.voxel_size = downsample_voxel_size
         self.point_buffer = []
         self.color_buffer = []
         self.frame_count = 0
@@ -329,15 +328,13 @@ class RerunBatchLogger:
             return
         points = np.array(self.point_buffer)
         colors = np.array(self.color_buffer)
-        downsampled_pts, downsampled_cols = downsample_pointcloud_voxel(
-            points, colors, self.voxel_size
-        )
-        if len(downsampled_pts) > 0:
+        # No downsampling - send points directly
+        if len(points) > 0:
             rr.log("world/points_batched", 
                    rr.Points3D(
-                       positions=cv_to_rerun_xyz(downsampled_pts),
-                       colors=downsampled_cols.astype(np.uint8),
-                       radii=np.full(len(downsampled_pts), 0.005, np.float32)
+                       positions=cv_to_rerun_xyz(points),
+                       colors=colors.astype(np.uint8),
+                       radii=np.full(len(points), 0.005, np.float32)
                    ))
         self.point_buffer.clear()
         self.color_buffer.clear()
@@ -398,6 +395,7 @@ SLAM3R_POSE_EXCHANGE_OUT           = os.getenv("SLAM3R_POSE_EXCHANGE",          
 SLAM3R_POINTCLOUD_EXCHANGE_OUT     = os.getenv("SLAM3R_POINTCLOUD_EXCHANGE",        "slam3r_pointcloud_exchange")
 SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT = os.getenv("SLAM3R_RECONSTRUCTION_VIS_EXCHANGE",
                                                    "slam3r_reconstruction_vis_exchange")
+SLAM3R_KEYFRAME_EXCHANGE_OUT       = os.getenv("SLAM3R_KEYFRAME_EXCHANGE", "slam3r_keyframe_exchange")
 OUTPUT_TO_RABBITMQ                 = os.getenv("SLAM3R_OUTPUT_TO_RABBITMQ", "false").lower() == "true"
 
 CHECKPOINTS_DIR                    = os.getenv("SLAM3R_CHECKPOINTS_DIR", "/checkpoints_mount")
@@ -405,7 +403,7 @@ SLAM3R_CONFIG_FILE_PATH_IN_CONTAINER= os.getenv("SLAM3R_CONFIG_FILE", "/app/SLAM
 CAMERA_INTRINSICS_FILE_PATH        = os.getenv("CAMERA_INTRINSICS_FILE", "/app/SLAM3R_engine/configs/camera_intrinsics.yaml")
 
 DEFAULT_MODEL_INPUT_RESOLUTION = 224
-INFERENCE_WINDOW_BATCH = 1
+INFERENCE_WINDOW_BATCH = int(os.getenv("SLAM3R_INFERENCE_WINDOW_BATCH", "5"))  # Increased from 1 for GPU efficiency
 
 TARGET_IMAGE_WIDTH  = int(os.getenv("TARGET_IMAGE_WIDTH",  DEFAULT_MODEL_INPUT_RESOLUTION))
 TARGET_IMAGE_HEIGHT = int(os.getenv("TARGET_IMAGE_HEIGHT", DEFAULT_MODEL_INPUT_RESOLUTION))
@@ -427,12 +425,13 @@ processed_frames_history = MemoryAwareFrameHistory(
     max_tensor_cache=int(os.getenv("SLAM3R_MAX_TENSOR_CACHE", "50"))
 )
 keyframe_indices         : list = []
-world_point_cloud_buffer = SpatialPointCloudBuffer(
-    max_points=int(os.getenv("SLAM3R_MAX_POINTCLOUD_SIZE", "750000")),
-    downsample_voxel=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008")),
-    mesh_simplification_ratio=float(os.getenv("SLAM3R_MESH_SIMPLIFICATION_RATIO", "0.1"))
+world_point_cloud_buffer = OptimizedPointCloudBuffer(
+    max_points=int(os.getenv("SLAM3R_MAX_POINTCLOUD_SIZE", "2000000"))
 )
 camera_positions         : list = []
+
+# Initialize keyframe streaming if enabled
+keyframe_publisher = None
 
 current_frame_index              = 0
 slam_initialization_buffer : list = []
@@ -525,39 +524,7 @@ def _to_dev(x):
 # Additional Helper Functions
 # ============================================================
 
-def downsample_pointcloud_voxel(points, colors, voxel_size=0.01):
-    """Downsample point cloud using voxel grid for visualization."""
-    if len(points) == 0:
-        return np.array([]), np.array([])
-    
-    if OPEN3D_AVAILABLE:
-        # Use Open3D for efficient voxel downsampling
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(np.asarray(points))
-        pcd.colors = o3d.utility.Vector3dVector(np.asarray(colors) / 255.0)
-        
-        downsampled = pcd.voxel_down_sample(voxel_size)
-        
-        points_down = np.asarray(downsampled.points)
-        colors_down = (np.asarray(downsampled.colors) * 255).astype(np.uint8)
-        
-        return points_down, colors_down
-    else:
-        # Original implementation as fallback
-        points = np.asarray(points)
-        colors = np.asarray(colors)
-        voxel_indices = np.floor(points / voxel_size).astype(np.int32)
-        voxel_dict = {}
-        
-        for i, voxel_idx in enumerate(voxel_indices):
-            key = tuple(voxel_idx)
-            if key not in voxel_dict:
-                voxel_dict[key] = (points[i], colors[i])
-        
-        if voxel_dict:
-            downsampled = list(voxel_dict.values())
-            return np.array([p for p, _ in downsampled]), np.array([c for _, c in downsampled])
-        return np.array([]), np.array([])
+# REMOVED: downsample_pointcloud_voxel function - no longer needed
 
 async def adaptive_keyframe_selection(current_pose, last_keyframe_pose, scene_type, 
                                     current_frame_index, active_kf_stride):
@@ -608,8 +575,7 @@ async def initialise_models_and_params():
     # Initialize rerun logger if connected
     if rerun_connected:
         rerun_logger = RerunBatchLogger(
-            batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15")),
-            downsample_voxel_size=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008"))
+            batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15"))
         )
 
     logger.info("Loading SLAM3R models on %s…", device)
@@ -731,7 +697,16 @@ def _handle_slam_bootstrap(view, record):
         pts_np = pc.cpu().numpy().reshape(-1, 3)
         mask   = conf.cpu().numpy().reshape(-1) > slam_params["conf_thres_i2p"]
         cols   = np.tile(np.array([[0,0,255]], np.uint8), (pts_np.shape[0],1))[mask]  # bootstrap → blue
-        world_point_cloud_buffer.extend(list(zip(pts_np[mask], cols)))
+        world_point_cloud_buffer.add_points(pts_np[mask], cols, keyframe_id=f"bootstrap_{hist_idx}")
+        
+        # Stream keyframe if enabled
+        if keyframe_publisher is not None and "raw_pose_matrix" in hv:
+            asyncio.create_task(keyframe_publisher.publish_keyframe(
+                f"bootstrap_{hist_idx}",
+                np.array(hv["raw_pose_matrix"]).reshape(4, 4),
+                pts_np[mask],
+                cols
+            ))
         
     slam_initialization_buffer.clear()
     is_slam_initialized_for_session = True
@@ -854,7 +829,22 @@ def _accumulate_world_points(record, tensor):
     cols_flat = rgb_flat[mask_world]
     pts_col_pairs = list(zip(new_pts.tolist(), cols_flat.tolist()))
     
-    world_point_cloud_buffer.extend(pts_col_pairs)
+    # Use the new add_points method with numpy arrays
+    keyframe_id = record.get("keyframe_id", None)
+    world_point_cloud_buffer.add_points(
+        new_pts.astype(np.float32), 
+        cols_flat.astype(np.uint8),
+        keyframe_id=keyframe_id
+    )
+    
+    # Stream keyframe if this is a keyframe and streaming is enabled
+    if keyframe_publisher is not None and keyframe_id is not None and "raw_pose_matrix" in record:
+        asyncio.create_task(keyframe_publisher.publish_keyframe(
+            keyframe_id,
+            np.array(record["raw_pose_matrix"]).reshape(4, 4),
+            new_pts.astype(np.float32),
+            cols_flat.astype(np.uint8)
+        ))
     
     return pts_col_pairs
 
@@ -886,16 +876,13 @@ def _log_to_rerun(pose_matrix, temp_world_pts, keyframe_id_out, img_rgb_u8):
     if keyframe_id_out and temp_world_pts:
         kf_pts = np.array([p for p, _ in temp_world_pts])
         kf_cols = np.array([c for _, c in temp_world_pts])
-        kf_voxel = float(os.getenv("SLAM3R_RERUN_KEYFRAME_VOXEL_SIZE", "0.005"))
-        kf_pts_down, kf_cols_down = downsample_pointcloud_voxel(
-            kf_pts, kf_cols, voxel_size=kf_voxel
-        )
-        if len(kf_pts_down) > 0:
+        # No downsampling - log keyframe points directly
+        if len(kf_pts) > 0:
             rr.log(f"world/keyframes/{keyframe_id_out}",
                    rr.Points3D(
-                       positions=cv_to_rerun_xyz(kf_pts_down),
-                       colors=kf_cols_down.astype(np.uint8),
-                       radii=np.full(len(kf_pts_down), 0.004, np.float32)
+                       positions=cv_to_rerun_xyz(kf_pts),
+                       colors=kf_cols.astype(np.uint8),
+                       radii=np.full(len(kf_pts), 0.004, np.float32)
                    ))
     
     # Scene type logging
@@ -994,8 +981,7 @@ def reset_slam_session_state(reason=""):
     if rerun_logger:
         rerun_logger.flush()
         rerun_logger = RerunBatchLogger(
-            batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15")),
-            downsample_voxel_size=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008"))
+            batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15"))
         )
     
     scene_detector.recent_poses.clear()
@@ -1121,8 +1107,7 @@ async def reset_for_new_segment(new_segment_name: str):
     if rerun_logger:
         rerun_logger.flush()
         rerun_logger = RerunBatchLogger(
-            batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15")),
-            downsample_voxel_size=float(os.getenv("SLAM3R_RERUN_VOXEL_SIZE", "0.008"))
+            batch_size=int(os.getenv("SLAM3R_RERUN_BATCH_SIZE", "15"))
         )
     scene_detector.recent_poses.clear()
     scene_detector.scene_type = "room"
@@ -1170,8 +1155,8 @@ async def on_video_frame_message(msg: aio_pika.IncomingMessage, exchanges):
                                 "timestamp_ns": ts_ns
                             }
                             await exchanges[SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT].publish(
-                                aio_pika.Message(json.dumps(segment_change_msg).encode(), 
-                                               content_type="application/json"),
+                                aio_pika.Message(msgpack.packb(segment_change_msg), 
+                                               content_type="application/msgpack"),
                                 routing_key="")
                     elif video_segment is not None:
                         # Starting first segment
@@ -1192,17 +1177,17 @@ async def on_video_frame_message(msg: aio_pika.IncomingMessage, exchanges):
                 return
             if pose:
                 await exchanges[SLAM3R_POSE_EXCHANGE_OUT].publish(
-                    aio_pika.Message(json.dumps(pose).encode(), content_type="application/json"),
+                    aio_pika.Message(msgpack.packb(pose), content_type="application/msgpack"),
                     routing_key="")
             if pc:
                 await exchanges[SLAM3R_POINTCLOUD_EXCHANGE_OUT].publish(
-                    aio_pika.Message(gzip.compress(json.dumps(pc).encode()),
-                                     content_type="application/json+gzip"),
+                    aio_pika.Message(gzip.compress(msgpack.packb(pc)),
+                                     content_type="application/msgpack+gzip"),
                     routing_key="")
             if vis:
                 await exchanges[SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT].publish(
-                    aio_pika.Message(gzip.compress(json.dumps(vis).encode()),
-                                     content_type="application/json+gzip"),
+                    aio_pika.Message(gzip.compress(msgpack.packb(vis)),
+                                     content_type="application/msgpack+gzip"),
                     routing_key="")
         except Exception as e:
             logger.exception("Frame processing error: %s", e)
@@ -1248,7 +1233,7 @@ async def main():
     connection = await aio_pika.connect_robust(RABBITMQ_URL, timeout=30, heartbeat=60)
     async with connection:
         ch = await connection.channel()
-        await ch.set_qos(prefetch_count=1)
+        await ch.set_qos(prefetch_count=10)  # Increased from 1 for better throughput
 
         ex_in_frames   = await ch.declare_exchange(VIDEO_FRAMES_EXCHANGE_IN, aio_pika.ExchangeType.FANOUT, durable=True)
         ex_in_restart  = await ch.declare_exchange(RESTART_EXCHANGE_IN,      aio_pika.ExchangeType.FANOUT, durable=True)
@@ -1256,16 +1241,24 @@ async def main():
         ex_out_pc      = await ch.declare_exchange(SLAM3R_POINTCLOUD_EXCHANGE_OUT,  aio_pika.ExchangeType.FANOUT, durable=True)
         ex_out_vis     = await ch.declare_exchange(SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT,
                                                    aio_pika.ExchangeType.FANOUT, durable=True)
+        ex_out_keyframe = await ch.declare_exchange(SLAM3R_KEYFRAME_EXCHANGE_OUT, aio_pika.ExchangeType.TOPIC, durable=True)
 
         exchanges = {SLAM3R_POSE_EXCHANGE_OUT: ex_out_pose,
                      SLAM3R_POINTCLOUD_EXCHANGE_OUT: ex_out_pc,
-                     SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT: ex_out_vis}
+                     SLAM3R_RECONSTRUCTION_VIS_EXCHANGE_OUT: ex_out_vis,
+                     SLAM3R_KEYFRAME_EXCHANGE_OUT: ex_out_keyframe}
 
         q_frames  = await ch.declare_queue("slam3r_video_frames_queue", durable=True)
         q_restart = await ch.declare_queue("slam3r_restart_queue",      durable=True)
 
         await q_frames.bind(ex_in_frames)
         await q_restart.bind(ex_in_restart)
+        
+        # Initialize keyframe publisher with exchange if streaming is enabled
+        global keyframe_publisher
+        if STREAMING_AVAILABLE and os.getenv("SLAM3R_ENABLE_KEYFRAME_STREAMING", "true").lower() == "true":
+            keyframe_publisher = StreamingKeyframePublisher(keyframe_exchange=ex_out_keyframe)
+            logger.info("Keyframe streaming to mesh service enabled")
 
         await q_frames.consume(lambda m: on_video_frame_message(m, exchanges))
         await q_restart.consume(on_restart_message)

@@ -36,10 +36,9 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "All services rebuilt and started:"
-echo "- slam (3D SLAM)"
+echo "- slam3r (Neural SLAM with 3D Reconstruction)"
 echo "- fantasy (Fantasy World Generator)"
 echo "- server (Backend API)"
-echo "- reconstruction (3D Reconstruction)"
 echo "- rabbitmq (Message Broker)"
 echo "- nginx (Web Server)"
 echo "- website (Frontend)"

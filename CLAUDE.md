@@ -10,14 +10,13 @@ WorldSystem is a real-time 3D reconstruction and visualization system for drone-
 
 The system uses a microservices architecture with the following data flow:
 1. **Android App** → **Server** (WebSocket): Streams video (30fps) and IMU data
-2. **Server** → **RabbitMQ** → **Frame Processor/SLAM/Storage**: Distributes data
-3. **SLAM** → **Reconstruction**: Provides camera poses for 3D model generation
-4. **Reconstruction/Server** → **Website** (WebSocket): Real-time visualization
+2. **Server** → **RabbitMQ** → **Frame Processor/SLAM3R/Storage**: Distributes data
+3. **SLAM3R** → **Server/Website**: Provides camera poses and dense point clouds/meshes
+4. **Server** → **Website** (WebSocket): Real-time visualization
 
 Key services:
 - **Server**: Central hub for data routing (FastAPI, Python)
-- **SLAM/SLAM3R/MAST3R**: Camera pose estimation (C++/Python bindings)
-- **Reconstruction**: Neural 3D reconstruction (PyTorch)
+- **SLAM3R**: Neural SLAM with integrated dense reconstruction (PyTorch)
 - **Website**: Real-time 3D visualization (React/Three.js)
 - **Frame Processor**: Video processing with YOLO detection
 - **Fantasy Builder**: Adds game-like elements to 3D models (WIP)
@@ -33,19 +32,16 @@ Key services:
 - Full build: `docker-compose build`
 - Single service: `docker-compose build --no-cache <service_name>`
 - Run all services: `docker-compose up`
-- Run with specific profile: `docker-compose --profile slam3r up`
-- Run without specific service: `docker compose up --detach $(docker compose config --services | grep -v slam3r)`
+- Run with SLAM3R profile: `docker-compose --profile slam3r up`
 
 ### Development Commands
 - Website: `cd website && npm run dev`
 - Website build: `cd website && npm run build`
-- Reconstruction training: `cd reconstruction && ./train.sh`
-- Reconstruction inference: `cd reconstruction && python main.py --cfg ./config/train.yaml`
-- SLAM: `cd slam/demo && python run_rgbd.py PATH --vocab_file=./Vocabulary/ORBvoc.txt`
+- SLAM3R demo: `cd slam3r && bash scripts/demo_wild.sh`
 
 ### Testing Commands
-- Reconstruction: `cd reconstruction && ./test.sh`
 - Website: `cd website && npm run lint`
+- SLAM3R evaluation: `cd slam3r && bash scripts/eval_replica.sh`
 
 ### Monitoring URLs (when running)
 - RabbitMQ: http://localhost:15672
@@ -66,7 +62,7 @@ After writing code, deeply reflect on the scalability and maintainability of the
 
 ### Modifiable Directories
 Only modify code in:
-- `reconstruction/aaa/`, `slam/aaa/` - Custom algorithm implementations
+- `slam3r/` - SLAM3R neural SLAM implementation
 - `website/`, `server/`, `storage/` - Core services
 - `simulation/`, `fantasy/` - Additional features
 - `nginx/`, `docker/` - Infrastructure
@@ -80,16 +76,17 @@ Only modify code in:
 - Website connects to server WebSocket for real-time updates
 - Messages use JSON format with type field for routing
 
-### SLAM Integration
-- SLAM services load trajectory into shared memory
-- Reconstruction reads trajectory at ~15fps
-- Camera poses must be synchronized with image timestamps
+### SLAM3R Integration
+- SLAM3R processes RGB frames directly from RabbitMQ
+- Outputs camera poses and dense point clouds in real-time
+- Optional mesh generation with Open3D
+- Publishes results to RabbitMQ for visualization
 
 ### 3D Reconstruction Pipeline
-1. Images saved to disk by storage service
-2. SLAM processes images → camera poses
-3. Reconstruction uses poses + images → 3D mesh (.ply files)
-4. Website loads and displays meshes in real-time
+1. Images received from RabbitMQ by SLAM3R
+2. SLAM3R neural networks: Image-to-Points → Local-to-World transformation
+3. Outputs dense point clouds and optional meshes
+4. Website receives and displays results via WebSocket
 
 ### Service Dependencies
 - Frame Processor, SLAM, Reconstruction require GPU access

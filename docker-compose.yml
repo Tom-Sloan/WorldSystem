@@ -2,24 +2,17 @@ services:
   rabbitmq:
     image: rabbitmq:4-management          # 4.1 with the Management UI
     container_name: rabbitmq
-    ports:
-      - "5672:5672"                       # AMQP
-      - "15672:15672"                     # Management UI
-      - "15692:15692"                     # Prometheus metrics
+    network_mode: host
     environment:
       RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >-
         -rabbitmq_prometheus.listener.tcp 0.0.0.0 15692
         -rabbit frame_max 1048576
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq   # persist queues/users
-    networks:
-      - default
     
   nginx:
     build: ./nginx
-    ports:
-      - "80:80"
-      - "443:443"
+    network_mode: host
     depends_on:
       - server
   
@@ -31,19 +24,18 @@ services:
         USERNAME: ${USERNAME}
         UID: ${UID}
         GID: ${GID}
+    network_mode: host
     volumes:
       - ${WORKSPACE}/server:/app
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
     environment:
-      - RABBITMQ_URL=amqp://rabbitmq
+      - RABBITMQ_URL=amqp://127.0.0.1:5672
       - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
       - IMU_DATA_EXCHANGE=imu_data_exchange
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
       - RESTART_EXCHANGE=restart_exchange
-    ports:
-      - "5001:5001"
     depends_on:
       - rabbitmq
 
@@ -109,7 +101,6 @@ services:
 
   slam3r:
     image: slam3r:latest
-    profiles: ["slam3r"]
     privileged: true
     build:
       context: ./slam3r
@@ -314,12 +305,13 @@ services:
         UID: ${UID}
         GID: ${GID}
     container_name: website
+    network_mode: host
     volumes:
       - ${WORKSPACE}/website:/app
       - /app/node_modules
     environment:
-      VITE_API_URL: "http://134.117.167.139/api"
-      VITE_WS_HOST: "134.117.167.139"
+      VITE_API_URL: "http://localhost/api"
+      VITE_WS_HOST: "localhost"
       NODE_ENV: "development"
     depends_on:
       - rabbitmq
@@ -328,62 +320,44 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
+    network_mode: host
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
-    ports:
-      - "9090:9090"
-    extra_hosts:
-    - "host.docker.internal:host-gateway"
     depends_on:
       - cadvisor
-    networks:
-      - default
 
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
+    network_mode: host
     depends_on:
       - prometheus
-    ports:
-      - "3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:
       - grafana-data:/var/lib/grafana
-    networks:
-      - default
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
     container_name: cadvisor
-    ports:
-      - "8080:8080"
+    network_mode: host
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:rw
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
-    networks:
-      - default
     cpus: '0.2'
 
   jaeger:
     image: jaegertracing/all-in-one:latest
     container_name: jaeger
+    network_mode: host
     environment:
       COLLECTOR_OTLP_ENABLED: "true"       # Enable OTLP ingestion
       COLLECTOR_OTLP_HTTP_HOST_PORT: ":4318"
-    ports:
-      - "16686:16686"    # Jaeger UI
-      - "6831/udp"       # Legacy agent port
-      - "6832/udp"
-      - "14268:14268"
-      - "4318:4318"      # OTLP endpoint
-    networks:
-      - default
 
   nvidia-dcgm-exporter:
     # use NVIDIA's canonical registry & newest tag
@@ -397,15 +371,7 @@ services:
 
     environment:
       - NVIDIA_VISIBLE_DEVICES=all        # all GPUs
-    ports:
-      - "9400:9400"
-
-    networks:
-      - default
-
-networks:
-  default:
-    driver: bridge
+    network_mode: host
 
 volumes:
   grafana-data:

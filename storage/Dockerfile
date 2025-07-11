@@ -6,7 +6,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY . .
+
+# Install dependencies
 RUN pip install aio-pika opencv-python-headless numpy pika prometheus_client
+
+# Copy and install shared package
+COPY shared /tmp/shared
+RUN pip install -e /tmp/shared
+
+# Copy application code
+COPY . .
 
 CMD ["python", "data_storage.py"] 

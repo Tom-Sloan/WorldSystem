@@ -7,6 +7,7 @@ import base64
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+from worldsystem_common import EXCHANGES, ROUTING_KEYS, declare_exchanges_sync
 
 # PROMETHEUS
 from prometheus_client import start_http_server, Counter, Histogram
@@ -19,14 +20,6 @@ from prometheus_client import start_http_server, Counter, Histogram
 images_saved_counter = Counter(
     "data_storage_images_saved_total",
     "Total number of images successfully saved by data_storage"
-)
-imu_saved_counter = Counter(
-    "data_storage_imu_saved_total",
-    "Total number of IMU records saved by data_storage"
-)
-processed_imu_saved_counter = Counter(
-    "data_storage_processed_imu_saved_total",
-    "Total number of processed IMU records saved by data_storage"
 )
 trajectories_saved_counter = Counter(
     "data_storage_trajectories_saved_total",
@@ -42,16 +35,6 @@ save_image_hist = Histogram(
     "data_storage_save_image_seconds",
     "Time spent saving a single image file",
     buckets=[0.001, 0.01, 0.1, 0.5, 1, 2, 5]
-)
-save_imu_hist = Histogram(
-    "data_storage_save_imu_seconds",
-    "Time spent saving a single IMU record",
-    buckets=[0.0005, 0.001, 0.005, 0.01, 0.1, 1]
-)
-save_processed_imu_hist = Histogram(
-    "data_storage_save_processed_imu_seconds",
-    "Time spent saving a single processed IMU record",
-    buckets=[0.0005, 0.001, 0.005, 0.01, 0.1, 1]
 )
 save_trajectory_hist = Histogram(
     "data_storage_save_trajectory_seconds",
@@ -92,16 +75,9 @@ class DataStorage:
                 time.sleep(delay)
 
         # ------------------------------------------------------
-        # Declare the fanout exchanges from FrameProcessor or SLAM:
+        # Declare the exchanges using shared function:
         # ------------------------------------------------------
-        # Declare new topic exchanges
-        for exchange_config in EXCHANGES.values():
-            self.channel.exchange_declare(
-                exchange=exchange_config['name'],
-                exchange_type=exchange_config['type'],
-                durable=exchange_config['durable'],
-                auto_delete=exchange_config['auto_delete']
-            )
+        declare_exchanges_sync(self.channel)
 
         # ------------------------------------------------------
         # Create queues & bind them to the relevant exchange

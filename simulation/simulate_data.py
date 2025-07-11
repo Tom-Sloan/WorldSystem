@@ -22,7 +22,7 @@ import socket
 import threading
 
 import aio_pika
-from rabbitmq_config import EXCHANGES, ROUTING_KEYS, declare_exchanges
+from worldsystem_common import EXCHANGES, ROUTING_KEYS, declare_exchanges_sync, declare_exchanges
 
 # Configuration: Use the same environment variables and exchange names as your live system.
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq")

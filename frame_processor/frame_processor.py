@@ -14,7 +14,7 @@ from prometheus_client import start_http_server, Counter, Gauge, Histogram, Summ
 import threading
 from collections import deque
 from datetime import datetime
-from rabbitmq_config import EXCHANGES, ROUTING_KEYS
+from worldsystem_common import EXCHANGES, ROUTING_KEYS, declare_exchanges_sync
 
 # Prometheus metrics
 PROCESSED_FRAMES = Counter('frame_processor_frames_processed_total', 'Total number of frames processed')
@@ -140,14 +140,8 @@ print(f"Using device: {device}")
 
 current_mode = os.getenv("INITIAL_ANALYSIS_MODE", "none").lower()
 
-# Declare new topic exchanges
-for exchange_config in EXCHANGES.values():
-    channel.exchange_declare(
-        exchange=exchange_config['name'],
-        exchange_type=exchange_config['type'],
-        durable=exchange_config['durable'],
-        auto_delete=exchange_config['auto_delete']
-    )
+# Declare new topic exchanges using shared function
+declare_exchanges_sync(channel)
 
 # Create queue for video frames with meaningful name
 q = channel.queue_declare(queue='frame_processor_video_input', exclusive=True)

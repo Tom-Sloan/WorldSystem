@@ -1,0 +1,45 @@
+# Docker Compose override file with consolidated configuration using YAML anchors
+# This file works in conjunction with docker-compose.yml
+
+version: '3.8'
+
+# Define common configurations as YAML anchors
+x-common-env: &common-env
+  RABBITMQ_URL: amqp://127.0.0.1:5672
+  PYTHONUNBUFFERED: "1"
+  TZ: ${TZ:-UTC}
+
+x-gpu-env: &gpu-env
+  <<: *common-env
+  NVIDIA_VISIBLE_DEVICES: all
+  CUDA_PATH: ${CUDA_PATH}
+  LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
+  DISPLAY: ${DISPLAY}
+  HOME: ${HOME}
+
+x-build-args: &build-args
+  USERNAME: ${USERNAME}
+  UID: ${UID}
+  GID: ${GID}
+
+x-x11-volumes: &x11-volumes
+  - ${X11SOCKET}:${X11SOCKET}
+  - ${XAUTHORITY}:${XAUTHORITY}
+
+x-monitoring-labels: &monitoring-labels
+  prometheus.scrape: "true"
+  prometheus.port: "8000"
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Service-specific overrides can be added here
+services:
+  # Example: Override specific service configurations
+  # server:
+  #   environment:
+  #     <<: *common-env
+  #     CUSTOM_VAR: value

@@ -11,6 +11,10 @@ RUN apt-get update && apt-get install -y \
 # Install dependencies including rerun-sdk version 0.23.2
 RUN pip3 install ultralytics numpy opencv-python-headless pika ntplib rerun-sdk==0.23.2 prometheus_client
 
+# Copy and install shared package
+COPY shared /tmp/shared
+RUN pip3 install -e /tmp/shared
+
 WORKDIR /app
 COPY frame_processor.py /app/frame_processor.py
 CMD ["python3", "/app/frame_processor.py"]

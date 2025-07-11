@@ -20,7 +20,7 @@ import psutil
 from collections import deque
 from typing import Optional, Tuple, List, Dict
 import trimesh
-from rabbitmq_config import EXCHANGES, ROUTING_KEYS, declare_exchanges
+from worldsystem_common import EXCHANGES, ROUTING_KEYS, declare_exchanges
 
 # Check Open3D availability (will log warning after logger is initialized)
 try:

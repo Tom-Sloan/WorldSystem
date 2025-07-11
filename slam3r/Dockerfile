@@ -82,6 +82,9 @@ RUN pip3 install aio-pika PyYAML psutil py-spy torch-scatter
 # --- Rerun SDK (visualization) ---
 RUN pip3 install --no-cache-dir "numpy>=2.2,<3" rerun-sdk==0.23.2
 
+# Copy and install shared package
+COPY shared /tmp/shared
+RUN pip3 install -e /tmp/shared
 
 WORKDIR /app
 

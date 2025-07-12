@@ -228,6 +228,16 @@ class StreamingSLAM3R:
         self.is_initialized = False
         self.initialization_frames = []
         
+        # Adaptive keyframe settings
+        self.use_adaptive_stride = config.get('use_adaptive_stride', True)
+        self.adapt_params = {
+            'win_r': config.get('adapt_win_r', 3),
+            'sample_wind_num': config.get('adapt_sample_wind_num', 10),
+            'adapt_min': config.get('adapt_min', 1),
+            'adapt_max': config.get('adapt_max', 20),
+            'adapt_stride': config.get('adapt_stride', 1)
+        }
+        
         logger.info("StreamingSLAM3R initialized with config: %s", config)
     
     def process_frame(self, image: np.ndarray, timestamp: int) -> Optional[Dict[str, Any]]:
@@ -341,6 +351,29 @@ class StreamingSLAM3R:
                 }
                 init_views.append(view)
             
+            # Adapt keyframe stride if enabled
+            if self.use_adaptive_stride and len(self.initialization_frames) >= self.adapt_params['sample_wind_num']:
+                try:
+                    # Prepare views with images for adapt_keyframe_stride
+                    views_with_img = []
+                    for frame in self.initialization_frames:
+                        view = {
+                            'img': frame.image_tensor,  # Keep batch dim as expected by function
+                            'true_shape': frame.true_shape,
+                            'idx': frame.frame_id
+                        }
+                        views_with_img.append(view)
+                    
+                    optimal_stride = adapt_keyframe_stride(
+                        views_with_img,
+                        self.i2p_model,
+                        **self.adapt_params
+                    )
+                    self.window_processor.keyframe_stride = optimal_stride
+                    logger.info(f"Adaptive keyframe stride set to: {optimal_stride}")
+                except Exception as e:
+                    logger.warning(f"Failed to adapt keyframe stride: {e}, using default")
+            
             # Run initialization
             # initialize_scene returns (pcs, confs) or (pcs, confs, ref_id)
             pcs, confs, ref_id = initialize_scene(
@@ -411,17 +444,10 @@ class StreamingSLAM3R:
         
         # Prepare output
         if frame.pts3d_world is not None and frame.conf_world is not None:
-            # Convert to numpy for output
-            points = frame.pts3d_world.cpu().numpy().reshape(-1, 3)
-            confidence = frame.conf_world.cpu().numpy().reshape(-1)
-            
-            # Filter by confidence
-            mask = confidence > self.config.get('conf_thres_i2p', 5.0)
-            
             return {
                 'pose': pose,
-                'points': points[mask],
-                'confidence': confidence[mask],
+                'pts3d_world': frame.pts3d_world,  # Keep as tensor for processor
+                'conf_world': frame.conf_world,    # Keep as tensor for processor
                 'frame_id': frame.frame_id,
                 'timestamp': frame.timestamp,
                 'is_keyframe': frame.is_keyframe
@@ -546,6 +572,18 @@ class StreamingSLAM3R:
             return np.eye(4, dtype=np.float32)
         
         return None
+    
+    def reset(self):
+        """Reset the SLAM3R state for a new sequence."""
+        self.frame_counter = 0
+        self.is_initialized = False
+        self.initialization_frames = []
+        self.window_processor = SlidingWindowProcessor(
+            window_size=self.config.get('window_size', 20),
+            keyframe_stride=self.config.get('initial_keyframe_stride', 5)
+        )
+        self.token_cache.cleanup(keep_recent=0)
+        logger.info("SLAM3R state reset")
 
 
 # Async wrapper for RabbitMQ integration

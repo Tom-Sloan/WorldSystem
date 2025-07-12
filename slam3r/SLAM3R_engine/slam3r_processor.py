@@ -50,7 +50,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = os.getenv(
 class SLAM3RProcessor:
     """Streamlined SLAM3R processor using StreamingSLAM3R wrapper."""
     
-    def __init__(self, config_path: str = "./configs/wild.yaml"):
+    def __init__(self, config_path: str = "./SLAM3R_engine/configs/wild.yaml"):
         """Initialize the SLAM3R processor."""
         self.config_path = config_path
         self.config = self._load_config()
@@ -66,15 +66,10 @@ class SLAM3RProcessor:
         # RabbitMQ connection
         self.rabbitmq_connection = None
         self.rabbitmq_channel = None
+        self.keyframe_exchange = None
         
         # Shared memory publisher for keyframes
         self.keyframe_publisher = None
-        if STREAMING_AVAILABLE:
-            try:
-                self.keyframe_publisher = StreamingKeyframePublisher()
-                logger.info("Initialized shared memory keyframe publisher")
-            except Exception as e:
-                logger.error(f"Failed to initialize keyframe publisher: {e}")
         
         # Processing statistics
         self.frame_count = 0
@@ -92,7 +87,7 @@ class SLAM3RProcessor:
             config = yaml.safe_load(f)
         
         # Load camera intrinsics
-        intrinsics_path = config.get('wild_cam_intri', './configs/camera_intrinsics.yaml')
+        intrinsics_path = config.get('wild_cam_intri', './SLAM3R_engine/configs/camera_intrinsics.yaml')
         with open(intrinsics_path, 'r') as f:
             camera_config = yaml.safe_load(f)
             config['camera_intrinsics'] = camera_config
@@ -105,24 +100,16 @@ class SLAM3RProcessor:
             # Import model classes
             from slam3r.models import Image2PointsModel, Local2WorldModel
             
-            # Model paths
-            i2p_ckpt = self.config.get('I2P_ckpt_path', './checkpoints/slam3r_I2P.ckpt')
-            l2w_ckpt = self.config.get('L2W_ckpt_path', './checkpoints/slam3r_L2W.ckpt')
+            # Load models from HuggingFace (as done in Dockerfile and v2)
+            logger.info("Loading I2P model from HuggingFace...")
+            i2p_model = Image2PointsModel.from_pretrained("siyan824/slam3r_i2p").to(self.device).eval()
             
-            # Load I2P model
-            i2p_model = Image2PointsModel(
-                device=self.device,
-                ckpt_path=i2p_ckpt,
-                head='dpt',
-                use_conf=True
-            )
+            logger.info("Loading L2W model from HuggingFace...")
+            l2w_model = Local2WorldModel.from_pretrained("siyan824/slam3r_l2w").to(self.device).eval()
             
-            # Load L2W model
-            l2w_model = Local2WorldModel(
-                device=self.device,
-                ckpt_path=l2w_ckpt,
-                use_conf=True
-            )
+            # Debug: Check which patch embedding the models use
+            logger.info(f"I2P model patch_embed type: {type(i2p_model.patch_embed).__name__}")
+            logger.info(f"L2W model patch_embed type: {type(l2w_model.patch_embed).__name__}")
             
             # Initialize StreamingSLAM3R with loaded models
             self.slam3r = StreamingSLAM3R(
@@ -152,6 +139,22 @@ class SLAM3RProcessor:
                 self.rabbitmq_channel = await self.rabbitmq_connection.channel()
                 await self.rabbitmq_channel.set_qos(prefetch_count=10)
                 
+                # Create keyframe exchange
+                exchange_name = os.getenv("SLAM3R_KEYFRAME_EXCHANGE", "slam3r_keyframe_exchange")
+                self.keyframe_exchange = await self.rabbitmq_channel.declare_exchange(
+                    exchange_name,
+                    aio_pika.ExchangeType.TOPIC,
+                    durable=True
+                )
+                
+                # Initialize keyframe publisher with exchange
+                if STREAMING_AVAILABLE and self.keyframe_exchange:
+                    try:
+                        self.keyframe_publisher = StreamingKeyframePublisher(self.keyframe_exchange)
+                        logger.info("Initialized shared memory keyframe publisher with exchange")
+                    except Exception as e:
+                        logger.error(f"Failed to initialize keyframe publisher: {e}")
+                
                 logger.info(f"Connected to RabbitMQ at {rabbitmq_host}:{rabbitmq_port}")
                 return
                 
@@ -166,12 +169,11 @@ class SLAM3RProcessor:
         """Process a single frame from RabbitMQ."""
         async with message.process():
             try:
-                # Deserialize message
-                data = msgpack.unpackb(message.body, raw=False)
+                # Get timestamp from headers
+                timestamp = int(message.headers.get("timestamp_ns", "0"))
                 
-                timestamp = data['timestamp']
-                frame_data = data['frame']
-                video_id = data.get('video_id', 'default')
+                # Get video_id from headers if available
+                video_id = message.headers.get("video_id", "default")
                 
                 # Handle video segment changes
                 if video_id != self.current_video_id:
@@ -181,9 +183,11 @@ class SLAM3RProcessor:
                     # Reset SLAM3R for new segment
                     self.slam3r.reset()
                 
-                # Decode image
-                img_bytes = np.frombuffer(frame_data, dtype=np.uint8)
-                img_bgr = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
+                # Message body contains the image directly
+                img_bgr = cv2.imdecode(
+                    np.frombuffer(message.body, dtype=np.uint8), 
+                    cv2.IMREAD_COLOR
+                )
                 if img_bgr is None:
                     logger.error("Failed to decode image")
                     return
@@ -227,28 +231,30 @@ class SLAM3RProcessor:
                     'pose': keyframe_data.get('pose', np.eye(4)),
                 }
                 
-                # Publish via shared memory
-                self.keyframe_publisher.publish_keyframe(
-                    keyframe_id=self.keyframe_count,
-                    timestamp=timestamp,
-                    pts3d=keyframe['pts3d_world'],
-                    confidence=keyframe['conf_world'],
-                    pose=keyframe['pose']
+                # Extract points and colors from pts3d_world
+                pts3d = keyframe['pts3d_world'].reshape(-1, 3)
+                conf = keyframe['conf_world'].reshape(-1)
+                
+                # Filter by confidence
+                conf_thresh = self.config.get('recon_pipeline', {}).get('conf_thres_i2p', 1.5)
+                mask = conf > conf_thresh
+                filtered_pts = pts3d[mask]
+                
+                # Create dummy colors (can be improved later)
+                colors = np.ones((len(filtered_pts), 3), dtype=np.uint8) * 200
+                
+                # Publish via shared memory (sync method, not async)
+                await self.keyframe_publisher.publish_keyframe(
+                    keyframe_id=str(self.keyframe_count),
+                    pose=keyframe['pose'],
+                    points=filtered_pts,
+                    colors=colors
                 )
                 
                 logger.debug(f"Published keyframe {self.keyframe_count} to mesh_service")
             
             # Also publish to RabbitMQ for compatibility
-            if self.rabbitmq_channel:
-                exchange_name = "slam3r_keyframe_exchange"
-                try:
-                    exchange = await self.rabbitmq_channel.get_exchange(exchange_name)
-                except aio_pika.exceptions.ChannelNotFoundEntity:
-                    exchange = await self.rabbitmq_channel.declare_exchange(
-                        exchange_name, 
-                        aio_pika.ExchangeType.FANOUT
-                    )
-                
+            if self.keyframe_exchange:
                 message_body = msgpack.packb({
                     'timestamp': timestamp,
                     'keyframe_id': self.keyframe_count,
@@ -257,9 +263,9 @@ class SLAM3RProcessor:
                     'conf_world': keyframe_data['conf_world'].cpu().numpy().tolist(),
                 })
                 
-                await exchange.publish(
+                await self.keyframe_exchange.publish(
                     aio_pika.Message(body=message_body),
-                    routing_key=""
+                    routing_key="keyframe.new"
                 )
                 
         except Exception as e:
@@ -295,11 +301,16 @@ class SLAM3RProcessor:
             durable=True
         )
         
-        # Bind to frame processor exchange
-        exchange_name = "frame_processor_exchange"
+        # Bind to video frames exchange
+        exchange_name = os.getenv("VIDEO_FRAMES_EXCHANGE", "video_frames_exchange")
         try:
-            exchange = await self.rabbitmq_channel.get_exchange(exchange_name)
-            await queue.bind(exchange, routing_key="slam3r")
+            # Declare exchange if it doesn't exist
+            exchange = await self.rabbitmq_channel.declare_exchange(
+                exchange_name,
+                aio_pika.ExchangeType.FANOUT,
+                durable=True
+            )
+            await queue.bind(exchange)
         except Exception as e:
             logger.warning(f"Could not bind to exchange {exchange_name}: {e}")
         

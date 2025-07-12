@@ -278,13 +278,27 @@ class StreamingSLAM3R:
     
     def _create_frame(self, image: np.ndarray, timestamp: int) -> FrameData:
         """Create a FrameData object from raw input"""
+        # Store original shape
+        original_h, original_w = image.shape[:2]
+        
+        # Check if dimensions are divisible by 16
+        if original_h % 16 != 0 or original_w % 16 != 0:
+            # Calculate nearest dimensions divisible by 16
+            new_h = ((original_h + 15) // 16) * 16
+            new_w = ((original_w + 15) // 16) * 16
+            
+            # Resize image using cv2 (already imported in slam3r_processor)
+            import cv2
+            image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            logger.debug(f"Resized image from {original_h}x{original_w} to {new_h}x{new_w}")
+        
         # Convert image to tensor and normalize
         img_tensor = torch.from_numpy(image).float() / 255.0
         if img_tensor.dim() == 2:
             img_tensor = img_tensor.unsqueeze(-1).repeat(1, 1, 3)
         img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0).to(self.device)
         
-        # Get true shape
+        # Use actual tensor shape for true_shape to match what the model will process
         true_shape = torch.tensor([image.shape[0], image.shape[1]], 
                                  dtype=torch.float32, device=self.device)
         

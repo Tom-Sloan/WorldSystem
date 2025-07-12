@@ -110,4 +110,6 @@ USER $USERNAME
 RUN echo "*customization: -color" > $HOME/.Xdefaults
 
 # Set the default command to run the processor script
-CMD ["python3", "./SLAM3R_engine/slam3r_processor.py"] 
+# Use the original fixed version for now, can switch to v2 with:
+CMD ["python3", "./SLAM3R_engine/slam3r_processor_v2.py"]
+# CMD ["python3", "./SLAM3R_engine/slam3r_processor.py"] 

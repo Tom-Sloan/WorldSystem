@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y \
     curl \
     # SSL/Crypto for AMQP
     libssl-dev \
+    # Event loop for AMQP
+    libev-dev \
     # Mesh generation libraries
     libcgal-dev \
     libeigen3-dev \
@@ -69,6 +71,16 @@ RUN cd /tmp && \
     cmake --install build && \
     ldconfig && \
     cd / && rm -rf /tmp/msgpack-c
+
+# Install Apache Arrow (required by Rerun SDK)
+RUN apt-get update && apt-get install -y \
+    lsb-release \
+    wget \
+    && wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr '[:upper:]' '[:lower:]')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb \
+    && apt-get install -y ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb \
+    && apt-get update \
+    && apt-get install -y libarrow-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set up user (matches WorldSystem pattern)
 ARG USERNAME=developer

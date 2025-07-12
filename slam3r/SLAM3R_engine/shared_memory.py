@@ -149,14 +149,15 @@ class StreamingKeyframePublisher:
         import msgpack
         import time
         
-        if self.keyframe_exchange is None:
-            logger.warning("No keyframe exchange configured")
-            return
-            
-        # Write to shared memory
+        # Always write to shared memory (even if RabbitMQ is not configured)
         shm_key = self.shm_manager.write_keyframe(
             keyframe_id, points, colors, pose
         )
+        logger.info(f"Wrote keyframe {keyframe_id} to shared memory: {shm_key}")
+        
+        if self.keyframe_exchange is None:
+            logger.warning("No keyframe exchange configured - skipping RabbitMQ notification")
+            return
         
         # Calculate bounding box
         bbox = [

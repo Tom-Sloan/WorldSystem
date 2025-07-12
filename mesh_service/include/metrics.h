@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 namespace mesh_service {
 
@@ -11,6 +12,10 @@ public:
     void recordMeshGeneration(size_t vertex_count, size_t face_count);
     void recordProcessingTime(double seconds);
     void recordMemoryUsage(size_t bytes);
+    void recordError();
+    
+    // Get metrics in Prometheus format
+    std::string getPrometheusMetrics() const;
     
 private:
     Metrics();

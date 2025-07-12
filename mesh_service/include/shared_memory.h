@@ -30,6 +30,9 @@ public:
     // Close shared memory segment
     void close_keyframe(SharedKeyframe* keyframe);
     
+    // Optionally unlink the shared memory segment (remove from system)
+    void unlink_keyframe(const std::string& shm_name);
+    
     // Get points data pointer (after header)
     float* get_points(SharedKeyframe* keyframe);
     

@@ -61,7 +61,7 @@ services:
       - INITIAL_ANALYSIS_MODE=none #yolo
 
       # Added Rerun configuration
-      - RERUN_VIEWER_ADDRESS=0.0.0.0:9090
+      - RERUN_VIEWER_ADDRESS=0.0.0.0:9876
       - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
       - RERUN_ENABLED=true
 
@@ -138,7 +138,7 @@ services:
       - RESTART_EXCHANGE=restart_exchange
 
       # Rerun live viewer
-      - RERUN_VIEWER_ADDRESS=127.0.0.1:9090
+      - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
       - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
       - RERUN_ENABLED=true
 
@@ -242,7 +242,7 @@ services:
       - CAMERA_INTRINSICS_FILE=/app/SLAM3R_engine/configs/camera_intrinsics.yaml
 
       # Rerun viewer (host‑local)
-      - RERUN_VIEWER_ADDRESS=127.0.0.1:9090
+      - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
       - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
       - RERUN_ENABLED=${RERUN_ENABLED:-true}
 
@@ -348,6 +348,7 @@ services:
 
   mesh_service:
     image: mesh_service:latest
+    profiles: ["mesh_service", "slam3r"]  # Run with slam3r profile
     build:
       context: ./mesh_service
       args:
@@ -358,10 +359,8 @@ services:
     runtime: nvidia
     network_mode: host  # Same as SLAM3R for shared memory access
     
-    # Volume mounts for shared memory only (code is built into image)
+    # Volume mounts
     volumes:
-      # Don't mount source code - it's built into the image
-      # - ${WORKSPACE}/mesh_service:/app
       - /dev/shm:/dev/shm  # Shared memory for zero-copy IPC with SLAM3R
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
@@ -369,55 +368,7 @@ services:
     # Shared memory size for large point clouds
     shm_size: '4gb'
     
-    environment:
-      # RabbitMQ Configuration (matching existing pattern)
-      - RABBITMQ_URL=amqp://127.0.0.1:5672
-      
-      # Input exchanges from SLAM3R
-      - SLAM3R_KEYFRAME_EXCHANGE=slam3r_keyframe_exchange
-      - SLAM3R_POSE_EXCHANGE=slam3r_pose_exchange
-      
-      # Output exchanges for visualization
-      - MESH_STREAM_EXCHANGE=mesh_stream_exchange
-      - MESH_UPDATE_EXCHANGE=mesh_update_exchange
-      
-      # WebSocket for direct streaming to website
-      - WEBSOCKET_HOST=0.0.0.0
-      - WEBSOCKET_PORT=8005
-      
-      # Shared memory IPC settings
-      - SHM_KEYFRAME_PREFIX=/slam3r_keyframe_
-      - SHM_MAX_FRAMES=10
-      
-      # GPU Configuration (matching SLAM3R)
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_PATH=${CUDA_PATH}
-      - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
-      - DISPLAY=${DISPLAY}
-      
-      # Mesh Generation Settings
-      - MESH_UPDATE_FREQUENCY=30  # Target fps
-      - MESH_COMPRESSION=draco    # draco, none
-      - MESH_COMPRESSION_LEVEL=7  # 0-10
-      - MESH_QUALITY_ADAPTIVE=true
-      - MESH_SIMPLIFICATION_RATIO=0.1
-      
-      # Spatial indexing
-      - OCTREE_MAX_DEPTH=8
-      - OCTREE_MIN_POINTS=100
-      
-      # Performance settings
-      - OMP_NUM_THREADS=4
-      - CUDA_LAUNCH_BLOCKING=0
-      
-      # Prometheus metrics
-      - METRICS_PORT=8006
-      
-      # Logging
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - PYTHONUNBUFFERED=1
-      
-    # GPU resource allocation
+    # Resource management
     deploy:
       resources:
         reservations:
@@ -426,16 +377,49 @@ services:
               count: all
               capabilities: [gpu]
     
-    # Health check for mesh service
+    # Health check for monitoring
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9091/metrics"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
     
-    # Auto-restart on failure
+    # Auto-restart on crashes
     restart: unless-stopped
+    
+    environment:
+      # ========== RABBITMQ CONFIGURATION ==========
+      - RABBITMQ_URL=amqp://127.0.0.1:5672
+      
+      # Input exchanges from SLAM3R
+      - SLAM3R_KEYFRAME_EXCHANGE=${SLAM3R_KEYFRAME_EXCHANGE:-slam3r_keyframe_exchange}
+      
+      # ========== RERUN VISUALIZATION ==========
+      - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
+      - RERUN_ENABLED=${RERUN_ENABLED:-true}
+      
+      # ========== METRICS CONFIGURATION ==========
+      - METRICS_PORT=${MESH_SERVICE_METRICS_PORT:-9091}
+      
+      # ========== SHARED MEMORY CONFIGURATION ==========
+      # Whether mesh_service should unlink shared memory after processing
+      # Set to false if SLAM3R needs to confirm receipt
+      - MESH_SERVICE_UNLINK_SHM=${MESH_SERVICE_UNLINK_SHM:-false}
+      
+      # ========== GPU AND DISPLAY ==========
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_PATH=${CUDA_PATH}
+      - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
+      - DISPLAY=${DISPLAY}
+      
+      # ========== PERFORMANCE SETTINGS ==========
+      - OMP_NUM_THREADS=4
+      - CUDA_LAUNCH_BLOCKING=0
+      
+      # ========== LOGGING ==========
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
     
     # Logging configuration
     logging:

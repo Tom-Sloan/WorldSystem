@@ -18,6 +18,14 @@ find_package(Eigen3 REQUIRED)
 find_package(CGAL REQUIRED)
 find_package(OpenMP)
 
+# Find or fetch Rerun SDK
+include(FetchContent)
+FetchContent_Declare(
+    rerun_sdk
+    URL https://github.com/rerun-io/rerun/releases/latest/download/rerun_cpp_sdk.zip
+)
+FetchContent_MakeAvailable(rerun_sdk)
+
 # Include directories
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -32,7 +40,11 @@ set(SOURCES
     src/main.cpp
     src/simple_mesh_generator.cu
     src/shared_memory.cpp
+    src/rabbitmq_consumer.cpp
+    src/metrics.cpp
+    src/rerun_publisher.cpp
     # Temporarily disabled for build
+    # src/websocket_server.cpp
     # src/mesh_generator.cu
     # src/poisson_reconstruction.cpp
     # src/marching_cubes.cu
@@ -62,6 +74,10 @@ target_link_libraries(mesh_service
     pthread
     dl
     rt
+    amqpcpp
+    ev
+    msgpackc
+    rerun_sdk
 )
 
 # OpenMP support

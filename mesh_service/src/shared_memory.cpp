@@ -76,6 +76,11 @@ void SharedMemoryManager::close_keyframe(SharedKeyframe* keyframe) {
     }
 }
 
+void SharedMemoryManager::unlink_keyframe(const std::string& shm_name) {
+    // Unlink the shared memory segment to remove it from the system
+    shm_unlink(shm_name.c_str());
+}
+
 float* SharedMemoryManager::get_points(SharedKeyframe* keyframe) {
     // Points data starts immediately after the header
     return reinterpret_cast<float*>(

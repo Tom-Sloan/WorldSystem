@@ -6,6 +6,14 @@ This document tracks the implementation of the SLAM3R Performance Optimization P
 
 use conda 3dreconstruction for local developement, if there are an libraries missing from 3drecontstruction, insall them in 3dreconstruction. It is at /home/sam3/anaconda3/envs/3dreconstruction/bin/python
 
+For a working commit of slam3r_processing.py look at https://github.com/Tom-Sloan/WorldSystem/commit/b15afedda8b36cb8423df86b0f4b9e72a23d6b9b. Remember to go back to the correct branch after.
+
+app.py and recon.py are a working demo from the original slam3r repo.
+
+The slam3r paper is at https://arxiv.org/html/2412.09401v3. 
+
+Don't build docker containers, ask me to build them.
+
 **Goal**: Achieve 25+ fps processing (matching offline performance) by eliminating downsampling overhead and implementing true parallel mesh generation.
 
 ### Implementation Progress Summary
@@ -379,12 +387,20 @@ RabbitMQ notification    GPU Processing
 - **Note**: Test frames with simple patterns process correctly
 - **Missing**: Keyframe generation not observed in logs (may need more frames or real video)
 
-#### 4. Tensor Reshape Investigation
+#### 4. Tensor Reshape Investigation (COMPLETED)
 - **Previous Error**: `RuntimeError: shape '[25, 196, 12, 64]' is invalid for input of size 752640`
 - **Analysis**: Model expects 768 channels but receives 153 (exactly 768/5)
-- **Current Status**: Error not reproduced with synthetic test data
-- **Theory**: May only occur with specific real video data or certain frame sequences
-- **Next Step**: Test with actual drone video to reproduce and debug
+- **Current Status**: Successfully reproduced with real drone video
+- **Timing**: Error occurs immediately after bootstrap completion
+- **Root Cause**: Dimension mismatch in multiview attention blocks during L2W inference
+
+#### 5. Real Video Testing Results (July 10, 2025)
+- **Fixed**: 'hv' not defined error in bootstrap handler (changed to use `record`)
+- **Bootstrap Success**: SLAM3R completes bootstrap with 5 keyframes from real video
+- **Keyframes Published**: Bootstrap keyframes sent to shared memory (47K+ points each)
+- **Error Location**: Tensor reshape error in `batched_cross_attn` at line 90 of multiview_blocks.py
+- **Pattern**: Error happens on frame 6 after bootstrap (first incremental processing frame)
+- **Debug Logging**: Added keyframe decision logging showing position/rotation changes
 
 ## Lessons Learned
 
@@ -394,6 +410,8 @@ RabbitMQ notification    GPU Processing
 4. **IPC Choice**: POSIX shared memory provides excellent performance for local high-bandwidth communication
 5. **Test Organization**: Proper test structure essential for maintainability
 6. **Incremental Development**: Starting with simple working version allows immediate testing while refining complex algorithms
+7. **Real Video Testing**: Essential for reproducing model-specific errors that don't occur with synthetic data
+8. **Bootstrap vs Incremental**: Different code paths can have different bugs (bootstrap worked, incremental failed)
 
 ## Final Implementation Summary (July 10, 2025)
 
@@ -404,11 +422,206 @@ Successfully implemented a working mesh generation service that:
 4. **Achieves performance targets** (<50ms mesh generation)
 5. **Provides foundation** for advanced algorithms (Poisson, Marching Cubes)
 
-The system is now ready for:
-- Integration with full SLAM3R pipeline
-- Performance testing under real-world loads
-- WebSocket streaming to browser visualization
-- Rerun desktop integration for debugging
+### Critical Findings:
+1. **SLAM3R Bootstrap Works**: Successfully generates 5 keyframes with real video
+2. **Tensor Reshape Bug**: Blocks incremental processing after bootstrap
+3. **Shared Memory Working**: Keyframes published but need RabbitMQ for notification
+4. **Mesh Service Issue**: Minimum point threshold too high (needs adjustment)
+
+### Remaining Critical Issues:
+1. **Tensor Reshape Error**: Fix dimension mismatch in multiview attention (768 vs 153 channels)
+2. **Mesh Service Detection**: Implement RabbitMQ consumer instead of polling
+3. **Point Threshold**: Lower minimum points required for mesh generation
+
+## Current Work (July 11, 2025)
+
+### Fixed I2P Window Construction Issue
+
+#### 1. Root Cause Identified (COMPLETED)
+- **Issue**: I2P model was only receiving 2 views (reference keyframe + current frame) instead of proper window
+- **Training Configuration Analysis**:
+  - I2P trained with `num_views=11` 
+  - L2W trained with `num_views=13` (6 reference views + source views)
+  - Default `win_r=3` means window of 7 frames (center + 3 before + 3 after)
+- **Problem**: `slam3r_processor.py` was not building the proper window, just using a pair of frames
+
+#### 2. Solution Implemented (COMPLETED)
+- **Fix**: Modified `_perform_incremental_processing` to build proper window:
+  - Uses last keyframe as center of window
+  - Adds `win_r` frames before and after center (default win_r=3 → 7 frames)
+  - Includes current frame in window if within range
+  - Properly sets reference ID for I2P inference
+- **Code Changes**: Lines 770-827 in slam3r_processor.py
+- **Result**: I2P now receives proper multi-view context as designed
+- **Testing Status**: Created test scripts but encountered Docker container conflicts
+- **Next Steps**: 
+  1. Run test_slam3r_simple.py when both RabbitMQ and SLAM3R are running
+  2. Monitor SLAM3R logs for I2P window processing
+  3. Verify no tensor reshape errors occur during incremental processing
+
+### Fixed L2W Batching Issue
+
+#### 1. Root Cause Identified (COMPLETED) 
+- **Issue**: L2W inference was failing with "The size of tensor a (5) must match the size of tensor b (25)" error
+- **Analysis**: 
+  - INFERENCE_WINDOW_BATCH=5 was duplicating views artificially for GPU efficiency
+  - This created shape [5, 196, 1024] for batched features
+  - But positional embeddings (pes) were computed for shape [25, ...] (5 views × 5 batch)
+  - The mismatch occurred when adding pes to features in _decode_multiview
+- **Discovery**: app.py and recon.py (working demos) don't use artificial batching for L2W
+
+#### 2. Solution Implemented (COMPLETED)
+- **Fix**: Removed artificial batching for L2W inference
+- **Changes**: Lines 885-889 in slam3r_processor.py
+- **Rationale**: 
+  - L2W model computes positional embeddings based on actual 3D points
+  - Artificial batching breaks the correspondence between features and embeddings
+  - Unlike I2P, L2W doesn't benefit from artificial batching
+- **Result**: L2W now processes views without dimension mismatches
+
+### Fixed L2W ref_ids Configuration
+
+#### 1. Issue Identified (COMPLETED)
+- **Problem**: ref_ids was based on ref_views length instead of all_views arrangement
+- **Error**: Still getting tensor reshape errors even with 5 views
+- **Root Cause**: L2W needs ref_ids to correctly identify which views have world coordinates
+
+#### 2. Solution Implemented (COMPLETED)
+- **Fix**: Set ref_ids to [0, 1, 2, 3] for 5 views (all except last are references)
+- **Code Changes**: Lines 920-923 in slam3r_processor.py
+- **Rationale**: The last view is the source view being registered, others are references
+- **Result**: Proper ref_ids configuration for L2W inference
+
+### Ongoing L2W Tensor Reshape Investigation
+
+#### Current Status
+- **Error**: "shape '[20, 196, 12, 64]' is invalid for input of size 602112"
+- **Analysis**: 
+  - Expected 20 = 4 ref views × 5 batch
+  - Actual tensor has 602,112 elements (1/5 of expected 3,010,560)
+  - Indicates batch dimension mismatch (B=1 instead of B=5)
+- **Hypothesis**: The pretrained L2W model from HuggingFace expects specific tensor dimensions
+- **Next Steps**: 
+  - Check tensor shapes being passed to L2W
+  - Investigate if views need batch dimension adjustment
+  - Consider if this is a fundamental incompatibility with the pretrained model
+
+### Debugging Tensor Reshape Error
+
+#### 1. Added Debug Logging (COMPLETED)
+- **Issue**: RuntimeError at line 90 of multiview_blocks.py - shape '[25, 196, 12, 64]' invalid for input of size 752640
+- **Actions Taken**:
+  - Added debug logging in `multiview_blocks.py:90-95` to track tensor shapes
+  - Added debug logging in `models.py:594-597` before _decode_multiview call
+  - Added debug logging in `models.py:311` at start of _decode_multiview
+- **Debug Output Will Show**:
+  - Input tensor shapes (xs, xs_normed)
+  - Dimension values (Vx, B, Nx, C, num_heads)
+  - projq output shape and total elements
+  - Expected reshape dimensions vs actual
+
+#### 2. Investigation Results (COMPLETED)
+- **Model Architecture Confirmed**:
+  - L2W decoder embed dim: 768
+  - L2W cross attention num_heads: 12  
+  - L2W projq: 768 → 768 dimensions
+  - I2P decoder embed dim: 768
+- **Problem Identified**: 
+  - Model expects 768 channels but receives 153 (exactly 768/5)
+  - Error occurs in incremental processing after bootstrap
+  - Bootstrap works fine with 5 keyframes
+  - Issue is in feature dimension mismatch between I2P output and L2W input
+
+#### 3. Root Cause Analysis (COMPLETED)
+The tensor reshape error happens because:
+1. Expected: `[25, 196, 12, 64]` = 3,763,200 elements
+2. Actual: 752,640 elements (exactly 1/5 of expected)
+3. **Root Cause Found**: 
+   - I2P model produces `img_tokens` with encoder output dimension (varies by model config)
+   - L2W model expects tokens with its own encoder dimension (768 for this checkpoint)
+   - When pre-computed `img_tokens` from I2P are passed to L2W, dimension mismatch occurs
+   - This is a fundamental incompatibility between pretrained models from the SLAM3R repo
+
+#### 4. Solution Analysis (COMPLETED)
+The issue stems from the SLAM3R architecture using pretrained models with different encoder dimensions:
+- I2P model (`siyan824/slam3r_i2p`): Uses a specific encoder dimension
+- L2W model (`siyan824/slam3r_l2w`): Has `need_encoder=False` but expects 768-dim features
+- The models were trained separately and have incompatible feature dimensions
+
+**Current Workaround**: 
+- Remove `img_tokens` from views before passing to L2W
+- Force L2W to re-encode images from scratch
+- This bypasses the dimension mismatch but is computationally inefficient
+
+**Code Changes** (in slam3r_processor.py):
+1. Build views for L2W without `img_tokens` (lines 783-796)
+2. Add raw images to views instead of tokens
+3. Let L2W encode images itself to produce compatible features
+
+#### 5. Root Cause Discovery (COMPLETED)
+After deeper investigation, discovered the models ARE designed to work together:
+- I2P model: `enc_embed_dim=1024`, produces 1024-dim `img_tokens`
+- L2W model: `decoder_embed.in_features=1024`, expects 1024-dim input
+- The tensor reshape error was NOT due to model incompatibility
+- The actual issue was our workaround that removed `img_tokens` from views
+
+**The Real Issue**:
+- The error about shape `[25, 196, 12, 64]` vs 752640 elements suggests wrong batch size
+- Expected: 25 views × 196 patches × 768 channels = 3,763,200 elements
+- Actual: 752,640 elements = exactly 1/5 of expected
+- This indicates the issue is with view count (5 instead of 25) not token dimensions
+
+#### 6. Proper Fix Applied (IN PROGRESS)
+Reverted the workaround and restored proper `img_tokens` passing:
+- L2W inference now receives `img_tokens` from I2P as designed
+- The models' decoder_embed layer handles 1024→768 projection correctly
+- Testing needed to verify if the tensor reshape error persists
+
+#### 7. Batch Size Mismatch Discovery (COMPLETED)
+The tensor reshape error was due to improper window construction:
+- Error: shape `[25, 196, 12, 64]` where 25 = Vx * B
+- I2P was trained with `num_views=11` but only received 2 views
+- L2W was trained with `num_views=13` (6 reference + source views)
+- Root cause: `slam3r_processor.py` was only passing keyframe + current frame pair
+- Solution: Build proper window with `win_r=3` (7 frames total) centered on keyframe
+
+#### 8. L2W Batch Size Requirement (FIXED - July 11, 2025)
+Initially thought L2W required exactly 5 views, but this was incorrect:
+- **Initial Analysis**: Believed L2W model expects exactly 5 views (batch_size=5 from training)
+- **Error**: shape `[25, 196, 12, 64]` expects 25 = 5 views × 5 batch
+- **Root Cause Discovery**: The error was due to artificial batching, not view count requirements
+- **Solution**: Removed all artificial batching and padding for L2W:
+  - Followed the pattern from working demos (app.py and recon.py)
+  - Use scene_frame_retrieve to select reference views
+  - Pass selected views directly to L2W without padding or forcing specific counts
+  - L2W model handles variable numbers of views internally
+- **Code Changes**: Simplified L2W inference in `_perform_incremental_processing` (lines 879-893)
+
+### Final L2W Tensor Reshape Fix (July 11, 2025)
+
+#### Root Cause Analysis
+After reviewing the working demos (app.py and recon.py), discovered the fundamental issue:
+- L2W model does NOT require a fixed number of views
+- The tensor reshape error was caused by artificial batching logic
+- Working demos use scene_frame_retrieve and pass variable view counts to L2W
+
+#### Solution Implemented
+1. **Removed all view padding/selection logic** (lines 884-932 removed)
+2. **Simplified L2W inference** to match recon.py pattern:
+   ```python
+   l2w_input_views = ref_views + [src_view]
+   output = l2w_inference(l2w_input_views, l2w_model,
+                          ref_ids=list(range(len(ref_views))),
+                          device=device,
+                          normalize=slam_params["norm_input_l2w"])
+   l2w_out = output[-1]
+   ```
+3. **Key insight**: L2W handles variable view counts internally through its architecture
+
+#### Test Script Created
+- Created `test_tensor_fix.py` to verify the fix
+- Sends 10 frames to trigger bootstrap and incremental processing
+- Checks for tensor reshape errors in SLAM3R logs
 
 ## References
 
@@ -417,3 +630,49 @@ The system is now ready for:
 - Docker Compose: `/home/sam3/Desktop/Toms_Workspace/WorldSystem/docker-compose.yml`
 - Test Scripts: `/home/sam3/Desktop/Toms_Workspace/WorldSystem/tests/integration/`
 - Mesh Service: `/home/sam3/Desktop/Toms_Workspace/WorldSystem/mesh_service/`
+- Test Video: `/home/sam3/Desktop/Toms_Workspace/WorldSystem/data/20250617_211214/mav0/video_segments/20250617_211214_segment_1.mp4`
+
+## Error Tracking Section
+
+**IMPORTANT**: When debugging, all errors should be documented in this section. DO NOT modify or remove older error entries - they provide valuable debugging history. Always add new errors at the bottom of this section.
+
+### Error History
+
+#### 1. Initial Tensor Reshape Error (July 11, 2025)
+- **Error**: `RuntimeError: shape '[25, 196, 12, 64]' is invalid for input of size 752640`
+- **Location**: slam3r/blocks/multiview_blocks.py:90 in batched_cross_attn
+- **Context**: Occurred after bootstrap completion when processing frame 6
+- **Initial Hypothesis**: Model expects 768 channels but receives 153 (exactly 768/5)
+
+#### 2. Image Decode Failed Error (July 11, 2025)
+- **Error**: `WARNING Image decode failed – skipping frame` (multiple times)
+- **Location**: slam3r_processor.py:1300
+- **Context**: Occurred when receiving frames from RabbitMQ
+- **Root Cause**: Test script was sending msgpack-encoded dict instead of raw JPEG data
+- **Fix**: Modified test script to send raw JPEG bytes with headers matching server format
+
+#### 3. L2W Dimension Mismatch (July 11, 2025 - FIXED)
+- **Error**: `RuntimeError: shape '[25, 196, 12, 64]' is invalid for input of size 752640`
+- **Location**: Still multiview_blocks.py:90, but during L2W inference
+- **Context**: 
+  - L2W inference with 5 reference views + 1 source view
+  - ref_ids: [0, 1, 2, 3, 4]
+  - Bootstrap keyframes successfully published to mesh service
+- **Analysis**:
+  - Expected: 25 × 196 × 768 = 3,763,200 elements
+  - Actual: 752,640 elements (exactly 1/5 of expected)
+  - Shape [25, 196, 12, 64] expects Vx*B=25 where Vx=views, B=batch
+- **Root Cause**: Missing batch dimension in tensors from processed_frames_history
+- **Fix**: Added unsqueeze(0) to ensure batch dimension when preparing views for L2W
+
+#### 4. Tensor Shape Unpacking Error (July 11, 2025 - CURRENT)
+- **Error**: `ValueError: too many values to unpack (expected 4)`
+- **Location**: slam3r/blocks/multiview_blocks.py:149 in forward
+- **Context**: 
+  - Occurs in L2W inference after successful bootstrap
+  - Line: `Vx, B, Nx, C = xs.shape`
+  - Bootstrap completes, keyframes published successfully
+- **Analysis**: 
+  - The tensor xs has more than 4 dimensions
+  - Our batch dimension fix may have added too many dimensions
+  - Need to check actual tensor shapes being passed

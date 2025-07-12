@@ -698,7 +698,10 @@ def _handle_slam_bootstrap(view, record):
         _, tok, pos = slam3r_get_img_tokens([{
             "img": v["img"].to(device),
             "true_shape": v["true_shape"].unsqueeze(0).to(device)}], i2p_model)
-        init_views.append({"img_tokens": tok[0], "img_pos": pos[0], "true_shape": v["true_shape"]})
+        # tok and pos are lists with one element, extract and squeeze if needed
+        img_tokens = tok[0].squeeze(0) if tok[0].dim() > 3 else tok[0]
+        img_pos = pos[0].squeeze(0) if pos[0].dim() > 3 else pos[0]
+        init_views.append({"img_tokens": img_tokens, "img_pos": img_pos, "true_shape": v["true_shape"]})
 
     pcs, confs, _ = slam3r_initialize_scene(init_views, i2p_model,
                                             winsize=slam_params["initial_winsize"],
@@ -750,7 +753,9 @@ def _perform_incremental_processing(view, record):
     # Generate tokens for current frame
     _, tok, pos = slam3r_get_img_tokens([{"img": view["img"].to(device),
                                           "true_shape": view["true_shape"].to(device)}], i2p_model)
-    record["img_tokens"], record["img_pos"] = tok[0], pos[0]
+    # Ensure proper dimensions - squeeze if needed
+    record["img_tokens"] = tok[0].squeeze(0) if tok[0].dim() > 3 else tok[0]
+    record["img_pos"] = pos[0].squeeze(0) if pos[0].dim() > 3 else pos[0]
 
     # Ensure keyframe tokens are available
     for kf_idx in list(keyframe_indices):
@@ -760,7 +765,9 @@ def _perform_incremental_processing(view, record):
             bi = kf_hist["img_tensor"].unsqueeze(0).to(device)
             bt = kf_hist["true_shape"].unsqueeze(0).to(device)
             _, tok_kf, pos_kf = slam3r_get_img_tokens([{"img": bi, "true_shape": bt}], i2p_model)
-            kf_hist["img_tokens"], kf_hist["img_pos"] = tok_kf[0], pos_kf[0]
+            # Ensure proper dimensions - squeeze if needed
+            kf_hist["img_tokens"] = tok_kf[0].squeeze(0) if tok_kf[0].dim() > 3 else tok_kf[0]
+            kf_hist["img_pos"] = pos_kf[0].squeeze(0) if pos_kf[0].dim() > 3 else pos_kf[0]
 
     # Prepare reference keyframe and current frame
     ref_kf = processed_frames_history[keyframe_indices[-1]]
@@ -842,12 +849,12 @@ def _perform_incremental_processing(view, record):
         hv = processed_frames_history[idx]
         if "pts3d_world" not in hv: continue
         # Include img_tokens for L2W - models are designed to work together
-        # Ensure batch dimension is present (bootstrap stores with batch dim)
+        # scene_frame_retrieve expects views WITHOUT batch dimensions - it adds them internally
         view_dict = {
-            "true_shape": _to_dev(hv["true_shape"]) if hv["true_shape"].dim() == 2 else _to_dev(hv["true_shape"]).unsqueeze(0),
-            "pts3d_world": _to_dev(hv["pts3d_world"]) if hv["pts3d_world"].dim() == 4 else _to_dev(hv["pts3d_world"]).unsqueeze(0),
-            "img_tokens": _to_dev(hv["img_tokens"]) if hv["img_tokens"].dim() == 4 else _to_dev(hv["img_tokens"]).unsqueeze(0),
-            "img_pos": _to_dev(hv["img_pos"]) if hv["img_pos"].dim() == 4 else _to_dev(hv["img_pos"]).unsqueeze(0)
+            "true_shape": _to_dev(hv["true_shape"]),
+            "pts3d_world": _to_dev(hv["pts3d_world"]),
+            "img_tokens": _to_dev(hv["img_tokens"]),
+            "img_pos": _to_dev(hv["img_pos"])
         }
         cand_views.append(view_dict)
 
@@ -856,12 +863,12 @@ def _perform_incremental_processing(view, record):
         return None
 
     # L2W inference - include img_tokens
-    # Ensure batch dimension matches what scene_frame_retrieve expects
+    # scene_frame_retrieve expects views WITHOUT batch dimensions
     src_view = {
-        "img_tokens": _to_dev(record["img_tokens"]) if record["img_tokens"].dim() == 4 else _to_dev(record["img_tokens"]).unsqueeze(0),
-        "img_pos": _to_dev(record["img_pos"]) if record["img_pos"].dim() == 4 else _to_dev(record["img_pos"]).unsqueeze(0),
-        "true_shape": _to_dev(record["true_shape"]) if record["true_shape"].dim() == 2 else _to_dev(record["true_shape"]).unsqueeze(0),
-        "pts3d_cam": _to_dev(record["pts3d_cam"]) if record["pts3d_cam"].dim() == 4 else _to_dev(record["pts3d_cam"]).unsqueeze(0),
+        "img_tokens": _to_dev(record["img_tokens"]),
+        "img_pos": _to_dev(record["img_pos"]),
+        "true_shape": _to_dev(record["true_shape"]),
+        "pts3d_cam": _to_dev(record["pts3d_cam"]),
     }
     ref_views, _ = slam3r_scene_frame_retrieve(
         cand_views, [src_view], i2p_model,

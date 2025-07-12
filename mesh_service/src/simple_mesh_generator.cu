@@ -139,6 +139,8 @@ void GPUMeshGenerator::generateIncrementalMesh(
     cudaMallocAsync(&d_points, points_size, pImpl->streams[0]);
     
     // Copy to device
+    // Note: h_points is float* (x,y,z,x,y,z,...) but d_points is float3*
+    // We need to ensure proper alignment
     cudaMemcpyAsync(d_points, h_points, points_size, 
                     cudaMemcpyHostToDevice, pImpl->streams[0]);
     
@@ -162,10 +164,29 @@ void GPUMeshGenerator::generateIncrementalMesh(
     // Get triangle count
     uint32_t triangle_count = pImpl->d_triangle_count[0];
     
-    // Copy vertices
+    // Copy vertices - convert from float3* back to float*
     update.vertices.resize(keyframe->point_count * 3);
-    cudaMemcpy(update.vertices.data(), d_points, points_size,
-               cudaMemcpyDeviceToHost);
+    // d_points is float3*, but update.vertices expects float array
+    // We need to copy the raw float data, not float3 structures
+    cudaMemcpy(update.vertices.data(), h_points, keyframe->point_count * 3 * sizeof(float),
+               cudaMemcpyHostToHost);
+    
+    // Debug: Check for NaN or infinite values
+    int nan_count = 0;
+    int inf_count = 0;
+    std::cout << "[DEBUG SimpleMeshGen] First few vertices:" << std::endl;
+    for (size_t i = 0; i < update.vertices.size(); i++) {
+        if (std::isnan(update.vertices[i])) nan_count++;
+        if (std::isinf(update.vertices[i])) inf_count++;
+        
+        if (i < 9 && i % 3 == 0) {
+            std::cout << "  Vertex " << i/3 << ": [" 
+                      << update.vertices[i] << ", " << update.vertices[i+1] << ", " << update.vertices[i+2] << "]" << std::endl;
+        }
+    }
+    if (nan_count > 0 || inf_count > 0) {
+        std::cout << "[WARNING] Found " << nan_count << " NaN values and " << inf_count << " infinite values in vertices!" << std::endl;
+    }
     
     // Copy triangles
     if (triangle_count > 0) {

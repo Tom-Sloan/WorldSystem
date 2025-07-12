@@ -61,6 +61,23 @@ int main(int argc, char* argv[]) {
         if (rerun_enabled) {
             if (rerun_publisher->connect()) {
                 std::cout << "Connected to Rerun viewer at " << rerun_address << std::endl;
+                
+                // Set up a pinhole camera view for better visualization
+                // This helps Rerun understand the 3D space better
+                float camera_matrix[9] = {
+                    500.0f, 0.0f, 320.0f,    // fx, 0, cx
+                    0.0f, 500.0f, 240.0f,    // 0, fy, cy
+                    0.0f, 0.0f, 1.0f         // 0, 0, 1
+                };
+                
+                // Log initial camera setup
+                float initial_pose[16] = {
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, -5,  // Position camera 5 units back
+                    0, 0, 0, 1
+                };
+                rerun_publisher->logCameraPose(initial_pose, "/mesh_service/camera");
             } else {
                 std::cerr << "Failed to connect to Rerun viewer" << std::endl;
                 rerun_enabled = false;

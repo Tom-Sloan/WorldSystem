@@ -1,6 +1,7 @@
 #include "rerun_publisher.h"
 #include <rerun.hpp>
 #include <rerun/archetypes/mesh3d.hpp>
+#include <rerun/archetypes/points3d.hpp>
 #include <rerun/archetypes/transform3d.hpp>
 #include <rerun/archetypes/clear.hpp>
 #include <rerun/components/position3d.hpp>
@@ -8,6 +9,7 @@
 #include <rerun/components/color.hpp>
 // #include <rerun/components/material.hpp> // Not available in this version
 #include <rerun/datatypes/mat4x4.hpp>
+#include <rerun/demo_utils.hpp>
 #include <iostream>
 #include <chrono>
 
@@ -50,6 +52,14 @@ public:
             
             // Log initial setup with the new API
             stream->set_time_timestamp("time", std::chrono::steady_clock::now());
+            
+            // Send test grid points to verify connection
+            using namespace rerun::demo;
+            std::vector<rerun::Position3D> points = grid3d<rerun::Position3D, float>(-10.f, 10.f, 10);
+            std::vector<rerun::Color> colors = grid3d<rerun::Color, uint8_t>(0, 255, 10);
+            
+            stream->log("test_grid", rerun::archetypes::Points3D(points).with_colors(colors).with_radii({0.5f}));
+            std::cout << "Sent test grid points to Rerun viewer" << std::endl;
             
             return true;
             
@@ -139,6 +149,13 @@ public:
             // Convert vertices to positions
             std::vector<rerun::Position3D> positions;
             positions.reserve(vertices.size() / 3);
+            
+            // Debug: Print first few vertices
+            std::cout << "[DEBUG Rerun] Publishing mesh with " << vertices.size()/3 << " vertices" << std::endl;
+            for (size_t i = 0; i < std::min(size_t(9), vertices.size()); i += 3) {
+                std::cout << "[DEBUG Rerun] Vertex " << i/3 << ": [" 
+                          << vertices[i] << ", " << vertices[i+1] << ", " << vertices[i+2] << "]" << std::endl;
+            }
             
             for (size_t i = 0; i < vertices.size(); i += 3) {
                 positions.push_back({vertices[i], vertices[i+1], vertices[i+2]});

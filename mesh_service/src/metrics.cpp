@@ -30,7 +30,7 @@ public:
     std::atomic<size_t> errors{0};
     
     // Timing metrics (keep last N samples)
-    std::mutex timing_mutex;
+    mutable std::mutex timing_mutex;
     std::deque<double> processing_times;
     static constexpr size_t MAX_SAMPLES = 100;
     
@@ -257,7 +257,11 @@ private:
     void handleRequest(int client_socket) {
         // Read request (we don't parse it, just send metrics for any request)
         char buffer[1024] = {0};
-        read(client_socket, buffer, sizeof(buffer) - 1);
+        ssize_t bytes_read = read(client_socket, buffer, sizeof(buffer) - 1);
+        if (bytes_read < 0) {
+            close(client_socket);
+            return;
+        }
         
         // Get metrics
         std::string metrics = Metrics::instance().getPrometheusMetrics();

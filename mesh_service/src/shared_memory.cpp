@@ -5,6 +5,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <unordered_map>
+#include <cerrno>
+#include <iostream>
 
 namespace mesh_service {
 
@@ -31,40 +33,56 @@ SharedMemoryManager::~SharedMemoryManager() {
 }
 
 SharedKeyframe* SharedMemoryManager::open_keyframe(const std::string& shm_name) {
+    std::cout << "[SHM DEBUG] Opening shared memory: " << shm_name << std::endl;
+    
     // Open shared memory object
     int fd = shm_open(shm_name.c_str(), O_RDONLY, 0);
     if (fd < 0) {
+        std::cerr << "[SHM DEBUG] shm_open failed, errno: " << errno << " (" << strerror(errno) << ")" << std::endl;
         // Return nullptr if shared memory doesn't exist yet
         return nullptr;
     }
+    std::cout << "[SHM DEBUG] shm_open succeeded, fd: " << fd << std::endl;
     
     // First, map just the header to read the size
+    std::cout << "[SHM DEBUG] Mapping header, size: " << sizeof(SharedKeyframe) << std::endl;
     void* header_ptr = mmap(nullptr, sizeof(SharedKeyframe), 
                            PROT_READ, MAP_SHARED, fd, 0);
     if (header_ptr == MAP_FAILED) {
+        std::cerr << "[SHM DEBUG] mmap header failed, errno: " << errno << std::endl;
         close(fd);
         throw std::runtime_error("Failed to map shared memory header");
     }
     
     auto* header = static_cast<SharedKeyframe*>(header_ptr);
+    std::cout << "[SHM DEBUG] Header mapped, point_count: " << header->point_count 
+              << ", color_channels: " << header->color_channels << std::endl;
     
     // Calculate total size including point data
     size_t total_size = calculate_size(header->point_count, 
-                                      header->color_format == 1 ? 4 : 3);
+                                      header->color_channels);
+    std::cout << "[SHM DEBUG] Calculated total size: " << total_size << std::endl;
     
     // Remap with full size
     munmap(header_ptr, sizeof(SharedKeyframe));
     
+    std::cout << "[SHM DEBUG] Remapping with full size" << std::endl;
     void* full_ptr = mmap(nullptr, total_size, PROT_READ, MAP_SHARED, fd, 0);
     if (full_ptr == MAP_FAILED) {
+        std::cerr << "[SHM DEBUG] mmap full failed, errno: " << errno << std::endl;
         close(fd);
         throw std::runtime_error("Failed to map full shared memory");
     }
+    std::cout << "[SHM DEBUG] Full mapping successful at " << full_ptr << std::endl;
     
     // Store mapping info
     pImpl->mappings[full_ptr] = {full_ptr, total_size, fd};
     
-    return static_cast<SharedKeyframe*>(full_ptr);
+    SharedKeyframe* keyframe = static_cast<SharedKeyframe*>(full_ptr);
+    // Note: Can't modify the struct since it's mapped read-only
+    // Users should use get_points() and get_colors() methods
+    
+    return keyframe;
 }
 
 void SharedMemoryManager::close_keyframe(SharedKeyframe* keyframe) {

@@ -55,7 +55,7 @@ class SharedMemoryManager:
         shm_name = f"{self.prefix}{keyframe_id}"
         
         # Calculate total size
-        # Header: timestamp(8) + count(4) + color_format(4) + pose(64) + bbox(24) = 104 bytes
+        # Header: timestamp(8) + count(4) + color_channels(4) + pose(64) + bbox(24) = 104 bytes
         header_format = "QII" + "f" * 16 + "f" * 6  # Q=uint64, I=uint32, f=float32
         header_size = struct.calcsize(header_format)
         
@@ -81,7 +81,7 @@ class SharedMemoryManager:
             header_data = struct.pack(header_format,
                 timestamp_ns,              # timestamp_ns
                 len(points),              # point_count
-                0,                        # color_format (0=RGB)
+                3,                        # color_channels (3=RGB)
                 *pose.flatten(),          # pose_matrix (16 floats)
                 *bbox                     # bbox (6 floats)
             )

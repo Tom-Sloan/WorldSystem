@@ -450,7 +450,7 @@ mesh_update_message = {
     'timestamp_ns': 1234567890,
     'format': 'ply_compressed',
     'compression': 'draco',
-    'data': base64_encoded_ply,  # Or WebSocket URL
+    'data': base64_encoded_ply,  # Or RabbitMQ routing key
     'regions_updated': [1, 5, 7],  # Octree node IDs
     'vertex_count': 10000,
     'face_count': 20000

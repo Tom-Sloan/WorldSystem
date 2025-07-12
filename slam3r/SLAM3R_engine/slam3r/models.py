@@ -284,7 +284,7 @@ class Multiview3D(nn.Module, PyTorchModelHubMixin):
                           ref_poses:torch.Tensor, src_poses:torch.Tensor, 
                           ref_pes:torch.Tensor|None, src_pes:torch.Tensor|None):
         """exchange information between reference and source views in the decoder
-
+        
         About naming convention:
             reference views: views that define the coordinate system.
             source views: views that need to be transformed to the coordinate system of the reference views.
@@ -324,6 +324,10 @@ class Multiview3D(nn.Module, PyTorchModelHubMixin):
         for i in range(self.dec_depth):
             # (R, B, S, D),  (V-R, B, S, D)
             # add pointmap tokens if available(used in Local2WorldModel)
+            if i == 0 and src_pes is not None:
+                print(f"DEBUG: Decoder iteration {i}")
+                print(f"  final_srcs[-1] shape: {final_srcs[-1].shape}")
+                print(f"  src_pes shape: {src_pes.shape}")
             ref_inputs = final_refs[-1] + ref_pes if ref_pes is not None else final_refs[-1]
             src_inputs = final_srcs[-1] + src_pes if src_pes is not None else final_srcs[-1]
 

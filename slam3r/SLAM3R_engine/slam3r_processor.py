@@ -590,6 +590,27 @@ async def initialise_models_and_params():
     logger.info("Loading SLAM3R models on %s…", device)
     i2p_model = Image2PointsModel.from_pretrained("siyan824/slam3r_i2p").to(device).eval()
     l2w_model = Local2WorldModel.from_pretrained("siyan824/slam3r_l2w").to(device).eval()
+    
+    # Debug model architecture
+    logger.info("=== L2W Model Architecture Debug ===")
+    logger.info(f"L2W encoder embed dim: {l2w_model.enc_embed_dim if hasattr(l2w_model, 'enc_embed_dim') else 'Not found'}")
+    logger.info(f"L2W decoder embed dim: {l2w_model.dec_embed_dim if hasattr(l2w_model, 'dec_embed_dim') else 'Not found'}")
+    
+    # Check decoder blocks
+    if hasattr(l2w_model, 'mv_dec_blocks1') and len(l2w_model.mv_dec_blocks1) > 0:
+        first_block = l2w_model.mv_dec_blocks1[0]
+        if hasattr(first_block, 'cross_attn'):
+            cross_attn = first_block.cross_attn
+            logger.info(f"L2W cross attention num_heads: {cross_attn.num_heads if hasattr(cross_attn, 'num_heads') else 'Not found'}")
+            # Check projection dimensions
+            if hasattr(cross_attn, 'projq'):
+                projq = cross_attn.projq
+                logger.info(f"L2W projq input features: {projq.in_features if hasattr(projq, 'in_features') else 'Not found'}")
+                logger.info(f"L2W projq output features: {projq.out_features if hasattr(projq, 'out_features') else 'Not found'}")
+    
+    logger.info("=== I2P Model Architecture Debug ===")
+    logger.info(f"I2P encoder embed dim: {i2p_model.enc_embed_dim if hasattr(i2p_model, 'enc_embed_dim') else 'Not found'}")
+    logger.info(f"I2P decoder embed dim: {i2p_model.dec_embed_dim if hasattr(i2p_model, 'dec_embed_dim') else 'Not found'}")
 
     cfg = yaml.safe_load(Path(SLAM3R_CONFIG_FILE_PATH_IN_CONTAINER).read_text()) if Path(SLAM3R_CONFIG_FILE_PATH_IN_CONTAINER).exists() else {}
     rp, ka = cfg.get("recon_pipeline", {}), cfg.get("keyframe_adaptation", {})
@@ -746,39 +767,153 @@ def _perform_incremental_processing(view, record):
     if "img" not in ref_kf: ref_kf["img"] = ref_kf["img_tensor"].unsqueeze(0)
     record["img"] = record["img_tensor"].unsqueeze(0)
 
-    # I2P inference
-    window_pair = [
-        {k: ref_kf[k] for k in ("img", "img_tokens", "img_pos", "true_shape")},
-        {k: record[k] for k in ("img", "img_tokens", "img_pos", "true_shape")},
-    ]
-    pred = i2p_inference_batch([window_pair]*INFERENCE_WINDOW_BATCH, i2p_model, ref_id=0)["preds"][0]
-    record["pts3d_cam"], record["conf_cam"] = pred["pts3d"], pred["conf"]
+    # Build window for I2P inference (win_r=3 means 7 frames total)
+    # I2P was trained with 11 views, but we use a smaller window for real-time
+    win_r = slam_params.get("win_r", 3)
+    current_idx = len(processed_frames_history) - 1  # Current frame index
+    
+    # Find the center frame for the window (use last keyframe as center)
+    center_idx = keyframe_indices[-1]
+    
+    # Build window indices: center + win_r frames before/after
+    window_indices = [center_idx]
+    
+    # Add frames before center
+    for i in range(1, win_r + 1):
+        idx = center_idx - i
+        if idx >= 0:
+            window_indices.insert(0, idx)  # Insert at beginning to maintain order
+    
+    # Add frames after center (including current frame if within range)
+    for i in range(1, win_r + 1):
+        idx = center_idx + i
+        if idx <= current_idx:
+            window_indices.append(idx)
+    
+    # Build views for the window
+    window_views = []
+    for idx in window_indices:
+        if idx < len(processed_frames_history):
+            hist = processed_frames_history[idx]
+            view = {
+                "img": hist.get("img", hist["img_tensor"].unsqueeze(0)),
+                "true_shape": hist["true_shape"].unsqueeze(0) if hist["true_shape"].dim() == 1 else hist["true_shape"]
+            }
+            # Add tokens if available
+            if "img_tokens" in hist and "img_pos" in hist:
+                view["img_tokens"] = hist["img_tokens"]
+                view["img_pos"] = hist["img_pos"]
+            window_views.append(view)
+    
+    # If we have the current frame and it's not in the window, replace the last view
+    if current_idx not in window_indices and len(window_views) == len(window_indices):
+        window_views[-1] = {
+            "img": record["img"],
+            "img_tokens": record["img_tokens"],
+            "img_pos": record["img_pos"],
+            "true_shape": record["true_shape"]
+        }
+    
+    logger.info(f"I2P window: {len(window_views)} views, indices: {window_indices[:3]}...{window_indices[-3:] if len(window_indices) > 6 else window_indices[3:]}")
+    
+    # Find which view in the window corresponds to the current frame for I2P reference
+    if current_idx in window_indices:
+        ref_id = window_indices.index(current_idx)
+    else:
+        ref_id = len(window_views) - 1  # Use last view as reference
+    
+    # I2P inference with proper window
+    output = i2p_inference_batch([window_views]*INFERENCE_WINDOW_BATCH, i2p_model, ref_id=ref_id)
+    
+    # The output contains predictions for all views in the window
+    # We need the prediction for the current frame (which is at ref_id position)
+    pred = output["preds"][ref_id]
+    
+    # Check which key contains the point cloud (depends on if it's reference or not)
+    if "pts3d" in pred:
+        record["pts3d_cam"], record["conf_cam"] = pred["pts3d"], pred["conf"]
+    else:
+        # For non-reference views, I2P returns pts3d_in_other_view
+        record["pts3d_cam"], record["conf_cam"] = pred["pts3d_in_other_view"], pred["conf"]
 
     # Build candidate views for L2W inference
     cand_views = []
     for idx in keyframe_indices:
         hv = processed_frames_history[idx]
         if "pts3d_world" not in hv: continue
-        cand_views.append({k: _to_dev(hv[k]) for k in
-                           ("img_tokens", "img_pos", "true_shape", "pts3d_world")})
+        # Include img_tokens for L2W - models are designed to work together
+        # Ensure batch dimension is present (bootstrap stores with batch dim)
+        view_dict = {
+            "true_shape": _to_dev(hv["true_shape"]) if hv["true_shape"].dim() == 2 else _to_dev(hv["true_shape"]).unsqueeze(0),
+            "pts3d_world": _to_dev(hv["pts3d_world"]) if hv["pts3d_world"].dim() == 4 else _to_dev(hv["pts3d_world"]).unsqueeze(0),
+            "img_tokens": _to_dev(hv["img_tokens"]) if hv["img_tokens"].dim() == 4 else _to_dev(hv["img_tokens"]).unsqueeze(0),
+            "img_pos": _to_dev(hv["img_pos"]) if hv["img_pos"].dim() == 4 else _to_dev(hv["img_pos"]).unsqueeze(0)
+        }
+        cand_views.append(view_dict)
 
     if not cand_views:
         processed_frames_history.append(record)
         return None
 
-    # L2W inference
+    # L2W inference - include img_tokens
+    # Ensure batch dimension matches what scene_frame_retrieve expects
     src_view = {
-        "img_tokens": _to_dev(record["img_tokens"]),
-        "img_pos":    _to_dev(record["img_pos"]),
-        "true_shape": _to_dev(record["true_shape"]),
-        "pts3d_cam":  _to_dev(record["pts3d_cam"]),
+        "img_tokens": _to_dev(record["img_tokens"]) if record["img_tokens"].dim() == 4 else _to_dev(record["img_tokens"]).unsqueeze(0),
+        "img_pos": _to_dev(record["img_pos"]) if record["img_pos"].dim() == 4 else _to_dev(record["img_pos"]).unsqueeze(0),
+        "true_shape": _to_dev(record["true_shape"]) if record["true_shape"].dim() == 2 else _to_dev(record["true_shape"]).unsqueeze(0),
+        "pts3d_cam": _to_dev(record["pts3d_cam"]) if record["pts3d_cam"].dim() == 4 else _to_dev(record["pts3d_cam"]).unsqueeze(0),
     }
     ref_views, _ = slam3r_scene_frame_retrieve(
         cand_views, [src_view], i2p_model,
         sel_num=min(slam_params["num_scene_frame"], len(cand_views)))
-    l2w_out = l2w_inference(ref_views + [src_view], l2w_model,
-                            ref_ids=list(range(len(ref_views))),
-                            device=device, normalize=slam_params["norm_input_l2w"])[-1]
+    
+    # Debug: Check ref_views shapes after scene_frame_retrieve
+    for i, view in enumerate(ref_views):
+        logger.info(f"ref_view {i} img_tokens shape after retrieve: {view['img_tokens'].shape}")
+    
+    # Log L2W preparation details
+    logger.info(f"L2W preparation - selected {len(ref_views)} reference views from {len(keyframe_indices)} keyframes")
+    
+    # L2W can work with any number of reference views, though it was trained with 13 total
+    # Just like recon.py, we'll use whatever reference views are available
+    if len(ref_views) == 0:
+        logger.warning("No reference views available for L2W - using camera coordinates")
+        # Use camera points as world points temporarily
+        record["pts3d_world"] = record["pts3d_cam"]
+        record["conf_world"] = record["conf_cam"]
+        return record
+    
+    try:
+        # Follow the pattern from recon.py - L2W handles variable numbers of views
+        # No artificial batching or padding needed
+        l2w_input_views = ref_views + [src_view]
+        logger.info(f"L2W inference with {len(ref_views)} reference views + 1 source view")
+        
+        # Debug: Check tensor shapes
+        for i, view in enumerate(l2w_input_views):
+            if 'img_tokens' in view:
+                logger.info(f"View {i} img_tokens shape: {view['img_tokens'].shape}")
+            if 'true_shape' in view:
+                logger.info(f"View {i} true_shape shape: {view['true_shape'].shape if hasattr(view['true_shape'], 'shape') else view['true_shape']}")
+            if 'pts3d_world' in view:
+                logger.info(f"View {i} pts3d_world shape: {view['pts3d_world'].shape if 'pts3d_world' in view else 'N/A'}")
+            if 'pts3d_cam' in view:
+                logger.info(f"View {i} pts3d_cam shape: {view['pts3d_cam'].shape if 'pts3d_cam' in view else 'N/A'}")
+        
+        # Call L2W inference exactly like in recon.py
+        # ref_ids are the indices of reference views (all except the last one which is source)
+        output = l2w_inference(l2w_input_views, l2w_model,
+                               ref_ids=list(range(len(ref_views))),
+                               device=device,
+                               normalize=slam_params["norm_input_l2w"])
+        
+        # Get the result for the source view (last in the output list)
+        l2w_out = output[-1]
+    except RuntimeError as e:
+        logger.error(f"L2W inference error: {e}")
+        logger.error(f"Total views passed to L2W: {len(ref_views) + 1}")
+        logger.error(f"ref_ids: {list(range(len(ref_views)))}")
+        raise
     record["pts3d_world"], record["conf_world"] = l2w_out["pts3d_in_other_view"], l2w_out["conf"]
     
     return record
@@ -1039,7 +1174,7 @@ async def process_image_with_slam3r(img_bgr: np.ndarray, ts_ns: int):
     processed_frames_history.append(record)
 
     # ---------- keyframe selection ----------
-    keyframe_id_out, scene_type = await _update_scene_and_keyframe_logic(pose_matrix, record_index)
+    keyframe_id_out, _ = await _update_scene_and_keyframe_logic(pose_matrix, record_index)
 
     # ---------- Rerun logging ----------
     _log_to_rerun(pose_matrix, temp_world_pts, keyframe_id_out, img_rgb_u8)

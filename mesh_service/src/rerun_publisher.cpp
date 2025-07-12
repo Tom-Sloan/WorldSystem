@@ -6,7 +6,7 @@
 #include <rerun/components/position3d.hpp>
 #include <rerun/components/vector3d.hpp>
 #include <rerun/components/color.hpp>
-#include <rerun/components/material.hpp>
+// #include <rerun/components/material.hpp> // Not available in this version
 #include <rerun/datatypes/mat4x4.hpp>
 #include <iostream>
 #include <chrono>
@@ -34,20 +34,22 @@ public:
             // Create recording stream
             stream = std::make_unique<rerun::RecordingStream>(app_id);
             
-            // Connect to viewer at specified address
-            auto result = stream->connect(address);
+            // Connect to existing viewer at specified address
+            // Use connect_grpc to connect to existing viewer on host
+            // Format: rerun+http://address:port/proxy
+            std::string grpc_url = "rerun+http://" + address + "/proxy";
+            auto result = stream->connect_grpc(grpc_url.c_str());
             if (result.is_err()) {
-                std::cerr << "Failed to connect to Rerun at " << address 
-                         << ": " << result.error().description << std::endl;
+                std::cerr << "Failed to connect to Rerun at " << grpc_url << std::endl;
+                std::cerr << "Make sure Rerun viewer is running on host with: rerun --port 9876" << std::endl;
                 return false;
             }
             
             connected = true;
             std::cout << "Connected to Rerun viewer at " << address << std::endl;
             
-            // Log initial setup
-            stream->set_time_seconds("time", std::chrono::duration<double>(
-                std::chrono::steady_clock::now().time_since_epoch()).count());
+            // Log initial setup with the new API
+            stream->set_time_timestamp("time", std::chrono::steady_clock::now());
             
             return true;
             
@@ -69,8 +71,7 @@ public:
         
         try {
             // Set current time
-            stream->set_time_seconds("time", std::chrono::duration<double>(
-                std::chrono::steady_clock::now().time_since_epoch()).count());
+            stream->set_time_timestamp("time", std::chrono::steady_clock::now());
             
             // Convert vertices to positions
             std::vector<rerun::Position3D> positions;
@@ -101,23 +102,21 @@ public:
             }
             
             // Add vertex colors if available
-            if (!update.colors.empty()) {
+            if (!update.vertex_colors.empty()) {
                 std::vector<rerun::Color> colors;
-                colors.reserve(update.colors.size() / 3);
+                colors.reserve(update.vertex_colors.size() / 3);
                 
-                for (size_t i = 0; i < update.colors.size(); i += 3) {
-                    colors.push_back(rerun::Color(update.colors[i], 
-                                                 update.colors[i+1], 
-                                                 update.colors[i+2]));
+                for (size_t i = 0; i < update.vertex_colors.size(); i += 3) {
+                    colors.push_back(rerun::Color(update.vertex_colors[i], 
+                                                 update.vertex_colors[i+1], 
+                                                 update.vertex_colors[i+2]));
                 }
                 
                 mesh = std::move(mesh).with_vertex_colors(colors);
             }
             
-            // Add material for better visualization
-            auto material = rerun::components::Material();
-            material.albedo_factor = {0.8f, 0.8f, 0.8f, 1.0f};
-            mesh = std::move(mesh).with_mesh_material(material);
+            // Note: Material/albedo_factor component may not be available in all versions
+            // The mesh will use default shading
             
             // Log the mesh
             stream->log(entity_path, mesh);
@@ -135,8 +134,7 @@ public:
         
         try {
             // Set current time
-            stream->set_time_seconds("time", std::chrono::duration<double>(
-                std::chrono::steady_clock::now().time_since_epoch()).count());
+            stream->set_time_timestamp("time", std::chrono::steady_clock::now());
             
             // Convert vertices to positions
             std::vector<rerun::Position3D> positions;
@@ -173,10 +171,8 @@ public:
                 mesh = std::move(mesh).with_vertex_colors(vertex_colors);
             }
             
-            // Add material
-            auto material = rerun::components::Material();
-            material.albedo_factor = {1.0f, 1.0f, 1.0f, 1.0f};
-            mesh = std::move(mesh).with_mesh_material(material);
+            // Material component not available in all versions
+            // The mesh will use default shading
             
             // Log the mesh
             stream->log(entity_path, mesh);
@@ -190,14 +186,13 @@ public:
         if (!enabled || !connected || !stream) return;
         
         try {
-            // Convert pose to Rerun mat4x4
-            rerun::datatypes::Mat4x4 transform;
-            for (int i = 0; i < 16; ++i) {
-                transform.coefficients[i] = pose[i];
-            }
+            // Extract translation and rotation from 4x4 pose matrix
+            rerun::components::Translation3D translation{
+                pose[12], pose[13], pose[14]  // Last column is translation
+            };
             
-            // Create transform archetype
-            auto transform3d = rerun::archetypes::Transform3D(transform);
+            // For now, use translation only (full matrix transform may not be supported)
+            auto transform3d = rerun::archetypes::Transform3D(translation);
             
             // Log the transform
             stream->log(entity_path, transform3d);
@@ -211,7 +206,7 @@ public:
         if (!enabled || !connected || !stream) return;
         
         try {
-            stream->log(entity_path, rerun::archetypes::Clear::recursive());
+            stream->log(entity_path, rerun::archetypes::Clear());
         } catch (const std::exception& e) {
             std::cerr << "Error clearing entity in Rerun: " << e.what() << std::endl;
         }

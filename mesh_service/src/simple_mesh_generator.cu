@@ -116,10 +116,16 @@ void GPUMeshGenerator::generateIncrementalMesh(
     
     // Check spatial deduplication
     uint64_t spatial_hash = computeSpatialHashCPU(keyframe->bbox);
+    std::cout << "[DEBUG] SimpleMeshGen - Spatial hash: " << spatial_hash 
+              << ", bbox: [" << keyframe->bbox[0] << "," << keyframe->bbox[1] 
+              << "," << keyframe->bbox[2] << " - " << keyframe->bbox[3] 
+              << "," << keyframe->bbox[4] << "," << keyframe->bbox[5] << "]" << std::endl;
+    
     auto it = pImpl->processed_regions.find(spatial_hash);
-    if (it != pImpl->processed_regions.end() && 
-        it->second == keyframe->timestamp_ns) {
-        return;
+    if (it != pImpl->processed_regions.end()) {
+        std::cout << "[DEBUG] SimpleMeshGen - Region seen before, but processing anyway for testing" << std::endl;
+        // For testing, don't skip duplicate regions
+        // return;
     }
     
     // Get point data

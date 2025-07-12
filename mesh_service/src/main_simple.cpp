@@ -10,7 +10,6 @@
 #include "mesh_generator.h"
 #include "rabbitmq_consumer.h"
 #include "metrics.h"
-#include "rerun_publisher.h"
 
 std::atomic<bool> g_running{true};
 
@@ -23,6 +22,7 @@ int main(int argc, char* argv[]) {
     // Suppress unused parameter warnings
     (void)argc;
     (void)argv;
+    
     // Set up signal handlers
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
@@ -34,12 +34,6 @@ int main(int argc, char* argv[]) {
         const char* rabbitmq_url_env = std::getenv("RABBITMQ_URL");
         std::string rabbitmq_url = rabbitmq_url_env ? rabbitmq_url_env : "amqp://127.0.0.1:5672";
         
-        const char* rerun_address_env = std::getenv("RERUN_VIEWER_ADDRESS");
-        std::string rerun_address = rerun_address_env ? rerun_address_env : "127.0.0.1:9876";
-        
-        const char* rerun_enabled_env = std::getenv("RERUN_ENABLED");
-        bool rerun_enabled = rerun_enabled_env ? (std::string(rerun_enabled_env) == "true") : true;
-        
         const char* metrics_port_env = std::getenv("METRICS_PORT");
         int metrics_port = metrics_port_env ? std::atoi(metrics_port_env) : 9091;
         
@@ -50,23 +44,11 @@ int main(int argc, char* argv[]) {
         auto shared_memory = std::make_shared<mesh_service::SharedMemoryManager>();
         auto mesh_generator = std::make_shared<mesh_service::GPUMeshGenerator>();
         auto rabbitmq_consumer = std::make_shared<mesh_service::RabbitMQConsumer>(rabbitmq_url);
-        auto rerun_publisher = std::make_shared<mesh_service::RerunPublisher>("mesh_service", rerun_address, rerun_enabled);
         
         // Configure mesh generator
         mesh_generator->setMethod(mesh_service::MeshMethod::INCREMENTAL_POISSON);
         mesh_generator->setQualityAdaptive(true);
         mesh_generator->setSimplificationRatio(0.1f);
-        
-        // Connect to Rerun
-        if (rerun_enabled) {
-            if (rerun_publisher->connect()) {
-                std::cout << "Connected to Rerun viewer at " << rerun_address << std::endl;
-            } else {
-                std::cerr << "Failed to connect to Rerun viewer" << std::endl;
-                rerun_enabled = false;
-                rerun_publisher->setEnabled(false);
-            }
-        }
         
         // Statistics
         int frame_count = 0;
@@ -82,19 +64,14 @@ int main(int argc, char* argv[]) {
                          << " via RabbitMQ, shm_key: " << msg.shm_key << std::endl;
                 
                 // Open shared memory segment
-                std::cout << "[DEBUG] Opening shared memory segment: " << msg.shm_key << std::endl;
                 auto* keyframe = shared_memory->open_keyframe(msg.shm_key);
                 
                 if (keyframe) {
-                    std::cout << "[DEBUG] Successfully opened shared memory" << std::endl;
                     std::cout << "Processing keyframe with " << keyframe->point_count << " points" << std::endl;
                     
                     // Generate mesh
-                    std::cout << "[DEBUG] Creating MeshUpdate object" << std::endl;
                     mesh_service::MeshUpdate update;
-                    std::cout << "[DEBUG] Calling generateIncrementalMesh" << std::endl;
                     mesh_generator->generateIncrementalMesh(keyframe, update);
-                    std::cout << "[DEBUG] Mesh generation complete" << std::endl;
                     
                     auto process_end = std::chrono::steady_clock::now();
                     auto process_time = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -106,71 +83,18 @@ int main(int argc, char* argv[]) {
                              << " in " << process_time << "ms" << std::endl;
                     
                     // Record metrics
-                    std::cout << "[DEBUG] Recording metrics" << std::endl;
                     mesh_service::Metrics::instance().recordMeshGeneration(
                         update.vertices.size() / 3, 
                         update.faces.size() / 3
                     );
                     mesh_service::Metrics::instance().recordProcessingTime(process_time / 1000.0);
                     
-                    // Send mesh to Rerun
-                    std::cout << "[DEBUG] Checking Rerun: enabled=" << rerun_enabled 
-                             << ", connected=" << (rerun_publisher ? rerun_publisher->isConnected() : false) << std::endl;
-                    if (rerun_enabled && rerun_publisher->isConnected()) {
-                        // Extract vertex colors from the keyframe if available
-                        std::cout << "[DEBUG] Keyframe has colors: " << (keyframe->colors != nullptr) 
-                                 << ", vertices count: " << update.vertices.size() << std::endl;
-                        if (keyframe->colors && update.vertices.size() > 0) {
-                            // Colors are in the keyframe data
-                            std::cout << "[DEBUG] Extracting colors for " << keyframe->point_count << " points" << std::endl;
-                            
-                            // Get colors pointer from shared memory
-                            uint8_t* shm_colors = shared_memory->get_colors(keyframe);
-                            if (!shm_colors) {
-                                std::cerr << "[DEBUG] Failed to get colors pointer from shared memory" << std::endl;
-                            } else {
-                                std::vector<uint8_t> colors;
-                                colors.reserve(keyframe->point_count * 3);
-                                for (uint32_t i = 0; i < keyframe->point_count * 3; i++) {
-                                    colors.push_back(shm_colors[i]);
-                                }
-                                std::cout << "[DEBUG] Color extraction complete, size: " << colors.size() << std::endl;
-                                
-                                // Publish colored mesh
-                                std::cout << "[DEBUG] Publishing colored mesh to Rerun" << std::endl;
-                                rerun_publisher->publishColoredMesh(
-                                    update.vertices, 
-                                    update.faces, 
-                                    colors,
-                                    "/mesh_service/reconstruction"
-                                );
-                                std::cout << "[DEBUG] Colored mesh published" << std::endl;
-                            }
-                        } else {
-                            // Publish mesh without colors
-                            std::cout << "[DEBUG] Publishing mesh without colors to Rerun" << std::endl;
-                            rerun_publisher->publishMesh(update, "/mesh_service/reconstruction");
-                            std::cout << "[DEBUG] Mesh published" << std::endl;
-                        }
-                        
-                        // Also log camera pose if available
-                        if (keyframe->pose_matrix[0] != 0.0f) {  // Check if pose is valid
-                            std::cout << "[DEBUG] Logging camera pose" << std::endl;
-                            rerun_publisher->logCameraPose(keyframe->pose_matrix, "/mesh_service/camera");
-                            std::cout << "[DEBUG] Camera pose logged" << std::endl;
-                        }
-                    }
-                    
                     // Close shared memory
-                    std::cout << "[DEBUG] Closing shared memory" << std::endl;
                     shared_memory->close_keyframe(keyframe);
-                    std::cout << "[DEBUG] Shared memory closed" << std::endl;
                     
                     // Optionally unlink the shared memory segment
                     if (unlink_shm) {
-                        std::cout << "[DEBUG] Unlinking shared memory: " << msg.shm_key << std::endl;
                         shared_memory->unlink_keyframe(msg.shm_key);
-                        std::cout << "[DEBUG] Shared memory unlinked" << std::endl;
                     }
                     
                     // Log FPS periodically

@@ -159,10 +159,11 @@ public:
                 std::cout << "Queue " << name << " declared successfully. "
                          << "Messages: " << messageCount << ", Consumers: " << consumerCount << std::endl;
                 
-                // Bind to exchange
-                channel->bindQueue(exchange_name, queue_name, "")
+                // Bind to exchange with routing key pattern
+                // Using "#" to match all routing keys, or "keyframe.*" for specific pattern
+                channel->bindQueue(exchange_name, queue_name, "#")
                     .onSuccess([this]() {
-                        std::cout << "Queue bound to exchange " << exchange_name << std::endl;
+                        std::cout << "Queue bound to exchange " << exchange_name << " with routing key '#'" << std::endl;
                         startConsuming();
                     })
                     .onError([](const char* message) {
@@ -178,9 +179,9 @@ public:
         // Set prefetch count for flow control
         channel->setQos(1);
         
-        // Start consuming
-        channel->consume(queue_name, AMQP::noack)
-            .onReceived([this](const AMQP::Message& message, uint64_t deliveryTag, bool redelivered) {
+        // Start consuming (without auto-ack so we can manually acknowledge)
+        channel->consume(queue_name)
+            .onReceived([this](const AMQP::Message& message, uint64_t deliveryTag, bool /*redelivered*/) {
                 handleMessage(message, deliveryTag);
             })
             .onSuccess([](const std::string& consumertag) {
@@ -198,39 +199,79 @@ public:
             // Get message body
             std::string body(message.body(), message.bodySize());
             
+            // Debug: Print message size
+            std::cout << "Received message, size: " << body.size() << " bytes" << std::endl;
+            
             // Deserialize with msgpack
             msgpack::object_handle oh = msgpack::unpack(body.data(), body.size());
             msgpack::object obj = oh.get();
+            
+            // Debug: Print object type
+            std::cout << "Message type: " << obj.type << std::endl;
             
             // Parse message into KeyframeMessage
             KeyframeMessage msg;
             
             // Extract fields from msgpack map
             if (obj.type == msgpack::type::MAP) {
-                std::map<std::string, msgpack::object> map;
-                obj.convert(map);
-                
-                // Extract required fields
-                if (map.find("shm_key") != map.end()) {
-                    map["shm_key"].convert(msg.shm_key);
-                }
-                if (map.find("keyframe_id") != map.end()) {
-                    map["keyframe_id"].convert(msg.keyframe_id);
-                }
-                if (map.find("timestamp") != map.end()) {
-                    uint64_t timestamp_ms;
-                    map["timestamp"].convert(timestamp_ms);
-                    msg.timestamp_ns = timestamp_ms * 1000000; // Convert ms to ns
-                }
-                if (map.find("type") != map.end()) {
-                    map["type"].convert(msg.type);
-                } else {
-                    msg.type = "keyframe_update";
-                }
-                
-                // Optional fields
-                if (map.find("point_count") != map.end()) {
-                    map["point_count"].convert(msg.point_count);
+                try {
+                    // Try to iterate through the map directly without converting
+                    std::cout << "Iterating through msgpack map:" << std::endl;
+                    
+                    if (obj.via.map.size > 0) {
+                        for (uint32_t i = 0; i < obj.via.map.size; ++i) {
+                            // Get key and value
+                            auto& kv = obj.via.map.ptr[i];
+                            
+                            // Try to get key as string
+                            if (kv.key.type == msgpack::type::STR) {
+                                std::string key(kv.key.via.str.ptr, kv.key.via.str.size);
+                                std::cout << "  Key: " << key << ", Value type: " << kv.val.type << std::endl;
+                                
+                                // Handle each field
+                                if (key == "shm_key" && kv.val.type == msgpack::type::STR) {
+                                    msg.shm_key = std::string(kv.val.via.str.ptr, kv.val.via.str.size);
+                                }
+                                else if (key == "keyframe_id" && kv.val.type == msgpack::type::STR) {
+                                    msg.keyframe_id = std::string(kv.val.via.str.ptr, kv.val.via.str.size);
+                                }
+                                else if (key == "timestamp") {
+                                    // Handle both float and int types
+                                    // msgpack object types: FLOAT (4), POSITIVE_INTEGER (1), NEGATIVE_INTEGER (2)
+                                    if (kv.val.type == msgpack::type::FLOAT) {
+                                        double timestamp_ms = kv.val.via.f64;
+                                        msg.timestamp_ns = static_cast<uint64_t>(timestamp_ms * 1000000);
+                                    } else if (kv.val.type == msgpack::type::POSITIVE_INTEGER) {
+                                        uint64_t timestamp_ms = kv.val.via.u64;
+                                        msg.timestamp_ns = timestamp_ms * 1000000;
+                                    }
+                                    std::cout << "    Timestamp type: " << kv.val.type << ", value: " << msg.timestamp_ns << std::endl;
+                                }
+                                else if (key == "type" && kv.val.type == msgpack::type::STR) {
+                                    msg.type = std::string(kv.val.via.str.ptr, kv.val.via.str.size);
+                                }
+                                else if (key == "point_count" && kv.val.type == msgpack::type::POSITIVE_INTEGER) {
+                                    msg.point_count = kv.val.via.u64;
+                                }
+                            } else {
+                                std::cout << "  Key type: " << kv.key.type << " (not string)" << std::endl;
+                            }
+                        }
+                    }
+                    
+                    // Set default type if not provided
+                    if (msg.type.empty()) {
+                        msg.type = "keyframe_update";
+                    }
+                    
+                    std::cout << "Parsed message - shm_key: " << msg.shm_key 
+                             << ", keyframe_id: " << msg.keyframe_id
+                             << ", type: " << msg.type
+                             << ", point_count: " << msg.point_count << std::endl;
+                    
+                } catch (const std::exception& e) {
+                    std::cerr << "Error parsing msgpack fields: " << e.what() << std::endl;
+                    throw;
                 }
                 
                 // Notify handler

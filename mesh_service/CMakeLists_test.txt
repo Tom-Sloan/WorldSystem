@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.14)
 project(mesh_service LANGUAGES CXX CUDA)
 
 # C++ standard
@@ -17,13 +17,6 @@ find_package(Boost REQUIRED COMPONENTS system thread)
 find_package(Eigen3 REQUIRED)
 find_package(CGAL REQUIRED)
 find_package(OpenMP)
-# msgpack is header-only, no find_package needed
-
-# Find or fetch Rerun SDK
-include(FetchContent)
-FetchContent_Declare(rerun_sdk URL
-    https://github.com/rerun-io/rerun/releases/latest/download/rerun_cpp_sdk.zip)
-FetchContent_MakeAvailable(rerun_sdk)
 
 # Include directories
 include_directories(
@@ -34,27 +27,19 @@ include_directories(
     /usr/local/include
 )
 
-# Source files
+# Source files (simplified)
 set(SOURCES
-    src/main.cpp  # Full version with Rerun
+    src/main_test.cpp
     src/simple_mesh_generator.cu
     src/shared_memory.cpp
     src/rabbitmq_consumer.cpp
     src/metrics.cpp
-    src/rerun_publisher.cpp
-    # Temporarily disabled for build
-    # src/websocket_server.cpp
-    # src/mesh_generator.cu
-    # src/poisson_reconstruction.cpp
-    # src/marching_cubes.cu
-    # src/normal_estimation.cu
-    # src/marching_cubes_tables.cu
 )
 
 # Create executable
 add_executable(mesh_service ${SOURCES})
 
-# Set CUDA architectures (RTX 3090 is compute capability 8.6)
+# Set CUDA architectures
 set_property(TARGET mesh_service PROPERTY CUDA_ARCHITECTURES 60 70 75 80 86)
 
 # Compile options
@@ -64,7 +49,7 @@ target_compile_options(mesh_service PRIVATE
 )
 
 # Link libraries
-target_link_libraries(mesh_service PRIVATE
+target_link_libraries(mesh_service
     ${CMAKE_THREAD_LIBS_INIT}
     ${Boost_LIBRARIES}
     ${CUDA_LIBRARIES}
@@ -75,13 +60,12 @@ target_link_libraries(mesh_service PRIVATE
     rt
     amqpcpp
     ev
-    # msgpackc  # Using header-only version
-    rerun_sdk
+    msgpackc
 )
 
 # OpenMP support
 if(OpenMP_CXX_FOUND)
-    target_link_libraries(mesh_service PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(mesh_service OpenMP::OpenMP_CXX)
 endif()
 
 # Install target

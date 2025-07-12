@@ -14,6 +14,8 @@ Carefully review the slam3r project, and the mesh_service project.
 
 We are now going through the mesh_service project to remove all todos and placeholders.
 
+**READ THROUGH ENTIRE LAST COMMIT**
+
 <FILES>
 /home/sam3/Desktop/Toms_Workspace/WorldSystem/docker-compose.yml
 /home/sam3/Desktop/Toms_Workspace/WorldSystem/slam3r/SLAM3R_engine/streaming_slam3r.py

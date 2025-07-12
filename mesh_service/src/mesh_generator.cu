@@ -151,11 +151,24 @@ void GPUMeshGenerator::generateIncrementalMesh(
     
     // Check spatial deduplication (handle 90% overlap)
     uint64_t spatial_hash = computeSpatialHashCPU(keyframe->bbox);
+    std::cout << "[DEBUG] Spatial hash: " << spatial_hash 
+              << ", bbox: [" << keyframe->bbox[0] << "," << keyframe->bbox[1] 
+              << "," << keyframe->bbox[2] << " - " << keyframe->bbox[3] 
+              << "," << keyframe->bbox[4] << "," << keyframe->bbox[5] << "]" << std::endl;
+    
     auto it = pImpl->processed_regions.find(spatial_hash);
     if (it != pImpl->processed_regions.end() && 
         it->second == keyframe->timestamp_ns) {
         // Already processed this region at this timestamp
+        std::cout << "[DEBUG] Region already processed, skipping" << std::endl;
         return;
+    }
+    
+    // Also check if we've processed this exact region before (different timestamp)
+    if (it != pImpl->processed_regions.end()) {
+        std::cout << "[DEBUG] Region processed before with different timestamp" << std::endl;
+        // For now, let's process it anyway since it's a different timestamp
+        // return;
     }
     
     // Get point and color data

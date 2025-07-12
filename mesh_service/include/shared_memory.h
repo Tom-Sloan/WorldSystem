@@ -10,13 +10,17 @@ namespace mesh_service {
 struct SharedKeyframe {
     uint64_t timestamp_ns;
     uint32_t point_count;
-    uint32_t color_format;  // 0=RGB, 1=RGBA
+    uint32_t color_channels;  // 3=RGB, 4=RGBA
     float pose_matrix[16];  // Row-major 4x4
     float bbox[6];          // min_x, min_y, min_z, max_x, max_y, max_z
     
     // Variable length data follows in memory:
     // float points[point_count * 3];
-    // uint8_t colors[point_count * 3 or 4];
+    // uint8_t colors[point_count * color_channels];
+    
+    // Convenience pointers (set by SharedMemoryManager)
+    float* points = nullptr;
+    uint8_t* colors = nullptr;
 };
 
 class SharedMemoryManager {

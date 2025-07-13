@@ -3,4 +3,4 @@
 
 export BRANCH_NAME=$(git branch --show-current)
 echo "Starting services with branch name: $BRANCH_NAME"
-docker-compose up "$@"
+docker compose up "$@"

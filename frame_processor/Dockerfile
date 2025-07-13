@@ -13,7 +13,7 @@ RUN pip3 install ultralytics numpy opencv-python-headless pika ntplib rerun-sdk=
 
 # Copy and install shared package
 COPY shared /tmp/shared
-RUN pip3 install -e /tmp/shared
+RUN cd /tmp/shared && pip3 install .
 
 WORKDIR /app
 COPY frame_processor/frame_processor.py /app/frame_processor.py

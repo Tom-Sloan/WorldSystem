@@ -6,6 +6,7 @@ from .rabbitmq_config import (
     EXCHANGES,
     ROUTING_KEYS,
     declare_exchanges,
+    declare_exchanges_sync,
     get_exchange_config
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     'EXCHANGES',
     'ROUTING_KEYS', 
     'declare_exchanges',
+    'declare_exchanges_sync',
     'get_exchange_config'
 ]

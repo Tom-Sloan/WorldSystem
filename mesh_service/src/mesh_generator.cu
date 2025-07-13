@@ -1,7 +1,16 @@
+// TSDF-Only Mode
+// This file has been simplified to use only TSDF with Marching Cubes
+// for optimal real-time performance in indoor drone mapping.
+// To re-enable Poisson/NKSR algorithms, see FUTURE_ALGORITHMS.md
+
 #include "mesh_generator.h"
-#include "poisson_reconstruction.h"
+// FUTURE: Uncomment these includes for multi-algorithm support
+// #include "poisson_reconstruction.h"
+// #include "gpu_poisson_reconstruction.h"
+// #include "nksr_reconstruction.h"
 #include "marching_cubes.h"
 #include "normal_estimation.h"
+#include "gpu_octree.h"
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <iostream>
@@ -41,14 +50,51 @@ public:
     float prev_camera_pos[3] = {0, 0, 0};
     
     // Mesh generation components
-    std::unique_ptr<PoissonReconstruction> poisson;
-    std::unique_ptr<IncrementalPoissonReconstruction> incremental_poisson;
-    std::unique_ptr<MarchingCubesGPU> marching_cubes;
+    // FUTURE: Uncomment these for Poisson/NKSR support
+    // std::unique_ptr<PoissonReconstruction> poisson;
+    // std::unique_ptr<IncrementalPoissonReconstruction> incremental_poisson;
+    // std::unique_ptr<GPUPoissonReconstruction> gpu_poisson;  // New GPU implementation
+    // std::unique_ptr<NKSRReconstruction> nksr;  // Neural Kernel Surface Reconstruction
+    // std::unique_ptr<MarchingCubesGPU> marching_cubes;
     std::unique_ptr<IncrementalTSDFFusion> tsdf_fusion;
     std::unique_ptr<NormalEstimation> normal_estimator;
+    std::unique_ptr<GPUOctree> gpu_octree;  // GPU octree for spatial indexing
     
     // Device memory for normals
     thrust::device_vector<float3> d_normals;
+    
+    // Memory pool management
+    struct MemoryBlock {
+        void* ptr;
+        size_t size;
+        bool in_use;
+    };
+    std::vector<MemoryBlock> memory_blocks;
+    
+    // Multi-stream synchronization
+    cudaEvent_t stream_events[5];
+    
+    // Helper functions for environment variables
+    static float getEnvFloat(const char* name, float default_val) {
+        const char* val = std::getenv(name);
+        return val ? std::stof(val) : default_val;
+    }
+    
+    static int getEnvInt(const char* name, int default_val) {
+        const char* val = std::getenv(name);
+        return val ? std::stoi(val) : default_val;
+    }
+    
+    static float3 getEnvFloat3(const char* name, float3 default_val) {
+        const char* val = std::getenv(name);
+        if (!val) return default_val;
+        
+        float x, y, z;
+        if (sscanf(val, "%f,%f,%f", &x, &y, &z) == 3) {
+            return make_float3(x, y, z);
+        }
+        return default_val;
+    }
     
     Impl() {
         // Create CUDA streams
@@ -61,11 +107,20 @@ public:
         cudaMalloc(&d_memory_pool, memory_pool_size);
         
         // Initialize mesh generation components
-        poisson = std::make_unique<PoissonReconstruction>();
-        incremental_poisson = std::make_unique<IncrementalPoissonReconstruction>();
-        marching_cubes = std::make_unique<MarchingCubesGPU>();
+        // FUTURE: Uncomment these for Poisson/NKSR support
+        // poisson = std::make_unique<PoissonReconstruction>();
+        // incremental_poisson = std::make_unique<IncrementalPoissonReconstruction>();
+        // gpu_poisson = std::make_unique<GPUPoissonReconstruction>();  // GPU Poisson
+        // nksr = std::make_unique<NKSRReconstruction>();  // NKSR
+        // marching_cubes = std::make_unique<MarchingCubesGPU>();
         tsdf_fusion = std::make_unique<IncrementalTSDFFusion>();
         normal_estimator = std::make_unique<NormalEstimation>();
+        gpu_octree = std::make_unique<GPUOctree>(10.0f, 8, 64);  // 10m scene, depth 8
+        
+        // Create stream events for synchronization
+        for (int i = 0; i < 5; i++) {
+            cudaEventCreate(&stream_events[i]);
+        }
         
         // Configure components
         PoissonReconstruction::Parameters poisson_params;
@@ -83,20 +138,70 @@ public:
         normal_params.k_neighbors = 30;
         normal_estimator->setParameters(normal_params);
         
-        // Initialize incremental systems
-        incremental_poisson->initialize(10.0f, 8);  // 10m scene, 8x8x8 grid
-        tsdf_fusion->setVoxelSize(0.05f);
+        // Configure TSDF from environment variables
+        float voxel_size = getEnvFloat("TSDF_VOXEL_SIZE", 0.04f);
+        float truncation_dist = getEnvFloat("TSDF_TRUNCATION_DISTANCE", 0.12f);
+        float max_weight = getEnvFloat("TSDF_MAX_WEIGHT", 100.0f);
+        int block_size = getEnvInt("TSDF_BLOCK_SIZE", 8);
+        
+        tsdf_fusion->setVoxelSize(voxel_size);
+        
+        std::cout << "TSDF Configuration from environment:" << std::endl;
+        std::cout << "  Voxel size: " << voxel_size << "m" << std::endl;
+        std::cout << "  Truncation distance: " << truncation_dist << "m" << std::endl;
+        std::cout << "  Max weight: " << max_weight << std::endl;
+        std::cout << "  Block size: " << block_size << std::endl;
+        
+        // FUTURE: Uncomment for Poisson/NKSR configuration
+        // incremental_poisson->initialize(10.0f, 8);
+        // gpu_poisson->initialize(10.0f, 8);
+        // GPUPoissonReconstruction::Parameters gpu_poisson_params;
+        // ...
+        // NKSRReconstruction::Parameters nksr_params;
+        // ...
+        
+        // Initialize memory pool blocks
+        size_t block_size = 64 * 1024 * 1024;  // 64MB blocks
+        size_t num_blocks = memory_pool_size / block_size;
+        for (size_t i = 0; i < num_blocks; i++) {
+            MemoryBlock block;
+            block.ptr = (char*)d_memory_pool + i * block_size;
+            block.size = block_size;
+            block.in_use = false;
+            memory_blocks.push_back(block);
+        }
     }
     
     ~Impl() {
-        // Destroy streams
+        // Destroy streams and events
         for (int i = 0; i < 5; i++) {
             cudaStreamDestroy(streams[i]);
+            cudaEventDestroy(stream_events[i]);
         }
         
         // Free memory pool
         if (d_memory_pool) {
             cudaFree(d_memory_pool);
+        }
+    }
+    
+    // Memory pool allocation
+    void* allocateFromPool(size_t size) {
+        for (auto& block : memory_blocks) {
+            if (!block.in_use && block.size >= size) {
+                block.in_use = true;
+                return block.ptr;
+            }
+        }
+        return nullptr;
+    }
+    
+    void releaseToPool(void* ptr) {
+        for (auto& block : memory_blocks) {
+            if (block.ptr == ptr) {
+                block.in_use = false;
+                break;
+            }
         }
     }
 };
@@ -105,7 +210,11 @@ GPUMeshGenerator::GPUMeshGenerator() : pImpl(std::make_unique<Impl>()) {}
 GPUMeshGenerator::~GPUMeshGenerator() = default;
 
 void GPUMeshGenerator::setMethod(MeshMethod method) {
-    pImpl->method = method;
+    // TSDF-only mode - ignore method changes
+    pImpl->method = MeshMethod::TSDF_MARCHING_CUBES;
+    if (method != MeshMethod::TSDF_MARCHING_CUBES) {
+        std::cout << "[INFO] Mesh service is configured for TSDF-only mode. Ignoring method change request." << std::endl;
+    }
 }
 
 void GPUMeshGenerator::setQualityAdaptive(bool adaptive) {
@@ -140,55 +249,55 @@ void GPUMeshGenerator::generateIncrementalMesh(
     // Update camera velocity
     updateCameraVelocity(keyframe->pose_matrix);
     
-    // Adaptive method selection based on camera motion
-    if (pImpl->quality_adaptive) {
-        if (pImpl->camera_velocity > 0.5f) {
-            pImpl->method = MeshMethod::TSDF_MARCHING_CUBES;  // Fast for motion
-        } else {
-            pImpl->method = MeshMethod::INCREMENTAL_POISSON;  // Quality when static
-        }
+    // TSDF-only mode - no adaptive switching
+    pImpl->method = MeshMethod::TSDF_MARCHING_CUBES;
+    
+    // Check spatial deduplication with GPU octree (handle 90% overlap)
+    bool has_overlap = pImpl->gpu_octree->checkRegionOverlap(keyframe->bbox, 0.9f);
+    if (has_overlap && pImpl->camera_velocity < 0.1f) {
+        // Skip if significant overlap and camera is not moving much
+        std::cout << "[DEBUG] Region has 90% overlap with existing data, skipping" << std::endl;
+        return;
     }
     
-    // Check spatial deduplication (handle 90% overlap)
     uint64_t spatial_hash = computeSpatialHashCPU(keyframe->bbox);
     std::cout << "[DEBUG] Spatial hash: " << spatial_hash 
               << ", bbox: [" << keyframe->bbox[0] << "," << keyframe->bbox[1] 
               << "," << keyframe->bbox[2] << " - " << keyframe->bbox[3] 
               << "," << keyframe->bbox[4] << "," << keyframe->bbox[5] << "]" << std::endl;
     
-    auto it = pImpl->processed_regions.find(spatial_hash);
-    if (it != pImpl->processed_regions.end() && 
-        it->second == keyframe->timestamp_ns) {
-        // Already processed this region at this timestamp
-        std::cout << "[DEBUG] Region already processed, skipping" << std::endl;
-        return;
-    }
-    
-    // Also check if we've processed this exact region before (different timestamp)
-    if (it != pImpl->processed_regions.end()) {
-        std::cout << "[DEBUG] Region processed before with different timestamp" << std::endl;
-        // For now, let's process it anyway since it's a different timestamp
-        // return;
-    }
-    
     // Get point and color data
     SharedMemoryManager smm;
     float* h_points = smm.get_points(const_cast<SharedKeyframe*>(keyframe));
     uint8_t* h_colors = smm.get_colors(const_cast<SharedKeyframe*>(keyframe));
     
-    // Allocate device memory
-    float3* d_points;
-    size_t points_size = keyframe->point_count * sizeof(float3);
-    cudaMallocAsync(&d_points, points_size, pImpl->streams[0]);
+    // Allocate device memory using memory pool
+    float3* d_points = (float3*)pImpl->allocateFromPool(keyframe->point_count * sizeof(float3));
+    if (!d_points) {
+        // Fallback to regular allocation
+        cudaMallocAsync(&d_points, keyframe->point_count * sizeof(float3), pImpl->streams[0]);
+    }
     
-    // Copy points to device
-    cudaMemcpyAsync(d_points, h_points, points_size, 
-                    cudaMemcpyHostToDevice, pImpl->streams[0]);
+    // Copy points to device using multiple streams for large point clouds
+    size_t points_per_stream = keyframe->point_count / 5;
+    for (int i = 0; i < 5; i++) {
+        size_t offset = i * points_per_stream;
+        size_t count = (i == 4) ? keyframe->point_count - offset : points_per_stream;
+        
+        cudaMemcpyAsync(d_points + offset, h_points + offset * 3, 
+                        count * sizeof(float3), 
+                        cudaMemcpyHostToDevice, pImpl->streams[i]);
+    }
     
     // Allocate device memory for normals
     pImpl->d_normals.resize(keyframe->point_count);
     
     // Estimate normals first (required for Poisson)
+    // Update octree with new points for neighbor queries
+    pImpl->gpu_octree->incrementalUpdate(d_points, keyframe->point_count, 
+                                        keyframe->pose_matrix, pImpl->streams[0]);
+    
+    // Estimate normals using octree for efficient neighbor search
     pImpl->normal_estimator->estimateNormals(
         d_points, 
         keyframe->point_count,
@@ -196,17 +305,26 @@ void GPUMeshGenerator::generateIncrementalMesh(
         pImpl->streams[0]
     );
     
-    // Generate mesh based on selected method
-    switch (pImpl->method) {
-        case MeshMethod::INCREMENTAL_POISSON:
-            generateIncrementalPoissonMesh(keyframe, d_points, pImpl->d_normals.data().get(), update);
-            break;
-        case MeshMethod::TSDF_MARCHING_CUBES:
-            generateMarchingCubesMesh(keyframe, d_points, pImpl->d_normals.data().get(), update);
-            break;
-        default:
-            generateIncrementalPoissonMesh(keyframe, d_points, pImpl->d_normals.data().get(), update);
+    // Synchronize normal estimation across streams
+    for (int i = 0; i < 5; i++) {
+        cudaEventRecord(pImpl->stream_events[i], pImpl->streams[i]);
     }
+    
+    // TSDF-only mesh generation
+    generateMarchingCubesMesh(keyframe, d_points, pImpl->d_normals.data().get(), update);
+    
+    // FUTURE: Uncomment for multi-algorithm support
+    // switch (pImpl->method) {
+    //     case MeshMethod::INCREMENTAL_POISSON:
+    //         generateIncrementalPoissonMesh(keyframe, d_points, pImpl->d_normals.data().get(), update);
+    //         break;
+    //     case MeshMethod::NKSR:
+    //         generateNKSRMesh(keyframe, d_points, pImpl->d_normals.data().get(), update);
+    //         break;
+    //     case MeshMethod::TSDF_MARCHING_CUBES:
+    //         generateMarchingCubesMesh(keyframe, d_points, pImpl->d_normals.data().get(), update);
+    //         break;
+    // }
     
     // Copy colors
     update.vertex_colors.resize(update.vertices.size());
@@ -223,12 +341,21 @@ void GPUMeshGenerator::generateIncrementalMesh(
     update.keyframe_id = std::to_string(keyframe->timestamp_ns);
     update.timestamp_ns = keyframe->timestamp_ns;
     
-    // Mark region as processed
+    // Mark region as processed in octree
+    pImpl->gpu_octree->markRegionProcessed(keyframe->bbox);
     pImpl->processed_regions[spatial_hash] = keyframe->timestamp_ns;
     
     // Clean up
-    cudaFreeAsync(d_points, pImpl->streams[0]);
-    cudaStreamSynchronize(pImpl->streams[0]);
+    if (pImpl->allocateFromPool(0)) {  // Check if we used pool
+        pImpl->releaseToPool(d_points);
+    } else {
+        cudaFreeAsync(d_points, pImpl->streams[0]);
+    }
+    
+    // Synchronize all streams
+    for (int i = 0; i < 5; i++) {
+        cudaStreamSynchronize(pImpl->streams[i]);
+    }
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -239,32 +366,47 @@ void GPUMeshGenerator::generateIncrementalMesh(
               << update.faces.size()/3 << " faces" << std::endl;
 }
 
+// FUTURE: Uncomment this method to enable GPU Poisson reconstruction
+/*
 void GPUMeshGenerator::generateIncrementalPoissonMesh(
     const SharedKeyframe* keyframe,
     float3* d_points, 
     float3* d_normals,
     MeshUpdate& update
 ) {
-    // Copy points and normals to host for CGAL processing
-    std::vector<float> h_points(keyframe->point_count * 3);
-    std::vector<float> h_normals(keyframe->point_count * 3);
+    // Use GPU Poisson reconstruction
+    SharedMemoryManager smm;
+    uint8_t* h_colors = smm.get_colors(const_cast<SharedKeyframe*>(keyframe));
     
-    cudaMemcpy(h_points.data(), d_points, keyframe->point_count * sizeof(float3),
-               cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_normals.data(), d_normals, keyframe->point_count * sizeof(float3),
-               cudaMemcpyDeviceToHost);
+    // Copy colors to device
+    uint8_t* d_colors;
+    cudaMalloc(&d_colors, keyframe->point_count * 3);
+    cudaMemcpy(d_colors, h_colors, keyframe->point_count * 3, cudaMemcpyHostToDevice);
     
-    // Add points to incremental reconstruction
-    pImpl->incremental_poisson->addPoints(
-        h_points.data(),
-        h_normals.data(),
-        keyframe->point_count,
-        keyframe->timestamp_ns
-    );
+    // Add points to GPU Poisson reconstruction
+    pImpl->gpu_poisson->addPoints(d_points, d_normals, d_colors, 
+                                 keyframe->point_count, 
+                                 pImpl->gpu_octree.get(), 
+                                 pImpl->streams[0]);
     
-    // Update only dirty blocks
-    pImpl->incremental_poisson->updateDirtyBlocks(update);
+    // Get dirty blocks that need mesh extraction
+    std::vector<int> dirty_blocks;
+    pImpl->gpu_poisson->getDirtyBlocks(dirty_blocks);
+    
+    // Extract mesh only for dirty blocks
+    pImpl->gpu_poisson->extractMesh(update.vertices, update.faces, 
+                                   update.vertex_colors, dirty_blocks,
+                                   pImpl->streams[0]);
+    
+    // Clear processed blocks
+    pImpl->gpu_poisson->clearDirtyBlocks(dirty_blocks);
+    
+    // Store which regions were updated
+    update.updated_regions = dirty_blocks;
+    
+    cudaFree(d_colors);
 }
+*/
 
 void GPUMeshGenerator::generateMarchingCubesMesh(
     const SharedKeyframe* keyframe,
@@ -274,32 +416,105 @@ void GPUMeshGenerator::generateMarchingCubesMesh(
 ) {
     // Initialize grid if needed
     if (pImpl->tsdf_fusion->getMemoryUsage() == 0) {
-        float3 min_bounds = make_float3(keyframe->bbox[0], keyframe->bbox[1], keyframe->bbox[2]);
-        float3 max_bounds = make_float3(keyframe->bbox[3], keyframe->bbox[4], keyframe->bbox[5]);
+        // Get bounds from environment or use keyframe bounds
+        float3 min_bounds = pImpl->getEnvFloat3("TSDF_SCENE_BOUNDS_MIN", 
+            make_float3(keyframe->bbox[0] - 1.0f, keyframe->bbox[1] - 1.0f, keyframe->bbox[2] - 1.0f));
+        float3 max_bounds = pImpl->getEnvFloat3("TSDF_SCENE_BOUNDS_MAX",
+            make_float3(keyframe->bbox[3] + 1.0f, keyframe->bbox[4] + 1.0f, keyframe->bbox[5] + 1.0f));
         
-        // Expand bounds for room
-        min_bounds.x -= 1.0f;
-        min_bounds.y -= 1.0f;
-        min_bounds.z -= 1.0f;
-        max_bounds.x += 1.0f;
-        max_bounds.y += 1.0f;
-        max_bounds.z += 1.0f;
+        std::cout << "Initializing TSDF volume:" << std::endl;
+        std::cout << "  Min bounds: [" << min_bounds.x << ", " << min_bounds.y << ", " << min_bounds.z << "]" << std::endl;
+        std::cout << "  Max bounds: [" << max_bounds.x << ", " << max_bounds.y << ", " << max_bounds.z << "]" << std::endl;
         
-        pImpl->marching_cubes->initializeGrid(min_bounds, max_bounds);
+        pImpl->tsdf_fusion->initialize(min_bounds, max_bounds);
     }
     
-    // Integrate points into TSDF
-    pImpl->marching_cubes->integrateTSDF(
+    // Get colors
+    SharedMemoryManager smm;
+    uint8_t* h_colors = smm.get_colors(const_cast<SharedKeyframe*>(keyframe));
+    uint8_t* d_colors = nullptr;
+    
+    if (h_colors) {
+        d_colors = (uint8_t*)pImpl->allocateFromPool(keyframe->point_count * 3);
+        if (!d_colors) {
+            cudaMalloc(&d_colors, keyframe->point_count * 3);
+        }
+        cudaMemcpyAsync(d_colors, h_colors, keyframe->point_count * 3, 
+                        cudaMemcpyHostToDevice, pImpl->streams[0]);
+    }
+    
+    // Integrate points into TSDF using incremental fusion
+    pImpl->tsdf_fusion->integratePoints(
         d_points,
         d_normals,
+        d_colors,
         keyframe->point_count,
         keyframe->pose_matrix,
         pImpl->streams[0]
     );
     
-    // Extract mesh
-    pImpl->marching_cubes->extractMesh(update, pImpl->streams[0]);
+    // Extract mesh with enhanced marching cubes
+    pImpl->tsdf_fusion->extractMesh(update, pImpl->streams[0]);
+    
+    // Clean up colors
+    if (d_colors) {
+        if (pImpl->allocateFromPool(0)) {
+            pImpl->releaseToPool(d_colors);
+        } else {
+            cudaFreeAsync(d_colors, pImpl->streams[0]);
+        }
+    }
 }
+
+// FUTURE: Uncomment this method to enable NKSR (Neural Kernel Surface Reconstruction)
+/*
+void GPUMeshGenerator::generateNKSRMesh(
+    const SharedKeyframe* keyframe,
+    float3* d_points,
+    float3* d_normals, 
+    MeshUpdate& update
+) {
+    // Get colors
+    SharedMemoryManager smm;
+    uint8_t* h_colors = smm.get_colors(const_cast<SharedKeyframe*>(keyframe));
+    
+    // Estimate point confidences based on local density
+    thrust::device_vector<float> d_confidences(keyframe->point_count);
+    
+    // Simple confidence estimation - could be improved
+    thrust::fill(d_confidences.begin(), d_confidences.end(), 1.0f);
+    
+    // Add points to NKSR
+    pImpl->nksr->addPointStream(
+        d_points,
+        d_normals,
+        d_confidences.data().get(),
+        h_colors,  // Pass host colors directly
+        keyframe->point_count,
+        pImpl->streams[0]
+    );
+    
+    // Process chunks
+    pImpl->nksr->processChunks();
+    
+    // Extract mesh
+    std::vector<float> confidence_map;
+    pImpl->nksr->extractMesh(
+        update.vertices,
+        update.faces,
+        update.vertex_colors,
+        confidence_map,
+        keyframe->bbox  // Use keyframe bounds for extraction
+    );
+    
+    // Log progress
+    float progress = pImpl->nksr->getProgress();
+    size_t total_points = pImpl->nksr->getNumProcessedPoints();
+    
+    std::cout << "NKSR Progress: " << (progress * 100.0f) << "%, "
+              << "Total points processed: " << total_points << std::endl;
+}
+*/
 
 uint64_t computeSpatialHashCPU(const float bbox[6]) {
     // Simple spatial hash based on bounding box center

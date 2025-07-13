@@ -37,18 +37,23 @@ include_directories(
 # Source files
 set(SOURCES
     src/main.cpp  # Full version with Rerun
-    src/simple_mesh_generator.cu
+    src/mesh_generator.cu  # TSDF-only mode
+    src/gpu_octree.cu  # Still used for spatial queries
+    src/enhanced_marching_cubes.cu  # Core TSDF implementation
+    src/marching_cubes_tables.cu
     src/shared_memory.cpp
     src/rabbitmq_consumer.cpp
     src/metrics.cpp
     src/rerun_publisher.cpp
+    src/normal_estimation.cu  # Still needed for TSDF
+    
+    # FUTURE: Uncomment these to enable Poisson/NKSR algorithms
+    # src/gpu_poisson_reconstruction.cu
+    # src/nksr_reconstruction.cu
+    # src/poisson_reconstruction.cpp
+    
     # Temporarily disabled for build
     # src/websocket_server.cpp
-    # src/mesh_generator.cu
-    # src/poisson_reconstruction.cpp
-    # src/marching_cubes.cu
-    # src/normal_estimation.cu
-    # src/marching_cubes_tables.cu
 )
 
 # Create executable
@@ -69,6 +74,8 @@ target_link_libraries(mesh_service PRIVATE
     ${Boost_LIBRARIES}
     ${CUDA_LIBRARIES}
     ${CUDA_cudart_LIBRARY}
+    ${CUDA_cublas_LIBRARY}
+    ${CUDA_cusparse_LIBRARY}
     CGAL::CGAL
     pthread
     dl

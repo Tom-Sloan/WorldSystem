@@ -56,6 +56,13 @@ private:
         MeshUpdate& update
     );
     
+    void generateNKSRMesh(
+        const SharedKeyframe* keyframe,
+        float3* d_points,
+        float3* d_normals,
+        MeshUpdate& update
+    );
+    
     void generateMarchingCubesMesh(
         const SharedKeyframe* keyframe,
         float3* d_points,

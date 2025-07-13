@@ -1,7 +1,31 @@
+# Define common configurations as YAML anchors
+x-common-env: &common-env
+  RABBITMQ_URL: amqp://127.0.0.1:5672
+  PYTHONUNBUFFERED: "1"
+  TZ: ${TZ:-UTC}
+
+x-gpu-env: &gpu-env
+  <<: *common-env
+  NVIDIA_VISIBLE_DEVICES: all
+  CUDA_PATH: ${CUDA_PATH}
+  LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
+  DISPLAY: ${DISPLAY}
+  HOME: ${HOME}
+
+x-build-args: &build-args
+  USERNAME: ${USERNAME}
+  UID: ${UID}
+  GID: ${GID}
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   rabbitmq:
     image: rabbitmq:4-management          # 4.1 with the Management UI
-    container_name: rabbitmq
     network_mode: host
     environment:
       RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >-
@@ -17,46 +41,38 @@ services:
       - server
   
   server:
-    image: server:latest
+    image: server:${BRANCH_NAME:-latest}
     build:
-      context: ./server
+      context: .
+      dockerfile: ./server/Dockerfile
       args:
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
+        <<: *build-args
     network_mode: host
     volumes:
       - ${WORKSPACE}/server:/app
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
     environment:
-      - RABBITMQ_URL=amqp://127.0.0.1:5672
+      <<: *common-env
     depends_on:
       - rabbitmq
 
   frame_processor:
-    build: ./frame_processor
-    image: frame_processor:latest
+    build:
+      context: .
+      dockerfile: ./frame_processor/Dockerfile
+    image: frame_processor:${BRANCH_NAME:-latest}
     runtime: nvidia
     network_mode: host
     environment:
-      - RABBITMQ_URL=amqp://127.0.0.1:5672
-      - INITIAL_ANALYSIS_MODE=none #yolo
-
+      <<: *gpu-env
+      INITIAL_ANALYSIS_MODE: none #yolo
       # Added Rerun configuration
-      - RERUN_VIEWER_ADDRESS=0.0.0.0:9090
-      - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
-      - RERUN_ENABLED=true
-
+      RERUN_VIEWER_ADDRESS: "0.0.0.0:9090"
+      RERUN_CONNECT_URL: "rerun+http://127.0.0.1:9876/proxy"
+      RERUN_ENABLED: "true"
       # Prometheus metrics port
-      - METRICS_PORT=8003
-
-      # GPU / display environment variables
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_PATH=${CUDA_PATH}
-      - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
-      - DISPLAY=${DISPLAY}
-      - HOME=${HOME}
+      METRICS_PORT: "8003"
     volumes:
       - ${WORKSPACE}/frame_processor:/app
       - ${X11SOCKET}:${X11SOCKET}
@@ -72,28 +88,27 @@ services:
       - rabbitmq
 
   data_storage:
-    image: data_storage:latest
-    build: ./storage
+    image: data_storage:${BRANCH_NAME:-latest}
+    build:
+      context: .
+      dockerfile: ./storage/Dockerfile
     volumes:
       - ${WORKSPACE}/storage:/app
       - ${WORKSPACE}/data:/data
     network_mode: host
-    # RabbitMQ now reached on the host‑published port
     environment:
-      RABBITMQ_URL: amqp://127.0.0.1:5672
+      <<: *common-env
     depends_on:
       - rabbitmq
 
   slam3r:
-    image: slam3r:latest
+    image: slam3r:${BRANCH_NAME:-latest}
     privileged: true
     build:
-      context: ./slam3r
+      context: .
+      dockerfile: ./slam3r/Dockerfile
       args:
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
-    container_name: slam3r
+        <<: *build-args
     runtime: nvidia
     pid: host
     cap_add:
@@ -245,38 +260,31 @@ services:
       - rabbitmq
     
     # Resource usage logging
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *default-logging
 
   simulator:
-    build: ./simulation  # or point to a Dockerfile that includes your simulation script
+    build:
+      context: .
+      dockerfile: ./simulation/Dockerfile  # or point to a Dockerfile that includes your simulation script
     profiles: ["simulator"]
-    image: simulator:latest
+    image: simulator:${BRANCH_NAME:-latest}
     network_mode: host
     restart: "no"  # Don't restart when simulation completes
     volumes:
       - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
       - ${USE_FOLDER:-/data}:/simulation_data  # mount specific folder for simulation (defaults to /data)
     environment:
-      - PYTHONUNBUFFERED=1  # Ensures Python output is sent straight to the terminal
-      - RABBITMQ_URL=amqp://127.0.0.1:5672
-
-      - USE_FOLDER=${USE_FOLDER:-/home/sam3/Desktop/Toms_Workspace/WorldSystem/20250617_211214_segments}  # set in .env file!!!
+      <<: *common-env
+      USE_FOLDER: ${USE_FOLDER:-/home/sam3/Desktop/Toms_Workspace/WorldSystem/20250617_211214_segments}  # set in .env file!!!
     depends_on:
       - rabbitmq
 
   website:
-    image: website:latest
+    image: website:${BRANCH_NAME:-latest}
     build:
       context: ./website
       args:
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
-    container_name: website
+        <<: *build-args
     network_mode: host
     volumes:
       - ${WORKSPACE}/website:/app
@@ -291,7 +299,6 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
-    container_name: prometheus
     network_mode: host
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -302,7 +309,6 @@ services:
 
   grafana:
     image: grafana/grafana:latest
-    container_name: grafana
     network_mode: host
     depends_on:
       - prometheus
@@ -314,7 +320,6 @@ services:
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
-    container_name: cadvisor
     network_mode: host
     volumes:
       - /:/rootfs:ro
@@ -325,7 +330,6 @@ services:
 
   jaeger:
     image: jaegertracing/all-in-one:latest
-    container_name: jaeger
     network_mode: host
     environment:
       COLLECTOR_OTLP_ENABLED: "true"       # Enable OTLP ingestion
@@ -334,7 +338,6 @@ services:
   nvidia-dcgm-exporter:
     # use NVIDIA's canonical registry & newest tag
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.2.3-4.1.1-ubuntu22.04
-    container_name: nvidia-dcgm-exporter
     runtime: nvidia
 
     # full set of GPU‑profiling metrics needs SYS_ADMIN

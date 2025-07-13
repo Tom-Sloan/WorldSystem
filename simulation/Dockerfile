@@ -18,6 +18,6 @@ COPY shared /tmp/shared
 RUN pip install -e /tmp/shared
 
 # Copy application code
-COPY . .
+COPY simulation/ .
 
 CMD ["python", "simulate_data.py"] 

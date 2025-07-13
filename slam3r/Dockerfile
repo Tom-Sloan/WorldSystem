@@ -65,7 +65,7 @@ WORKDIR /app
 
 # Copy SLAM3R engine code (submodule) and requirements files
 # This assumes the submodule is cloned into SLAM3R_engine within the build context (./slam3r)
-COPY ./SLAM3R_engine /app/SLAM3R_engine/
+COPY slam3r/SLAM3R_engine /app/SLAM3R_engine/
 
 # Install SLAM3R Python dependencies
 RUN pip3 install -r /app/SLAM3R_engine/requirements.txt

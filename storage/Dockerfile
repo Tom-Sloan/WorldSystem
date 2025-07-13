@@ -15,6 +15,6 @@ COPY shared /tmp/shared
 RUN pip install -e /tmp/shared
 
 # Copy application code
-COPY . .
+COPY storage/ .
 
 CMD ["python", "data_storage.py"] 

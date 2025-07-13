@@ -16,5 +16,5 @@ COPY shared /tmp/shared
 RUN pip3 install -e /tmp/shared
 
 WORKDIR /app
-COPY frame_processor.py /app/frame_processor.py
+COPY frame_processor/frame_processor.py /app/frame_processor.py
 CMD ["python3", "/app/frame_processor.py"]

@@ -586,7 +586,8 @@ async def initialise_models_and_params():
 
     # Rerun handshake
     if os.getenv("RERUN_ENABLED", "true") == "true":
-        rr.init("SLAM3R_Processor", spawn=False)
+        # Use a shared recording ID so all services appear in the same recording
+        rr.init("worldsystem", spawn=False)
         for host in filter(None,[os.getenv("RERUN_CONNECT_URL"),
                                  "rerun+http://host.docker.internal:9876/proxy",
                                  "rerun+http://127.0.0.1:9876/proxy"]):
@@ -595,6 +596,21 @@ async def initialise_models_and_params():
                 rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
                 rerun_connected = True
                 logger.info("Connected to Rerun at %s", host)
+                
+                # Send a test message to verify connection
+                positions = np.zeros((10, 3))
+                positions[:, 0] = np.linspace(-10, 10, 10)
+                
+                colors = np.zeros((10, 3), dtype=np.uint8)
+                colors[:, 2] = np.linspace(0, 255, 10)  # Blue gradient for SLAM3R
+                
+                rr.log(
+                    "slam3r/init_points",
+                    rr.Points3D(positions, colors=colors, radii=0.5)
+                )
+                rr.log("slam3r/status", rr.TextLog("SLAM3R successfully connected to Rerun"))
+                logger.info("Sent Rerun initialization test message")
+                
                 break
             except Exception as e:
                 logger.warning("Rerun connect failed at %s: %s", host, e)

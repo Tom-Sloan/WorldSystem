@@ -26,6 +26,7 @@ x-logging: &default-logging
 services:
   rabbitmq:
     image: rabbitmq:4-management          # 4.1 with the Management UI
+    container_name: rabbitmq_${BRANCH_NAME:-latest}
     network_mode: host
     environment:
       RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >-
@@ -36,12 +37,14 @@ services:
     
   nginx:
     build: ./nginx
+    container_name: nginx_${BRANCH_NAME:-latest}
     network_mode: host
     depends_on:
       - server
   
   server:
     image: server:${BRANCH_NAME:-latest}
+    container_name: server_${BRANCH_NAME:-latest}
     build:
       context: .
       dockerfile: ./server/Dockerfile
@@ -62,13 +65,13 @@ services:
       context: .
       dockerfile: ./frame_processor/Dockerfile
     image: frame_processor:${BRANCH_NAME:-latest}
+    container_name: frame_processor_${BRANCH_NAME:-latest}
     runtime: nvidia
     network_mode: host
     environment:
       <<: *gpu-env
       INITIAL_ANALYSIS_MODE: none #yolo
       # Added Rerun configuration
-      RERUN_VIEWER_ADDRESS: "0.0.0.0:9090"
       RERUN_CONNECT_URL: "rerun+http://127.0.0.1:9876/proxy"
       RERUN_ENABLED: "true"
       # Prometheus metrics port
@@ -89,6 +92,7 @@ services:
 
   data_storage:
     image: data_storage:${BRANCH_NAME:-latest}
+    container_name: data_storage_${BRANCH_NAME:-latest}
     build:
       context: .
       dockerfile: ./storage/Dockerfile
@@ -103,6 +107,8 @@ services:
 
   slam3r:
     image: slam3r:${BRANCH_NAME:-latest}
+    container_name: slam3r_${BRANCH_NAME:-latest}
+    profiles: ["slam3r"]
     privileged: true
     build:
       context: .
@@ -162,7 +168,6 @@ services:
       - CAMERA_INTRINSICS_FILE=/app/SLAM3R_engine/configs/camera_intrinsics.yaml
 
       # Rerun viewer (host‑local)
-      - RERUN_VIEWER_ADDRESS=127.0.0.1:9090
       - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
       - RERUN_ENABLED=${RERUN_ENABLED:-true}
 
@@ -268,6 +273,7 @@ services:
       dockerfile: ./simulation/Dockerfile  # or point to a Dockerfile that includes your simulation script
     profiles: ["simulator"]
     image: simulator:${BRANCH_NAME:-latest}
+    container_name: simulator_${BRANCH_NAME:-latest}
     network_mode: host
     restart: "no"  # Don't restart when simulation completes
     volumes:
@@ -281,6 +287,7 @@ services:
 
   website:
     image: website:${BRANCH_NAME:-latest}
+    container_name: website_${BRANCH_NAME:-latest}
     build:
       context: ./website
       args:
@@ -299,6 +306,7 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
+    container_name: prometheus_${BRANCH_NAME:-latest}
     network_mode: host
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -309,6 +317,7 @@ services:
 
   grafana:
     image: grafana/grafana:latest
+    container_name: grafana_${BRANCH_NAME:-latest}
     network_mode: host
     depends_on:
       - prometheus
@@ -320,6 +329,7 @@ services:
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor_${BRANCH_NAME:-latest}
     network_mode: host
     volumes:
       - /:/rootfs:ro
@@ -330,6 +340,7 @@ services:
 
   jaeger:
     image: jaegertracing/all-in-one:latest
+    container_name: jaeger_${BRANCH_NAME:-latest}
     network_mode: host
     environment:
       COLLECTOR_OTLP_ENABLED: "true"       # Enable OTLP ingestion
@@ -338,6 +349,7 @@ services:
   nvidia-dcgm-exporter:
     # use NVIDIA's canonical registry & newest tag
     image: nvcr.io/nvidia/k8s/dcgm-exporter:4.2.3-4.1.1-ubuntu22.04
+    container_name: nvidia-dcgm-exporter_${BRANCH_NAME:-latest}
     runtime: nvidia
 
     # full set of GPU‑profiling metrics needs SYS_ADMIN

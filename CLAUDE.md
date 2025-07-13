@@ -20,8 +20,18 @@ Key services:
 - **Website**: Real-time 3D visualization (React/Three.js)
 - **Frame Processor**: Video processing with YOLO detection
 - **Fantasy Builder**: Adds game-like elements to 3D models (WIP)
+- **Storage**: Persistent storage service with API for data retrieval
+- **Monitoring Stack**: Prometheus, Grafana, Jaeger, cAdvisor
 
 ## Build and Development Commands
+
+### Environment Setup
+```bash
+# Website environment
+cp website/.env.example website/.env
+
+# Configure CUDA paths and display in root .env
+```
 
 ### Quick Start
 ```bash
@@ -29,25 +39,71 @@ Key services:
 ```
 
 ### Docker Commands
-- Full build: `docker-compose build`
-- Single service: `docker-compose build --no-cache <service_name>`
-- Run all services: `docker-compose up`
-- Run with SLAM3R profile: `docker-compose --profile slam3r up`
+```bash
+# Full build
+docker-compose build
+
+# Single service rebuild  
+docker-compose build --no-cache <service_name>
+
+# Run all services
+docker-compose up
+
+# Run with SLAM3R profile
+docker-compose --profile slam3r up
+
+# Build with branch tag
+./docker-compose-build.sh
+
+# Run with branch tag
+./docker-compose-up.sh
+```
 
 ### Development Commands
-- Website: `cd website && npm run dev`
-- Website build: `cd website && npm run build`
-- SLAM3R demo: `cd slam3r && bash scripts/demo_wild.sh`
+```bash
+# Website development (port 5173)
+cd website && npm run dev
 
-### Testing Commands
-- Website: `cd website && npm run lint`
-- SLAM3R evaluation: `cd slam3r && bash scripts/eval_replica.sh`
+# Website build
+cd website && npm run build
+
+# Website preview production build (port 3000)
+cd website && npm run preview
+
+# Website linting
+cd website && npm run lint
+
+# SLAM3R demo
+cd slam3r && bash scripts/demo_wild.sh
+
+# SLAM3R visualization demo
+cd slam3r && bash scripts/demo_vis_wild.sh
+
+# SLAM3R Replica dataset demo
+cd slam3r && bash scripts/demo_replica.sh
+
+# SLAM3R evaluation on Replica
+cd slam3r && bash scripts/eval_replica.sh
+
+# SLAM3R training
+cd slam3r && bash scripts/train_i2p.sh  # Image-to-Points model
+cd slam3r && bash scripts/train_l2w.sh  # Local-to-World model
+
+# Run simulation
+./simulation/run_simulation.sh
+
+# Test segment detection
+python test_segment_detection.py
+
+# Test segment reset
+python test_segment_reset.py
+```
 
 ### Monitoring URLs (when running)
-- RabbitMQ: http://localhost:15672
+- RabbitMQ Management: http://localhost:15672
 - Grafana: http://localhost:3000 (admin/admin)
 - Prometheus: http://localhost:9090
-- Jaeger: http://localhost:16686
+- Jaeger UI: http://localhost:16686
 
 ## Code Guidelines
 
@@ -81,6 +137,8 @@ Only modify code in:
 - Outputs camera poses and dense point clouds in real-time
 - Optional mesh generation with Open3D
 - Publishes results to RabbitMQ for visualization
+- Runs at ~25fps target performance
+- Automatic segment detection handles video boundaries
 
 ### 3D Reconstruction Pipeline
 1. Images received from RabbitMQ by SLAM3R
@@ -88,8 +146,22 @@ Only modify code in:
 3. Outputs dense point clouds and optional meshes
 4. Website receives and displays results via WebSocket
 
+### RabbitMQ Message Flow
+- Exchange: `video_stream` (fanout)
+- Queues: `slam3r_queue`, `frame_processor_queue`, `storage_queue`
+- Messages contain base64-encoded images and metadata
+- Automatic reconnection on connection failures
+
 ### Service Dependencies
-- Frame Processor, SLAM, Reconstruction require GPU access
+- Frame Processor, SLAM3R require GPU access (CUDA)
 - All services communicate through RabbitMQ
 - Services use environment variables for configuration
 - Docker networks: backend_network (internal), monitoring
+- Host networking mode used for all services
+
+### Frontend Technology Stack
+- React with Vite bundler
+- Three.js via React Three Fiber for 3D rendering
+- TailwindCSS for styling
+- ESLint for code quality (no TypeScript)
+- WebSocket for real-time updates

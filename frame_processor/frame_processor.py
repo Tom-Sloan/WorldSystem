@@ -83,14 +83,10 @@ sync_ntp_time()
 RERUN_ENABLED = os.getenv("RERUN_ENABLED", "true").lower() == "true"
 if RERUN_ENABLED:
     print("[Rerun] Initializing...")
-    # Get environment variables for Rerun configuration
-    viewer_address = os.environ.get("RERUN_VIEWER_ADDRESS", "0.0.0.0:9090")
-    print(f"[Rerun] Viewer address: {viewer_address}")
     
     # Initialize Rerun with application name - don't automatically spawn a viewer
-    rr.init("frame_processor", spawn=False)
-    
-    print(f"[Rerun] Initialized with viewer address: {viewer_address}")
+    # Use a shared recording ID so all services appear in the same recording
+    rr.init("worldsystem", spawn=False)
     
     # Connect to the viewer using gRPC
     rerun_connect_url = os.getenv(
@@ -101,6 +97,21 @@ if RERUN_ENABLED:
         print(f"[Rerun] Connecting to viewer via gRPC at {rerun_connect_url}")
         rr.connect_grpc(rerun_connect_url)
         print(f"[Rerun] Connected to viewer via gRPC")
+        
+        # Send a test message to verify connection
+        positions = np.zeros((10, 3))
+        positions[:, 0] = np.linspace(-10, 10, 10)
+        
+        colors = np.zeros((10, 3), dtype=np.uint8)
+        colors[:, 1] = np.linspace(0, 255, 10)  # Green gradient for frame processor
+        
+        rr.log(
+            "frame_processor/init_points",
+            rr.Points3D(positions, colors=colors, radii=0.5)
+        )
+        rr.log("frame_processor/status", rr.TextLog("Frame Processor successfully connected to Rerun"))
+        print("[Rerun] Sent initialization test message")
+        
     except Exception as e:
         print(f"[Rerun] Error connecting to viewer via gRPC: {e}")
         print("[Rerun] Will continue sending data regardless of connection status")

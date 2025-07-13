@@ -407,6 +407,28 @@ services:
       # Set to false if SLAM3R needs to confirm receipt
       - MESH_SERVICE_UNLINK_SHM=${MESH_SERVICE_UNLINK_SHM:-false}
       
+      # ========== TSDF CONFIGURATION ==========
+      # Core TSDF parameters
+      - TSDF_VOXEL_SIZE=${TSDF_VOXEL_SIZE:-0.04}              # 4cm voxels for architectural detail
+      - TSDF_TRUNCATION_DISTANCE=${TSDF_TRUNCATION_DISTANCE:-0.12}  # 3x voxel size
+      - TSDF_MAX_WEIGHT=${TSDF_MAX_WEIGHT:-100.0}             # Temporal averaging weight
+      
+      # Scene bounds for 25m hallway with atrium
+      # Format: "x_min,y_min,z_min" and "x_max,y_max,z_max"
+      - TSDF_SCENE_BOUNDS_MIN=${TSDF_SCENE_BOUNDS_MIN:--2,-2,0}    # Slight padding
+      - TSDF_SCENE_BOUNDS_MAX=${TSDF_SCENE_BOUNDS_MAX:-28,15,8}    # 25m hallway + atrium
+      
+      # Performance tuning
+      - TSDF_BLOCK_SIZE=${TSDF_BLOCK_SIZE:-8}                 # Voxel blocks for cache efficiency
+      - TSDF_MAX_MESH_VERTICES=${TSDF_MAX_MESH_VERTICES:-10000000}  # 10M vertices max
+      - TSDF_INTEGRATION_WEIGHT=${TSDF_INTEGRATION_WEIGHT:-1.0}     # Weight for new observations
+      
+      # Features
+      - TSDF_COLOR_INTEGRATION=${TSDF_COLOR_INTEGRATION:-true}      # Enable color from RGB
+      - TSDF_USE_SPACE_CARVING=${TSDF_USE_SPACE_CARVING:-false}     # Remove unseen voxels
+      - TSDF_MIN_WEIGHT_THRESHOLD=${TSDF_MIN_WEIGHT_THRESHOLD:-1.0} # Min weight for mesh extraction
+      - TSDF_GRADIENT_DELTA=${TSDF_GRADIENT_DELTA:-0.01}            # For normal estimation
+      
       # ========== GPU AND DISPLAY ==========
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_PATH=${CUDA_PATH}

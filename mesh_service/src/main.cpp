@@ -52,10 +52,33 @@ int main(int argc, char* argv[]) {
         auto rabbitmq_consumer = std::make_shared<mesh_service::RabbitMQConsumer>(rabbitmq_url);
         auto rerun_publisher = std::make_shared<mesh_service::RerunPublisher>("mesh_service", rerun_address, rerun_enabled);
         
-        // Configure mesh generator
-        mesh_generator->setMethod(mesh_service::MeshMethod::INCREMENTAL_POISSON);
-        mesh_generator->setQualityAdaptive(true);
+        // Configure mesh generator for TSDF-only mode
+        mesh_generator->setMethod(mesh_service::MeshMethod::TSDF_MARCHING_CUBES);
+        mesh_generator->setQualityAdaptive(false);  // No adaptive switching in TSDF-only mode
         mesh_generator->setSimplificationRatio(0.1f);
+        
+        std::cout << "Mesh service configured for TSDF-only operation:" << std::endl;
+        std::cout << "  - Enhanced TSDF with Marching Cubes" << std::endl;
+        std::cout << "  - GPU Octree for spatial indexing" << std::endl;
+        std::cout << "  - Multi-stream CUDA processing (5 streams)" << std::endl;
+        std::cout << "  - 90% spatial overlap deduplication" << std::endl;
+        std::cout << "  - Environment-based configuration" << std::endl;
+        
+        // Display TSDF configuration from environment
+        const char* voxel_size = std::getenv("TSDF_VOXEL_SIZE");
+        const char* truncation = std::getenv("TSDF_TRUNCATION_DISTANCE");
+        const char* max_weight = std::getenv("TSDF_MAX_WEIGHT");
+        const char* bounds_min = std::getenv("TSDF_SCENE_BOUNDS_MIN");
+        const char* bounds_max = std::getenv("TSDF_SCENE_BOUNDS_MAX");
+        
+        if (voxel_size || truncation || max_weight || bounds_min || bounds_max) {
+            std::cout << "\nTSDF Environment Configuration:" << std::endl;
+            if (voxel_size) std::cout << "  TSDF_VOXEL_SIZE: " << voxel_size << "m" << std::endl;
+            if (truncation) std::cout << "  TSDF_TRUNCATION_DISTANCE: " << truncation << "m" << std::endl;
+            if (max_weight) std::cout << "  TSDF_MAX_WEIGHT: " << max_weight << std::endl;
+            if (bounds_min) std::cout << "  TSDF_SCENE_BOUNDS_MIN: " << bounds_min << std::endl;
+            if (bounds_max) std::cout << "  TSDF_SCENE_BOUNDS_MAX: " << bounds_max << std::endl;
+        }
         
         // Connect to Rerun
         if (rerun_enabled) {

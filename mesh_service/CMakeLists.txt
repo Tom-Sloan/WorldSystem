@@ -28,6 +28,7 @@ FetchContent_MakeAvailable(rerun_sdk)
 # Include directories
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/nvidia_mc
     ${CUDA_INCLUDE_DIRS}
     ${Boost_INCLUDE_DIRS}
     ${EIGEN3_INCLUDE_DIR}
@@ -37,19 +38,22 @@ include_directories(
 # Source files
 set(SOURCES
     src/main.cpp  # Full version with Rerun
-    src/mesh_generator.cu  # TSDF-only mode
+    src/mesh_generator.cu  # Updated to use new algorithm selector
     src/gpu_octree.cu  # Still used for spatial queries
-    src/enhanced_marching_cubes.cu  # Core TSDF implementation
     src/shared_memory.cpp
     src/rabbitmq_consumer.cpp
     src/metrics.cpp
     src/rerun_publisher.cpp
-    src/normal_estimation.cu  # Still needed for TSDF
+    src/normal_estimation.cu  # Still needed for normals
+    
+    # New algorithm implementation
+    src/simple_tsdf.cu
+    src/algorithms/nvidia_marching_cubes.cu
+    src/algorithm_selector.cpp
     
     # FUTURE: Uncomment these to enable Poisson/NKSR algorithms
-    # src/gpu_poisson_reconstruction.cu
-    # src/nksr_reconstruction.cu
-    # src/poisson_reconstruction.cpp
+    # src/algorithms/open3d_poisson.cpp
+    # src/algorithms/nksr_client.cpp
     
     # Temporarily disabled for build
     # src/websocket_server.cpp

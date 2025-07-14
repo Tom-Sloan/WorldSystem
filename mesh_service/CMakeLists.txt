@@ -40,7 +40,6 @@ set(SOURCES
     src/mesh_generator.cu  # TSDF-only mode
     src/gpu_octree.cu  # Still used for spatial queries
     src/enhanced_marching_cubes.cu  # Core TSDF implementation
-    src/marching_cubes_tables.cu
     src/shared_memory.cpp
     src/rabbitmq_consumer.cpp
     src/metrics.cpp
@@ -65,7 +64,7 @@ set_property(TARGET mesh_service PROPERTY CUDA_ARCHITECTURES 60 70 75 80 86)
 # Compile options
 target_compile_options(mesh_service PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-O3 -march=native -Wall -Wextra>
-    $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math -lineinfo>
+    $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math -lineinfo --extended-lambda>
 )
 
 # Link libraries
@@ -76,6 +75,8 @@ target_link_libraries(mesh_service PRIVATE
     ${CUDA_cudart_LIBRARY}
     ${CUDA_cublas_LIBRARY}
     ${CUDA_cusparse_LIBRARY}
+    ${CUDA_cusolver_LIBRARY}
+    ${CUDA_cufft_LIBRARY}
     CGAL::CGAL
     pthread
     dl
@@ -84,6 +85,7 @@ target_link_libraries(mesh_service PRIVATE
     ev
     # msgpackc  # Using header-only version
     rerun_sdk
+    stdc++fs  # C++17 filesystem
 )
 
 # OpenMP support

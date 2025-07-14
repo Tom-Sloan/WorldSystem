@@ -13,7 +13,8 @@ constexpr int WARP_SIZE = 32;
 constexpr int BLOCK_SIZE = 256;
 
 // Helper functions
-__device__ inline uint32_t octree_kernels::expandBits(uint32_t v) {
+namespace octree_kernels {
+__device__ inline uint32_t expandBits(uint32_t v) {
     v = (v | (v << 16)) & 0x030000FF;
     v = (v | (v <<  8)) & 0x0300F00F;
     v = (v | (v <<  4)) & 0x030C30C3;
@@ -21,7 +22,7 @@ __device__ inline uint32_t octree_kernels::expandBits(uint32_t v) {
     return v;
 }
 
-__device__ inline uint32_t octree_kernels::morton3D(float x, float y, float z) {
+__device__ inline uint32_t morton3D(float x, float y, float z) {
     x = min(max(x * 1024.0f, 0.0f), 1023.0f);
     y = min(max(y * 1024.0f, 0.0f), 1023.0f);
     z = min(max(z * 1024.0f, 0.0f), 1023.0f);
@@ -33,7 +34,7 @@ __device__ inline uint32_t octree_kernels::morton3D(float x, float y, float z) {
     return (zz << 2) | (yy << 1) | xx;
 }
 
-__device__ inline int octree_kernels::findOctant(const float3& point, const float3& center) {
+__device__ inline int findOctant(const float3& point, const float3& center) {
     int octant = 0;
     if (point.x > center.x) octant |= 1;
     if (point.y > center.y) octant |= 2;
@@ -41,7 +42,7 @@ __device__ inline int octree_kernels::findOctant(const float3& point, const floa
     return octant;
 }
 
-__device__ inline bool octree_kernels::intersectAABB(
+__device__ inline bool intersectAABB(
     const float3& min1, const float3& max1,
     const float3& min2, const float3& max2) {
     return (min1.x <= max2.x && max1.x >= min2.x) &&
@@ -50,7 +51,7 @@ __device__ inline bool octree_kernels::intersectAABB(
 }
 
 // Kernel to compute Morton codes for points
-__global__ void octree_kernels::computeMortonCodes(
+__global__ void computeMortonCodes(
     const float3* points,
     SpatialPoint* spatial_points,
     int num_points,
@@ -78,7 +79,7 @@ __global__ void octree_kernels::computeMortonCodes(
 }
 
 // Kernel to build octree nodes from sorted points
-__global__ void octree_kernels::buildOctreeNodes(
+__global__ void buildOctreeNodes(
     SpatialPoint* points,
     int num_points,
     OctreeNode* nodes,
@@ -109,7 +110,7 @@ __global__ void octree_kernels::buildOctreeNodes(
 }
 
 // Kernel to mark dirty nodes based on new points
-__global__ void octree_kernels::markDirtyNodes(
+__global__ void markDirtyNodes(
     const float3* new_points,
     int num_new_points,
     OctreeNode* nodes,
@@ -142,8 +143,10 @@ __global__ void octree_kernels::markDirtyNodes(
     }
 }
 
+} // namespace octree_kernels
+
 // Kernel to find k-nearest neighbors using octree
-__global__ void octree_kernels::findKNearestNeighbors(
+__global__ void findKNearestNeighbors(
     const float3* query_points,
     int num_queries,
     const SpatialPoint* octree_points,
@@ -345,11 +348,16 @@ void GPUOctree::sortPointsByMortonCode(cudaStream_t stream) {
     // Use Thrust to sort by Morton code
     thrust::device_ptr<SpatialPoint> d_points_ptr(d_points);
     
+    // Use a functor instead of lambda for CUDA compatibility
+    struct MortonComparator {
+        __device__ bool operator()(const SpatialPoint& a, const SpatialPoint& b) const {
+            return a.morton_code < b.morton_code;
+        }
+    };
+    
     thrust::sort(thrust::cuda::par.on(stream),
                  d_points_ptr, d_points_ptr + point_count,
-                 [=] __device__ (const SpatialPoint& a, const SpatialPoint& b) {
-                     return a.morton_code < b.morton_code;
-                 });
+                 MortonComparator());
 }
 
 void GPUOctree::buildTreeStructure(cudaStream_t stream) {

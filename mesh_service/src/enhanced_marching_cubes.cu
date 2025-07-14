@@ -1,11 +1,37 @@
 #include "marching_cubes.h"
 #include "marching_cubes_tables.h"
+#include "mesh_generator.h" // For MeshUpdate
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <thrust/scan.h>
 #include <thrust/remove.h>
 #include <cub/cub.cuh>
 #include <iostream>
+
+// CUDA vector math helper functions
+__device__ inline float3 operator-(const float3& a, const float3& b) {
+    return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+__device__ inline float3 operator/(const float3& v, float s) {
+    return make_float3(v.x / s, v.y / s, v.z / s);
+}
+
+__device__ inline float dot(const float3& a, const float3& b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+__device__ inline float length(const float3& v) {
+    return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+__device__ inline float3 normalize(const float3& v) {
+    float len = length(v);
+    if (len > 0.0f) {
+        return v / len;
+    }
+    return v;
+}
 
 namespace mesh_service {
 
@@ -14,16 +40,18 @@ constexpr int VOXEL_BLOCK_SIZE = 8;
 constexpr int THREADS_PER_BLOCK = 64;
 constexpr float EPSILON = 1e-6f;
 
-// Voxel block structure for incremental updates
+// Internal VoxelBlock structure for implementation details
+namespace mesh_service {
 struct VoxelBlock {
-    int3 block_coord;
-    float3 min_bound;
-    float3 max_bound;
-    int voxel_offset;  // Offset into global voxel array
-    bool is_allocated;
-    bool is_dirty;
-    uint32_t last_update;
+    int3 block_coord;      // Block coordinate in voxel space
+    float3 min_bound;      // Minimum bound in world space
+    float3 max_bound;      // Maximum bound in world space
+    int voxel_offset;      // Offset into global voxel array
+    bool is_allocated;     // Whether block is allocated
+    bool is_dirty;         // Whether block needs update
+    uint32_t last_update;  // Last update timestamp
 };
+}
 
 namespace cuda {
 
@@ -107,7 +135,7 @@ __global__ void incrementalTSDFIntegration(
     float* tsdf_volume,
     float* weight_volume,
     uint8_t* color_volume,  // RGB colors
-    const VoxelBlock* voxel_blocks,
+    const mesh_service::VoxelBlock* voxel_blocks,
     const int* dirty_block_indices,
     int num_dirty_blocks,
     const float3* points,
@@ -123,7 +151,7 @@ __global__ void incrementalTSDFIntegration(
     if (block_idx >= num_dirty_blocks) return;
     
     int block_id = dirty_block_indices[block_idx];
-    const VoxelBlock& block = voxel_blocks[block_id];
+    const mesh_service::VoxelBlock& block = voxel_blocks[block_id];
     
     if (!block.is_allocated) return;
     
@@ -224,7 +252,7 @@ __global__ void enhancedMarchingCubes(
     const float* tsdf_volume,
     const float* weight_volume,
     const uint8_t* color_volume,
-    const VoxelBlock* voxel_blocks,
+    const mesh_service::VoxelBlock* voxel_blocks,
     const int* blocks_to_extract,
     int num_blocks,
     int3 volume_size,
@@ -242,7 +270,7 @@ __global__ void enhancedMarchingCubes(
     if (block_idx >= num_blocks) return;
     
     int block_id = blocks_to_extract[block_idx];
-    const VoxelBlock& block = voxel_blocks[block_id];
+    const mesh_service::VoxelBlock& block = voxel_blocks[block_id];
     
     if (!block.is_allocated || !block.is_dirty) return;
     
@@ -316,7 +344,7 @@ __global__ void enhancedMarchingCubes(
         }
         
         // Skip if no intersection
-        if (edgeTable[cube_index] == 0) continue;
+        if (edge_table[cube_index] == 0) continue;
         
         // Interpolate vertices on all 12 edges
         float3 edge_vertices[12];
@@ -324,7 +352,7 @@ __global__ void enhancedMarchingCubes(
         uint8_t edge_colors[12][3];
         
         for (int edge = 0; edge < 12; edge++) {
-            if (edgeTable[cube_index] & (1 << edge)) {
+            if (edge_table[cube_index] & (1 << edge)) {
                 int v1 = edge_connections[edge][0];
                 int v2 = edge_connections[edge][1];
                 
@@ -349,7 +377,7 @@ __global__ void enhancedMarchingCubes(
         }
         
         // Generate triangles from the table
-        for (int i = 0; triTable[cube_index][i] != -1; i += 3) {
+        for (int i = 0; tri_table[cube_index][i] != -1; i += 3) {
             int base_vertex = atomicAdd(vertex_counter, 3);
             if (base_vertex + 2 >= max_vertices) break;
             
@@ -357,7 +385,7 @@ __global__ void enhancedMarchingCubes(
             
             // Add three vertices of the triangle
             for (int j = 0; j < 3; j++) {
-                int edge = triTable[cube_index][i + j];
+                int edge = tri_table[cube_index][i + j];
                 int vertex_idx = base_vertex + j;
                 
                 vertices[vertex_idx] = edge_vertices[edge];
@@ -377,7 +405,7 @@ __global__ void enhancedMarchingCubes(
 
 // Kernel to mark voxel blocks as dirty based on new points
 __global__ void markDirtyVoxelBlocks(
-    VoxelBlock* voxel_blocks,
+    mesh_service::VoxelBlock* voxel_blocks,
     int num_blocks,
     const float3* new_points,
     int num_points,
@@ -386,7 +414,7 @@ __global__ void markDirtyVoxelBlocks(
     int block_idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (block_idx >= num_blocks) return;
     
-    VoxelBlock& block = voxel_blocks[block_idx];
+    mesh_service::VoxelBlock& block = voxel_blocks[block_idx];
     if (!block.is_allocated) return;
     
     // Expand bounds by influence radius
@@ -431,7 +459,7 @@ public:
     thrust::device_vector<uint8_t> d_color_volume;
     
     // Block management
-    thrust::device_vector<VoxelBlock> d_voxel_blocks;
+    thrust::device_vector<mesh_service::VoxelBlock> d_voxel_blocks;
     thrust::device_vector<int> d_dirty_blocks;
     int num_blocks;
     int3 block_grid_size;
@@ -460,14 +488,14 @@ public:
         num_blocks = block_grid_size.x * block_grid_size.y * block_grid_size.z;
         
         // Allocate block array
-        std::vector<VoxelBlock> h_blocks(num_blocks);
+        std::vector<mesh_service::VoxelBlock> h_blocks(num_blocks);
         int allocated_blocks = 0;
         
         for (int z = 0; z < block_grid_size.z; z++) {
             for (int y = 0; y < block_grid_size.y; y++) {
                 for (int x = 0; x < block_grid_size.x; x++) {
                     int idx = x + y * block_grid_size.x + z * block_grid_size.x * block_grid_size.y;
-                    VoxelBlock& block = h_blocks[idx];
+                    mesh_service::VoxelBlock& block = h_blocks[idx];
                     
                     block.block_coord = make_int3(x, y, z);
                     block.min_bound = make_float3(
@@ -547,9 +575,9 @@ void IncrementalTSDFFusion::initialize(float3 min_bounds, float3 max_bounds) {
 }
 
 void IncrementalTSDFFusion::integratePoints(
-    const float3* d_points,
-    const float3* d_normals,
-    const uint8_t* d_colors,
+    float3* d_points,
+    float3* d_normals,
+    uint8_t* d_colors,
     size_t num_points,
     const float* camera_pose,
     cudaStream_t stream
@@ -569,32 +597,45 @@ void IncrementalTSDFFusion::integratePoints(
     );
     
     // Get list of dirty blocks
-    VoxelBlock* d_blocks = pImpl->d_voxel_blocks.data().get();
+    mesh_service::VoxelBlock* d_blocks = pImpl->d_voxel_blocks.data().get();
     int* d_dirty = pImpl->d_dirty_blocks.data().get();
+    
+    // Create a kernel to extract dirty flags
+    thrust::device_vector<int> d_flags(pImpl->num_blocks);
+    dim3 flag_block(256);
+    dim3 flag_grid((pImpl->num_blocks + 255) / 256);
+    
+    // Simple kernel to extract is_dirty flags
+    auto extract_flags_kernel = [] __global__ (mesh_service::VoxelBlock* blocks, int* flags, int num_blocks) {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx < num_blocks) {
+            flags[idx] = blocks[idx].is_dirty ? 1 : 0;
+        }
+    };
+    
+    extract_flags_kernel<<<flag_grid, flag_block, 0, stream>>>(d_blocks, d_flags.data().get(), pImpl->num_blocks);
     
     // Use CUB to compact dirty block indices
     size_t temp_storage_bytes = 0;
     cub::DeviceSelect::Flagged(nullptr, temp_storage_bytes,
                                thrust::make_counting_iterator(0),
-                               thrust::make_transform_iterator(d_blocks,
-                                   [] __device__ (const VoxelBlock& b) { return b.is_dirty ? 1 : 0; }),
+                               d_flags.data().get(),
                                d_dirty,
-                               pImpl->d_counters.data().get(),
+                               pImpl->d_counters.data(),
                                pImpl->num_blocks,
                                stream);
     
     thrust::device_vector<char> temp_storage(temp_storage_bytes);
     cub::DeviceSelect::Flagged(temp_storage.data().get(), temp_storage_bytes,
                                thrust::make_counting_iterator(0),
-                               thrust::make_transform_iterator(d_blocks,
-                                   [] __device__ (const VoxelBlock& b) { return b.is_dirty ? 1 : 0; }),
+                               d_flags.data().get(),
                                d_dirty,
-                               pImpl->d_counters.data().get(),
+                               pImpl->d_counters.data(),
                                pImpl->num_blocks,
                                stream);
     
     int num_dirty_blocks;
-    cudaMemcpyAsync(&num_dirty_blocks, pImpl->d_counters.data().get(), sizeof(int), 
+    cudaMemcpyAsync(&num_dirty_blocks, pImpl->d_counters.data(), sizeof(int), 
                     cudaMemcpyDeviceToHost, stream);
     cudaStreamSynchronize(stream);
     
@@ -630,11 +671,11 @@ void IncrementalTSDFFusion::extractMesh(
     thrust::fill(pImpl->d_counters.begin(), pImpl->d_counters.end(), 0);
     
     // Get dirty blocks for extraction
-    VoxelBlock* d_blocks = pImpl->d_voxel_blocks.data().get();
+    mesh_service::VoxelBlock* d_blocks = pImpl->d_voxel_blocks.data().get();
     int* d_dirty = pImpl->d_dirty_blocks.data().get();
     
     int num_dirty_blocks;
-    cudaMemcpyAsync(&num_dirty_blocks, pImpl->d_counters.data().get(), sizeof(int),
+    cudaMemcpyAsync(&num_dirty_blocks, pImpl->d_counters.data(), sizeof(int),
                     cudaMemcpyDeviceToHost, stream);
     cudaStreamSynchronize(stream);
     
@@ -659,15 +700,15 @@ void IncrementalTSDFFusion::extractMesh(
         pImpl->d_normals.data().get(),
         pImpl->d_vertex_colors.data().get(),
         pImpl->d_faces.data().get(),
-        &pImpl->d_counters[0],
-        &pImpl->d_counters[1],
+        pImpl->d_counters.data(),
+        pImpl->d_counters.data() + 1,
         pImpl->d_vertices.size()
     );
     
     // Copy results to host
     int num_vertices, num_faces;
-    cudaMemcpy(&num_vertices, &pImpl->d_counters[0], sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&num_faces, &pImpl->d_counters[1], sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&num_vertices, pImpl->d_counters.data(), sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&num_faces, pImpl->d_counters.data() + 1, sizeof(int), cudaMemcpyDeviceToHost);
     
     // Resize output arrays
     update.vertices.resize(num_vertices * 3);
@@ -697,14 +738,14 @@ void IncrementalTSDFFusion::extractMesh(
                num_vertices * 3 * sizeof(uint8_t), cudaMemcpyDeviceToHost);
     
     // Clear dirty flags
-    cudaMemsetAsync(d_blocks, 0, pImpl->num_blocks * sizeof(VoxelBlock), stream);
+    cudaMemsetAsync(d_blocks, 0, pImpl->num_blocks * sizeof(mesh_service::VoxelBlock), stream);
 }
 
 size_t IncrementalTSDFFusion::getMemoryUsage() const {
     return pImpl->d_tsdf_volume.size() * sizeof(float) +
            pImpl->d_weight_volume.size() * sizeof(float) +
            pImpl->d_color_volume.size() * sizeof(uint8_t) +
-           pImpl->d_voxel_blocks.size() * sizeof(VoxelBlock);
+           pImpl->d_voxel_blocks.size() * sizeof(mesh_service::VoxelBlock);
 }
 
 void IncrementalTSDFFusion::reset() {

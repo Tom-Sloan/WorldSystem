@@ -71,34 +71,30 @@ public:
     // Set voxel size
     void setVoxelSize(float size);
 
-    // Allocate blocks on demand
-    void allocateBlock(int3 block_pos, cudaStream_t stream);
-
-    // Integrate new depth data
-    void integrateDepthMap(
-        float* d_depth,
-        int width, int height,
-        const float* intrinsics,
-        const float* pose,
-        cudaStream_t stream
-    );
+    // Initialize the TSDF volume with bounds
+    void initialize(float3 min_bounds, float3 max_bounds);
 
     // Integrate point cloud
-    void integratePointCloud(
+    void integratePoints(
         float3* d_points,
+        float3* d_normals,
+        uint8_t* d_colors,
         size_t num_points,
-        const float* pose,
+        const float* camera_pose,
         cudaStream_t stream
     );
 
-    // Extract mesh from dirty blocks
-    void extractMeshIncremental(
+    // Extract mesh
+    void extractMesh(
         MeshUpdate& output,
         cudaStream_t stream
     );
 
     // Get memory usage
     size_t getMemoryUsage() const;
+
+    // Reset the TSDF volume
+    void reset();
 
 private:
     class Impl;
@@ -107,11 +103,6 @@ private:
 
 // CUDA kernels for marching cubes
 namespace cuda {
-
-// Marching cubes lookup tables
-extern __constant__ int edge_table[256];
-extern __constant__ int tri_table[256][16];
-extern __constant__ int vertex_offset[8][3];
 
 // TSDF integration kernel
 __global__ void integrateTSDFKernel(

@@ -346,6 +346,8 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Mesh reconstruction service using NVIDIA Marching Cubes with algorithm selector
+  # Supports TSDF + Marching Cubes (current) with future support for Poisson/NKSR
   mesh_service:
     image: mesh_service:latest
     profiles: ["mesh_service", "slam3r"]  # Run with slam3r profile
@@ -428,6 +430,18 @@ services:
       - TSDF_USE_SPACE_CARVING=${TSDF_USE_SPACE_CARVING:-false}     # Remove unseen voxels
       - TSDF_MIN_WEIGHT_THRESHOLD=${TSDF_MIN_WEIGHT_THRESHOLD:-1.0} # Min weight for mesh extraction
       - TSDF_GRADIENT_DELTA=${TSDF_GRADIENT_DELTA:-0.01}            # For normal estimation
+      
+      # ========== ALGORITHM SELECTION (NEW) ==========
+      # Algorithm selection mode
+      - MESH_ALGORITHM=${MESH_ALGORITHM:-AUTO}                       # AUTO, MARCHING_CUBES, POISSON, NKSR
+      
+      # Velocity thresholds for adaptive quality
+      - VELOCITY_THRESHOLD_HIGH=${VELOCITY_THRESHOLD_HIGH:-0.5}      # High velocity threshold (m/s)
+      - VELOCITY_THRESHOLD_LOW=${VELOCITY_THRESHOLD_LOW:-0.3}        # Low velocity threshold (m/s)
+      
+      # Point cloud complexity thresholds
+      - POINT_COUNT_THRESHOLD=${POINT_COUNT_THRESHOLD:-100000}       # Threshold for algorithm switching
+      - COMPLEXITY_THRESHOLD=${COMPLEXITY_THRESHOLD:-0.7}            # Scene complexity threshold
       
       # ========== GPU AND DISPLAY ==========
       - NVIDIA_VISIBLE_DEVICES=all

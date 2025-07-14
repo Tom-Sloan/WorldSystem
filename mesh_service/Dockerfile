@@ -1,4 +1,6 @@
 # mesh_service/Dockerfile
+# Mesh reconstruction service using NVIDIA Marching Cubes implementation
+# with algorithm selector for future Poisson/NKSR support
 FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 
 # Avoid interactive prompts
@@ -105,6 +107,12 @@ RUN mkdir -p build && cd build && \
     # Verify the binary was created
     test -f mesh_service || (echo "Build failed: mesh_service binary not found" && exit 1) && \
     ls -la /app/build/
+
+# Clean up build artifacts to reduce image size
+RUN cd /app/build && \
+    find . -name "*.o" -delete && \
+    find . -name "*.a" -delete && \
+    strip mesh_service || true
 
 # Runtime environment
 ENV LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}

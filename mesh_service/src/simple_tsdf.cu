@@ -13,13 +13,7 @@ __device__ float3 operator-(const float3& a, const float3& b) {
     return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
-__device__ float3 operator*(const float4x4& mat, const float3& vec) {
-    return make_float3(
-        mat.m[0][0] * vec.x + mat.m[0][1] * vec.y + mat.m[0][2] * vec.z + mat.m[0][3],
-        mat.m[1][0] * vec.x + mat.m[1][1] * vec.y + mat.m[1][2] * vec.z + mat.m[1][3],
-        mat.m[2][0] * vec.x + mat.m[2][1] * vec.y + mat.m[2][2] * vec.z + mat.m[2][3]
-    );
-}
+// Removed - using Matrix4 struct instead
 
 __device__ float length(const float3& v) {
     return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);

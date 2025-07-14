@@ -34,6 +34,14 @@ public:
         MeshUpdate& update
     );
     
+    // Generate mesh from point cloud directly
+    void generateMesh(
+        float3* d_points,
+        size_t num_points,
+        const float* camera_pose,
+        MeshUpdate& update
+    );
+    
     // Set mesh generation method
     void setMethod(MeshMethod method);
     

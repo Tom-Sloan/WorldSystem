@@ -12,6 +12,13 @@ namespace mesh_service {
 constexpr int WARP_SIZE = 32;
 constexpr int BLOCK_SIZE = 256;
 
+// Move comparator here for CUDA compatibility
+struct MortonComparator {
+    __host__ __device__ bool operator()(const SpatialPoint& a, const SpatialPoint& b) const {
+        return a.morton_code < b.morton_code;
+    }
+};
+
 // Helper functions
 namespace octree_kernels {
 __device__ inline uint32_t expandBits(uint32_t v) {
@@ -347,13 +354,6 @@ void GPUOctree::build(const float3* points, int num_points, cudaStream_t stream)
 void GPUOctree::sortPointsByMortonCode(cudaStream_t stream) {
     // Use Thrust to sort by Morton code
     thrust::device_ptr<SpatialPoint> d_points_ptr(d_points);
-    
-    // Use a functor instead of lambda for CUDA compatibility
-    struct MortonComparator {
-        __device__ bool operator()(const SpatialPoint& a, const SpatialPoint& b) const {
-            return a.morton_code < b.morton_code;
-        }
-    };
     
     thrust::sort(thrust::cuda::par.on(stream),
                  d_points_ptr, d_points_ptr + point_count,

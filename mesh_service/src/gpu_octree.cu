@@ -9,7 +9,7 @@
 namespace mesh_service {
 
 // Constants for octree construction
-constexpr int WARP_SIZE = 32;
+// constexpr int WARP_SIZE = 32;  // Reserved for future warp-level operations
 constexpr int BLOCK_SIZE = 256;
 
 // Move comparator here for CUDA compatibility
@@ -150,8 +150,6 @@ __global__ void markDirtyNodes(
     }
 }
 
-} // namespace octree_kernels
-
 // Kernel to find k-nearest neighbors using octree
 __global__ void findKNearestNeighbors(
     const float3* query_points,
@@ -217,6 +215,8 @@ __global__ void findKNearestNeighbors(
     
     neighbor_counts[query_idx] = count;
 }
+
+} // namespace octree_kernels
 
 // Kernel to check spatial overlap with existing regions
 __global__ void octree_kernels::checkSpatialOverlap(

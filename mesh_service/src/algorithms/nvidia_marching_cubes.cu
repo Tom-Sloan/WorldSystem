@@ -6,6 +6,16 @@
 #include <cub/cub.cuh>
 #include <iostream>
 
+// CUDA error checking macro
+#define CUDA_CHECK(call) do { \
+    cudaError_t error = call; \
+    if (error != cudaSuccess) { \
+        std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__ \
+                  << " - " << cudaGetErrorString(error) << std::endl; \
+        throw std::runtime_error("CUDA error"); \
+    } \
+} while(0)
+
 namespace mesh_service {
 
 // Import NVIDIA tables directly
@@ -19,6 +29,13 @@ __constant__ int d_triTable[256][16];
 
 // Helper CUDA kernels
 namespace cuda {
+
+// Edge table for marching cubes - defines vertex pairs for each edge
+__device__ const int edge_vertex[12][2] = {
+    {0, 1}, {1, 2}, {2, 3}, {3, 0},  // Bottom face edges
+    {4, 5}, {5, 6}, {6, 7}, {7, 4},  // Top face edges
+    {0, 4}, {1, 5}, {2, 6}, {3, 7}   // Vertical edges
+};
 
 // Conversion kernels
 __global__ void convertFloat4ToFloat3(
@@ -179,12 +196,7 @@ __global__ void generateTrianglesKernel(
     vertex_pos[6] = make_float3(pos.x + voxel_size, pos.y + voxel_size, pos.z + voxel_size);
     vertex_pos[7] = make_float3(pos.x, pos.y + voxel_size, pos.z + voxel_size);
     
-    // Edge table for vertex interpolation
-    const int edge_vertex[12][2] = {
-        {0, 1}, {1, 2}, {2, 3}, {3, 0},
-        {4, 5}, {5, 6}, {6, 7}, {7, 4},
-        {0, 4}, {1, 5}, {2, 6}, {3, 7}
-    };
+    // Use the device constant edge_vertex table defined above
     
     // Generate triangles
     uint num_triangles = 0;
@@ -207,9 +219,33 @@ __global__ void generateTrianglesKernel(
             // Store vertex
             vertices[vertex_offset + num_triangles * 3 + j] = make_float4(p.x, p.y, p.z, 1.0f);
             
-            // Simple normal estimation (gradient of TSDF)
-            float3 n = make_float3(0.0f, 0.0f, 1.0f); // Placeholder
-            normals[vertex_offset + num_triangles * 3 + j] = make_float4(n.x, n.y, n.z, 0.0f);
+            // Compute normal using TSDF gradient (finite differences)
+            float3 gradient;
+            
+            // Sample TSDF at neighboring voxels for gradient computation
+            float dx_pos = (x + 1 < dims.x) ? tsdf[voxel_idx + 1] : field[0];
+            float dx_neg = (x > 0) ? tsdf[voxel_idx - 1] : field[0];
+            float dy_pos = (y + 1 < dims.y) ? tsdf[voxel_idx + dims.x] : field[0];
+            float dy_neg = (y > 0) ? tsdf[voxel_idx - dims.x] : field[0];
+            float dz_pos = (z + 1 < dims.z) ? tsdf[voxel_idx + dims.x * dims.y] : field[0];
+            float dz_neg = (z > 0) ? tsdf[voxel_idx - dims.x * dims.y] : field[0];
+            
+            // Central differences for gradient
+            gradient.x = (dx_pos - dx_neg) * 0.5f;
+            gradient.y = (dy_pos - dy_neg) * 0.5f;
+            gradient.z = (dz_pos - dz_neg) * 0.5f;
+            
+            // Normalize the gradient to get the normal
+            float len = sqrtf(gradient.x * gradient.x + gradient.y * gradient.y + gradient.z * gradient.z);
+            if (len > 0.0001f) {
+                gradient.x /= len;
+                gradient.y /= len;
+                gradient.z /= len;
+            } else {
+                gradient = make_float3(0.0f, 0.0f, 1.0f); // Default if gradient is too small
+            }
+            
+            normals[vertex_offset + num_triangles * 3 + j] = make_float4(gradient.x, gradient.y, gradient.z, 0.0f);
         }
         num_triangles++;
     }
@@ -252,22 +288,22 @@ bool NvidiaMarchingCubes::initialize(const AlgorithmParams& params) {
 
 void NvidiaMarchingCubes::uploadTables() {
     // Copy tables to constant memory
-    cudaMemcpyToSymbol(d_numVertsTable, numVertsTable, 256 * sizeof(uint));
-    cudaMemcpyToSymbol(d_triTable, triTable, 256 * 16 * sizeof(int));
+    CUDA_CHECK(cudaMemcpyToSymbol(d_numVertsTable, numVertsTable, 256 * sizeof(uint)));
+    CUDA_CHECK(cudaMemcpyToSymbol(d_triTable, triTable, 256 * 16 * sizeof(int)));
 }
 
 void NvidiaMarchingCubes::allocateBuffers(const int3& volume_dims) {
     size_t num_voxels = volume_dims.x * volume_dims.y * volume_dims.z;
     
     // Allocate voxel classification buffers
-    cudaMalloc(&buffers_.d_voxel_verts_scan, num_voxels * sizeof(uint));
-    cudaMalloc(&buffers_.d_voxel_occupied_scan, num_voxels * sizeof(uint));
-    cudaMalloc(&buffers_.d_compressed_voxel_array, num_voxels * sizeof(uint));
+    CUDA_CHECK(cudaMalloc(&buffers_.d_voxel_verts_scan, num_voxels * sizeof(uint)));
+    CUDA_CHECK(cudaMalloc(&buffers_.d_voxel_occupied_scan, num_voxels * sizeof(uint)));
+    CUDA_CHECK(cudaMalloc(&buffers_.d_compressed_voxel_array, num_voxels * sizeof(uint)));
     
     // Allocate output buffers (generous size)
     buffers_.allocated_vertices = params_.marching_cubes.max_vertices;
-    cudaMalloc(&buffers_.d_vertex_buffer, buffers_.allocated_vertices * sizeof(float4));
-    cudaMalloc(&buffers_.d_normal_buffer, buffers_.allocated_vertices * sizeof(float4));
+    CUDA_CHECK(cudaMalloc(&buffers_.d_vertex_buffer, buffers_.allocated_vertices * sizeof(float4)));
+    CUDA_CHECK(cudaMalloc(&buffers_.d_normal_buffer, buffers_.allocated_vertices * sizeof(float4)));
     
     buffers_.allocated_voxels = num_voxels;
 }
@@ -327,30 +363,35 @@ bool NvidiaMarchingCubes::reconstruct(
                                    buffers_.d_voxel_occupied_scan,
                                    num_voxels, stream);
     
-    // Get total counts
-    uint h_total_verts, h_last_vert_scan;
-    uint h_total_voxels, h_last_voxel_scan;
+    // Get total counts by using thrust to get the last element + sum
+    thrust::device_ptr<uint> d_verts_ptr(buffers_.d_voxel_verts_scan);
+    thrust::device_ptr<uint> d_occupied_ptr(buffers_.d_voxel_occupied_scan);
     
-    cudaMemcpyAsync(&h_last_vert_scan, 
-                    buffers_.d_voxel_verts_scan + num_voxels - 1,
-                    sizeof(uint), cudaMemcpyDeviceToHost, stream);
-    cudaMemcpyAsync(&h_last_voxel_scan,
-                    buffers_.d_voxel_occupied_scan + num_voxels - 1,
-                    sizeof(uint), cudaMemcpyDeviceToHost, stream);
+    // The total is the last scan value + the last original value
+    // Since we need the original values, let's save them before scan
+    thrust::device_vector<uint> d_voxel_verts_orig(buffers_.d_voxel_verts_scan, 
+                                                   buffers_.d_voxel_verts_scan + num_voxels);
+    thrust::device_vector<uint> d_voxel_occupied_orig(buffers_.d_voxel_occupied_scan,
+                                                      buffers_.d_voxel_occupied_scan + num_voxels);
+    
+    // Now do the exclusive scan (this modifies the buffers in place)
+    thrust::exclusive_scan(thrust::cuda::par.on(stream),
+                          d_voxel_verts_orig.begin(), d_voxel_verts_orig.end(),
+                          d_verts_ptr);
+    thrust::exclusive_scan(thrust::cuda::par.on(stream),
+                          d_voxel_occupied_orig.begin(), d_voxel_occupied_orig.end(),
+                          d_occupied_ptr);
     
     cudaStreamSynchronize(stream);
     
-    // Read last voxel info to determine totals
-    uint h_last_vert_count, h_last_occupied;
-    cudaMemcpy(&h_last_vert_count, 
-               buffers_.d_voxel_verts_scan + num_voxels - 1,
-               sizeof(uint), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&h_last_occupied,
-               buffers_.d_voxel_occupied_scan + num_voxels - 1,
-               sizeof(uint), cudaMemcpyDeviceToHost);
+    // Get totals
+    uint h_last_vert_scan = d_verts_ptr[num_voxels - 1];
+    uint h_last_vert_orig = d_voxel_verts_orig[num_voxels - 1];
+    uint h_last_occupied_scan = d_occupied_ptr[num_voxels - 1];
+    uint h_last_occupied_orig = d_voxel_occupied_orig[num_voxels - 1];
     
-    uint total_vertices = h_last_vert_scan + h_last_vert_count;
-    uint active_voxels = h_last_voxel_scan + h_last_occupied;
+    uint total_vertices = h_last_vert_scan + h_last_vert_orig;
+    uint active_voxels = h_last_occupied_scan + h_last_occupied_orig;
     
     if (total_vertices == 0) {
         output.vertices.clear();
@@ -358,8 +399,15 @@ bool NvidiaMarchingCubes::reconstruct(
         return true;
     }
     
+    // Check if we have enough buffer space
+    if (total_vertices > buffers_.allocated_vertices) {
+        std::cerr << "Warning: Total vertices (" << total_vertices 
+                  << ") exceeds allocated buffer (" << buffers_.allocated_vertices << ")" << std::endl;
+        total_vertices = buffers_.allocated_vertices;  // Clamp to allocated size
+    }
+    
     // Step 4: Compact active voxels
-    compactVoxels(buffers_.d_voxel_occupied_scan,
+    compactVoxels(d_voxel_occupied_orig.data().get(),  // Need the original occupied flags, not scan
                   buffers_.d_voxel_occupied_scan,
                   buffers_.d_compressed_voxel_array,
                   num_voxels,
@@ -393,6 +441,7 @@ bool NvidiaMarchingCubes::reconstruct(
         d_normals_temp.data().get(),
         total_vertices
     );
+    CUDA_CHECK(cudaGetLastError());
     
     // Copy to host
     std::vector<float3> h_vertices(total_vertices);
@@ -413,16 +462,20 @@ bool NvidiaMarchingCubes::reconstruct(
         d_faces.data().get(),
         num_triangles
     );
+    CUDA_CHECK(cudaGetLastError());
     
     // Copy faces to host
     std::vector<int3> h_faces(num_triangles);
     thrust::copy(d_faces.begin(), d_faces.end(), h_faces.begin());
     
     for (size_t i = 0; i < num_triangles; i++) {
-        output.faces[i * 3] = h_faces[i].x;
-        output.faces[i * 3 + 1] = h_faces[i].y;
-        output.faces[i * 3 + 2] = h_faces[i].z;
+        output.faces[i * 3] = static_cast<uint32_t>(h_faces[i].x);
+        output.faces[i * 3 + 1] = static_cast<uint32_t>(h_faces[i].y);
+        output.faces[i * 3 + 2] = static_cast<uint32_t>(h_faces[i].z);
     }
+    
+    // Final synchronization to ensure all operations complete
+    cudaStreamSynchronize(stream);
     
     return true;
 }
@@ -444,6 +497,7 @@ void NvidiaMarchingCubes::classifyVoxels(
         d_voxel_verts,
         d_voxel_occupied
     );
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void NvidiaMarchingCubes::compactVoxels(
@@ -462,6 +516,7 @@ void NvidiaMarchingCubes::compactVoxels(
         d_compressed_voxels,
         num_voxels
     );
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void NvidiaMarchingCubes::generateTriangles(
@@ -490,6 +545,7 @@ void NvidiaMarchingCubes::generateTriangles(
         d_normals,
         d_face_count.data().get()
     );
+    CUDA_CHECK(cudaGetLastError());
 }
 
 size_t NvidiaMarchingCubes::getMemoryUsage() const {

@@ -105,7 +105,7 @@ __global__ void estimateNormalsPCA(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_points) return;
     
-    float3 query_point = points[idx];
+    // float3 query_point = points[idx];  // Will be used when neighbor collection is implemented
     
     // Collect neighbors (simplified - assumes pre-computed indices)
     float3 neighbors[64];  // Max k_neighbors

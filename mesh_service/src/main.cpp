@@ -88,11 +88,12 @@ int main(int argc, char* argv[]) {
                 
                 // Set up a pinhole camera view for better visualization
                 // This helps Rerun understand the 3D space better
-                float camera_matrix[9] = {
-                    500.0f, 0.0f, 320.0f,    // fx, 0, cx
-                    0.0f, 500.0f, 240.0f,    // 0, fy, cy
-                    0.0f, 0.0f, 1.0f         // 0, 0, 1
-                };
+                // Camera matrix - will be used when we add camera visualization
+                // float camera_matrix[9] = {
+                //     500.0f, 0.0f, 320.0f,    // fx, 0, cx
+                //     0.0f, 500.0f, 240.0f,    // 0, fy, cy
+                //     0.0f, 0.0f, 1.0f         // 0, 0, 1
+                // };
                 
                 // Log initial camera setup
                 float initial_pose[16] = {

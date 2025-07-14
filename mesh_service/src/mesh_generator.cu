@@ -55,7 +55,7 @@ public:
     // std::unique_ptr<IncrementalPoissonReconstruction> incremental_poisson;
     // std::unique_ptr<GPUPoissonReconstruction> gpu_poisson;  // New GPU implementation
     // std::unique_ptr<NKSRReconstruction> nksr;  // Neural Kernel Surface Reconstruction
-    // std::unique_ptr<MarchingCubesGPU> marching_cubes;
+    std::unique_ptr<MarchingCubesGPU> marching_cubes;
     std::unique_ptr<IncrementalTSDFFusion> tsdf_fusion;
     std::unique_ptr<NormalEstimation> normal_estimator;
     std::unique_ptr<GPUOctree> gpu_octree;  // GPU octree for spatial indexing
@@ -112,7 +112,7 @@ public:
         // incremental_poisson = std::make_unique<IncrementalPoissonReconstruction>();
         // gpu_poisson = std::make_unique<GPUPoissonReconstruction>();  // GPU Poisson
         // nksr = std::make_unique<NKSRReconstruction>();  // NKSR
-        // marching_cubes = std::make_unique<MarchingCubesGPU>();
+        marching_cubes = std::make_unique<MarchingCubesGPU>();
         tsdf_fusion = std::make_unique<IncrementalTSDFFusion>();
         normal_estimator = std::make_unique<NormalEstimation>();
         gpu_octree = std::make_unique<GPUOctree>(10.0f, 8, 64);  // 10m scene, depth 8
@@ -123,10 +123,11 @@ public:
         }
         
         // Configure components
-        PoissonReconstruction::Parameters poisson_params;
-        poisson_params.octree_depth = 8;
-        poisson_params.point_weight = 4.0f;
-        poisson->setParameters(poisson_params);
+        // FUTURE: Uncomment for Poisson support
+        // PoissonReconstruction::Parameters poisson_params;
+        // poisson_params.octree_depth = 8;
+        // poisson_params.point_weight = 4.0f;
+        // poisson->setParameters(poisson_params);
         
         MarchingCubesGPU::Parameters mc_params;
         mc_params.voxel_size = 0.05f;
@@ -161,12 +162,12 @@ public:
         // ...
         
         // Initialize memory pool blocks
-        size_t block_size = 64 * 1024 * 1024;  // 64MB blocks
-        size_t num_blocks = memory_pool_size / block_size;
+        size_t memory_block_size = 64 * 1024 * 1024;  // 64MB blocks
+        size_t num_blocks = memory_pool_size / memory_block_size;
         for (size_t i = 0; i < num_blocks; i++) {
             MemoryBlock block;
-            block.ptr = (char*)d_memory_pool + i * block_size;
-            block.size = block_size;
+            block.ptr = (char*)d_memory_pool + i * memory_block_size;
+            block.size = memory_block_size;
             block.in_use = false;
             memory_blocks.push_back(block);
         }
@@ -446,7 +447,7 @@ void GPUMeshGenerator::generateMarchingCubesMesh(
     // Integrate points into TSDF using incremental fusion
     pImpl->tsdf_fusion->integratePoints(
         d_points,
-        d_normals,
+        nullptr,  // normals will be computed if needed
         d_colors,
         keyframe->point_count,
         keyframe->pose_matrix,

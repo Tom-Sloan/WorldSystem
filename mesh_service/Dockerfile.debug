@@ -1,0 +1,66 @@
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    wget \
+    curl \
+    libssl-dev \
+    libev-dev \
+    libcgal-dev \
+    libeigen3-dev \
+    libwebsocketpp-dev \
+    libboost-all-dev \
+    pkg-config \
+    ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install prometheus-cpp
+RUN cd /tmp && \
+    git clone https://github.com/jupp0r/prometheus-cpp.git && \
+    cd prometheus-cpp && \
+    git submodule init && \
+    git submodule update && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_PUSH=OFF -DENABLE_COMPRESSION=OFF && \
+    make -j$(nproc) && \
+    make install && \
+    ldconfig && \
+    cd / && rm -rf /tmp/prometheus-cpp
+
+# Install AMQP-CPP
+RUN cd /tmp && \
+    git clone https://github.com/CopernicaMarketingSoftware/AMQP-CPP.git && \
+    cd AMQP-CPP && \
+    mkdir build && cd build && \
+    cmake .. -DAMQP-CPP_BUILD_SHARED=ON -DAMQP-CPP_LINUX_TCP=ON && \
+    make -j$(nproc) && \
+    make install && \
+    ldconfig && \
+    cd / && rm -rf /tmp/AMQP-CPP
+
+# Install msgpack
+RUN cd /tmp && \
+    git clone https://github.com/msgpack/msgpack-c.git && \
+    cd msgpack-c && \
+    git checkout cpp_master && \
+    cmake -S . -B build -DMSGPACK_BUILD_TESTS=OFF -DMSGPACK_BUILD_EXAMPLES=OFF && \
+    cmake --build build -j$(nproc) && \
+    cmake --install build && \
+    ldconfig && \
+    cd / && rm -rf /tmp/msgpack-c
+
+WORKDIR /app
+COPY . .
+
+# Debug build
+RUN mkdir -p build && cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_VERBOSE_MAKEFILE=ON .. && \
+    make -j1 VERBOSE=1 2>&1 | tee build.log || true && \
+    echo "=== BUILD COMPLETE ===" && \
+    echo "=== CHECKING FOR BINARY ===" && \
+    ls -la && \
+    echo "=== LAST 200 LINES OF BUILD LOG ===" && \
+    tail -200 build.log

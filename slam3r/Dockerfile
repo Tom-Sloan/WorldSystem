@@ -63,15 +63,16 @@ RUN pip3 install ninja
 # Set working directory
 WORKDIR /app
 
-# Copy SLAM3R engine code (submodule) and requirements files
-# This assumes the submodule is cloned into SLAM3R_engine within the build context (./slam3r)
-COPY ./SLAM3R_engine /app/SLAM3R_engine/
+# Copy only requirements files first (for better caching)
+COPY ./SLAM3R_engine/requirements.txt /app/SLAM3R_engine/requirements.txt
+COPY ./SLAM3R_engine/requirements_optional.txt /app/SLAM3R_engine/requirements_optional.txt
 
 # Install SLAM3R Python dependencies
 RUN pip3 install -r /app/SLAM3R_engine/requirements.txt
 
 # Install optional dependencies including Open3D for mesh generation
 RUN pip3 install -r /app/SLAM3R_engine/requirements_optional.txt
+
 
 # Ensure libGL is available for Rerun (even if running headlessly, some parts might link against it)
 RUN apt-get update && apt-get install -y libgl1-mesa-glx && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -82,13 +83,13 @@ RUN pip3 install aio-pika PyYAML psutil py-spy torch-scatter msgpack-python posi
 # --- Rerun SDK (visualization) ---
 RUN pip3 install --no-cache-dir "numpy>=2.2,<3" rerun-sdk==0.23.2
 
-
 WORKDIR /app
+
+COPY ./SLAM3R_engine/ /app/SLAM3R_engine/
 
 # Build and install the CUDA‑accelerated curope wheel
 RUN cd /app/SLAM3R_engine/slam3r/pos_embed/curope && \
     python3 setup.py build_ext --inplace
-
     
 WORKDIR /app
 

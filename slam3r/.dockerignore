@@ -1,0 +1,22 @@
+# NOTE: We handle frequently changing files with separate COPY commands
+# in the Dockerfile for better caching, so don't exclude them here
+
+# Exclude common development files
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.coverage
+**/*.egg-info
+**/dist
+**/build
+**/.git
+**/.gitignore
+**/*.log
+**/.DS_Store
+**/.vscode
+**/.idea
+
+# Exclude any local test outputs
+**/outputs
+**/checkpoints
+**/models

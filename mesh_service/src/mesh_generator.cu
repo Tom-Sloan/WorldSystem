@@ -251,30 +251,77 @@ void GPUMeshGenerator::generateIncrementalMesh(
     std::cout << "  Min: [" << keyframe->bbox[0] << ", " << keyframe->bbox[1] << ", " << keyframe->bbox[2] << "]" << std::endl;
     std::cout << "  Max: [" << keyframe->bbox[3] << ", " << keyframe->bbox[4] << ", " << keyframe->bbox[5] << "]" << std::endl;
     
-    // Allocate device memory using memory pool
-    float3* d_points = (float3*)pImpl->allocateFromPool(keyframe->point_count * sizeof(float3));
-    if (!d_points) {
-        // Fallback to regular allocation
-        cudaMallocAsync(&d_points, keyframe->point_count * sizeof(float3), pImpl->stream);
+    // Filter corrupted points before processing
+    std::vector<float3> valid_points;
+    std::vector<uint8_t> valid_colors;
+    valid_points.reserve(keyframe->point_count);
+    if (h_colors) {
+        valid_colors.reserve(keyframe->point_count * 3);
     }
     
-    // Copy points to device
-    cudaMemcpyAsync(d_points, h_points, 
-                    keyframe->point_count * sizeof(float3), 
+    size_t corrupted_count = 0;
+    const float max_coord = 1000.0f; // 1km scene bounds
+    
+    for (size_t i = 0; i < keyframe->point_count; i++) {
+        float3 pt = make_float3(h_points[i*3], h_points[i*3+1], h_points[i*3+2]);
+        
+        // Check for NaN, infinity, and extreme values
+        if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z) ||
+            std::abs(pt.x) > max_coord || std::abs(pt.y) > max_coord || std::abs(pt.z) > max_coord) {
+            corrupted_count++;
+            if (corrupted_count <= 5) { // Log first few corrupted points
+                std::cout << "[MESH GEN] Filtering corrupted point " << i 
+                          << ": [" << pt.x << ", " << pt.y << ", " << pt.z << "]" << std::endl;
+            }
+            continue;
+        }
+        
+        valid_points.push_back(pt);
+        if (h_colors) {
+            valid_colors.push_back(h_colors[i*3]);
+            valid_colors.push_back(h_colors[i*3+1]);
+            valid_colors.push_back(h_colors[i*3+2]);
+        }
+    }
+    
+    size_t valid_point_count = valid_points.size();
+    
+    if (corrupted_count > 0) {
+        std::cout << "[MESH GEN] Filtered " << corrupted_count 
+                  << " corrupted points, " << valid_point_count << " valid points remain" << std::endl;
+    }
+    
+    if (valid_point_count == 0) {
+        std::cout << "[MESH GEN] No valid points after filtering, skipping mesh generation" << std::endl;
+        update.vertices.clear();
+        update.faces.clear();
+        return;
+    }
+    
+    // Allocate device memory for valid points only
+    float3* d_points = (float3*)pImpl->allocateFromPool(valid_point_count * sizeof(float3));
+    if (!d_points) {
+        // Fallback to regular allocation
+        cudaMallocAsync(&d_points, valid_point_count * sizeof(float3), pImpl->stream);
+    }
+    
+    // Copy valid points to device
+    cudaMemcpyAsync(d_points, valid_points.data(), 
+                    valid_point_count * sizeof(float3), 
                     cudaMemcpyHostToDevice, pImpl->stream);
     
     // Allocate device memory for normals
-    pImpl->d_normals.resize(keyframe->point_count);
+    pImpl->d_normals.resize(valid_point_count);
     
     // Estimate normals
     // Update octree with new points for neighbor queries
-    pImpl->gpu_octree->incrementalUpdate(d_points, keyframe->point_count, 
+    pImpl->gpu_octree->incrementalUpdate(d_points, valid_point_count, 
                                         keyframe->pose_matrix, pImpl->stream);
     
     // Estimate normals using octree for efficient neighbor search
     pImpl->normal_estimator->estimateNormals(
         d_points, 
-        keyframe->point_count,
+        valid_point_count,
         pImpl->d_normals.data().get(),
         pImpl->stream
     );
@@ -283,7 +330,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
     bool success = pImpl->algorithm_selector->processWithAutoSelect(
         d_points,
         pImpl->d_normals.data().get(),
-        keyframe->point_count,
+        valid_point_count,
         keyframe->pose_matrix,
         pImpl->camera_velocity,
         update,
@@ -297,14 +344,14 @@ void GPUMeshGenerator::generateIncrementalMesh(
     }
     
     // Copy colors if available
-    if (h_colors && update.vertices.size() > 0) {
+    if (!valid_colors.empty() && update.vertices.size() > 0) {
         update.vertex_colors.resize(update.vertices.size());
         // Simple color assignment for now - could be improved
         size_t num_vertices = update.vertices.size() / 3;
-        for (size_t i = 0; i < num_vertices && i < keyframe->point_count; i++) {
-            update.vertex_colors[i*3] = h_colors[i*3];
-            update.vertex_colors[i*3+1] = h_colors[i*3+1];
-            update.vertex_colors[i*3+2] = h_colors[i*3+2];
+        for (size_t i = 0; i < num_vertices && i < valid_point_count; i++) {
+            update.vertex_colors[i*3] = valid_colors[i*3];
+            update.vertex_colors[i*3+1] = valid_colors[i*3+1];
+            update.vertex_colors[i*3+2] = valid_colors[i*3+2];
         }
     }
     

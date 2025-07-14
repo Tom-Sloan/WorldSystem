@@ -36,25 +36,59 @@ __global__ void integrateTSDFKernel(
     float* tsdf_volume,
     float* weight_volume,
     const float3* points,
+    const float3* normals,
     size_t num_points,
     int3 volume_dims,
     float3 volume_origin,
     float voxel_size,
     float truncation_distance,
-    const Matrix4 world_to_volume
+    const Matrix4 world_to_volume,
+    const float3 camera_position
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_points) return;
     
     float3 point = points[idx];
+    float3 normal = normals ? normals[idx] : make_float3(0.0f, 0.0f, 1.0f);
+    
+    // Normalize the normal in case it's not unit length
+    float normal_len = length(normal);
+    if (normal_len > 0.0f) {
+        normal = make_float3(normal.x / normal_len, normal.y / normal_len, normal.z / normal_len);
+    }
+    
+    // Fallback: Use camera-to-point direction as normal if we have invalid normals
+    // This creates wrong but usable normals for testing
+    if (normal_len < 0.1f || (fabs(normal.x + 1.0f) < 0.01f && fabs(normal.y) < 0.01f && fabs(normal.z) < 0.01f)) {
+        // Normal is invalid (zero or the constant [-1,0,0])
+        float3 cam_to_point = make_float3(
+            point.x - camera_position.x,
+            point.y - camera_position.y,
+            point.z - camera_position.z
+        );
+        float cam_dist = length(cam_to_point);
+        if (cam_dist > 0.001f) {
+            // Use outward direction from camera as fake normal
+            normal = make_float3(
+                cam_to_point.x / cam_dist,
+                cam_to_point.y / cam_dist,
+                cam_to_point.z / cam_dist
+            );
+            if (idx < 5) {
+                printf("[TSDF] Using camera-based normal for point %d: normal=[%.3f,%.3f,%.3f]\n",
+                       idx, normal.x, normal.y, normal.z);
+            }
+        }
+    }
     
     // Transform point to volume space
     float3 voxel_pos = world_to_volume.transformPoint(point);
     
-    // Debug: Print first few transformed points
+    // Debug: Print first few transformed points and normals
     if (idx < 5) {
-        printf("[TSDF KERNEL] Point %d: world=[%.3f,%.3f,%.3f] -> voxel=[%.3f,%.3f,%.3f]\n",
-               idx, point.x, point.y, point.z, voxel_pos.x, voxel_pos.y, voxel_pos.z);
+        printf("[TSDF KERNEL] Point %d: world=[%.3f,%.3f,%.3f] -> voxel=[%.3f,%.3f,%.3f], normal=[%.3f,%.3f,%.3f]\n",
+               idx, point.x, point.y, point.z, voxel_pos.x, voxel_pos.y, voxel_pos.z,
+               normal.x, normal.y, normal.z);
     }
     
     // Get bounding voxels
@@ -96,14 +130,41 @@ __global__ void integrateTSDFKernel(
                     volume_origin.z + (z + 0.5f) * voxel_size
                 );
                 
-                // Compute signed distance
-                float distance = length(voxel_center - point);
+                // Compute distance and direction
+                float3 diff = voxel_center - point;
+                float distance = length(diff);
                 
                 // Skip if outside truncation
                 if (distance > truncation_distance) continue;
                 
-                // Compute TSDF value (negative inside surface)
-                float tsdf_value = distance;
+                // Compute signed distance using normal
+                // Positive: voxel is in front of surface (outside)
+                // Negative: voxel is behind surface (inside)
+                float sign = 1.0f;
+                if (distance > 0.0f) {
+                    // Normalize direction from point to voxel
+                    float3 direction = make_float3(diff.x / distance, diff.y / distance, diff.z / distance);
+                    // Dot product with normal gives us the sign
+                    float dot = direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
+                    // If dot < 0, voxel is behind the surface (inside)
+                    if (dot < 0.0f) {
+                        sign = -1.0f;
+                    }
+                }
+                
+                // Create a thin band of negative values near the surface
+                // This ensures marching cubes finds the zero crossing
+                float tsdf_value = sign * distance;
+                
+                // For very close voxels, ensure we have both positive and negative values
+                if (distance < voxel_size * 0.5f) {
+                    // Use normal to determine sign more accurately
+                    float3 to_voxel = make_float3(voxel_center.x - point.x, 
+                                                   voxel_center.y - point.y, 
+                                                   voxel_center.z - point.z);
+                    float alignment = to_voxel.x * normal.x + to_voxel.y * normal.y + to_voxel.z * normal.z;
+                    tsdf_value = alignment > 0.0f ? distance : -distance;
+                }
                 
                 // Update TSDF using weighted average
                 int voxel_idx = x + y * volume_dims.x + z * volume_dims.x * volume_dims.y;
@@ -117,10 +178,10 @@ __global__ void integrateTSDFKernel(
                     tsdf_volume[voxel_idx] = new_tsdf;
                     weight_volume[voxel_idx] = min(updated_weight, 100.0f); // Cap weight
                     
-                    // Debug: Print first few TSDF updates
+                    // Debug: Print first few TSDF updates including sign
                     if (idx < 2 && voxel_idx < 1000) {
-                        printf("[TSDF UPDATE] Point %d updated voxel %d: old_tsdf=%.3f, new_tsdf=%.3f, weight=%.1f\n",
-                               idx, voxel_idx, old_tsdf, new_tsdf, updated_weight);
+                        printf("[TSDF UPDATE] Point %d updated voxel %d: old_tsdf=%.3f, new_tsdf=%.3f, weight=%.1f, sign=%.1f\n",
+                               idx, voxel_idx, old_tsdf, new_tsdf, updated_weight, sign);
                     }
                 }
             }
@@ -137,7 +198,9 @@ __global__ void resetVolumeKernel(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_voxels) return;
     
-    tsdf_volume[idx] = truncation_distance;
+    // Initialize with large positive value (far from any surface)
+    // Don't use truncation_distance as that makes everything appear as a surface
+    tsdf_volume[idx] = 1.0f;  // 1 meter = very far from surface
     weight_volume[idx] = 0.0f;
 }
 
@@ -234,6 +297,21 @@ void SimpleTSDF::integrate(
     const float* camera_pose,
     cudaStream_t stream
 ) {
+    // Extract camera position from 4x4 pose matrix (translation part)
+    float3 camera_position = make_float3(0.0f, 0.0f, 0.0f);
+    if (camera_pose) {
+        // Camera pose is 4x4 matrix in column-major format
+        // Translation is in elements 12, 13, 14
+        camera_position = make_float3(
+            camera_pose[12],  // X translation
+            camera_pose[13],  // Y translation 
+            camera_pose[14]   // Z translation
+        );
+        std::cout << "[TSDF DEBUG] Camera position: [" 
+                  << camera_position.x << ", " 
+                  << camera_position.y << ", " 
+                  << camera_position.z << "]" << std::endl;
+    }
     if (num_points == 0) {
         std::cout << "[TSDF DEBUG] integrate() called with 0 points, returning" << std::endl;
         return;
@@ -277,12 +355,14 @@ void SimpleTSDF::integrate(
         pImpl->d_tsdf_volume_.data().get(),
         pImpl->d_weight_volume_.data().get(),
         d_points,
+        d_normals,
         num_points,
         pImpl->volume_dims_,
         pImpl->volume_origin_,
         pImpl->voxel_size_,
         pImpl->truncation_distance_,
-        world_to_volume
+        world_to_volume,
+        camera_position
     );
     
     cudaError_t err = cudaGetLastError();

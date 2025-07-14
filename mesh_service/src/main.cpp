@@ -160,9 +160,10 @@ int main(int argc, char* argv[]) {
                              << ", connected=" << (rerun_publisher ? rerun_publisher->isConnected() : false) << std::endl;
                     if (rerun_enabled && rerun_publisher->isConnected()) {
                         // Extract vertex colors from the keyframe if available
-                        std::cout << "[DEBUG] Keyframe has colors: " << (keyframe->colors != nullptr) 
+                        uint8_t* keyframe_colors = shared_memory->get_colors(keyframe);
+                        std::cout << "[DEBUG] Keyframe has colors: " << (keyframe_colors != nullptr) 
                                  << ", vertices count: " << update.vertices.size() << std::endl;
-                        if (keyframe->colors && update.vertices.size() > 0) {
+                        if (keyframe_colors && update.vertices.size() > 0) {
                             // Colors are in the keyframe data
                             std::cout << "[DEBUG] Extracting colors for " << keyframe->point_count << " points" << std::endl;
                             

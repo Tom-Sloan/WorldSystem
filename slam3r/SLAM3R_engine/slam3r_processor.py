@@ -192,7 +192,7 @@ class SLAM3RProcessor:
                     logger.error("Failed to decode image")
                     return
                 
-                # Convert BGR to RGB
+                # Convert BGR to RGB and store for color extraction
                 img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
                 
                 # Process frame through SLAM3R
@@ -208,6 +208,8 @@ class SLAM3RProcessor:
                 # Handle keyframe
                 if result and result.get('is_keyframe', False):
                     self.keyframe_count += 1
+                    # Add RGB data to result for color extraction
+                    result['rgb_image'] = img_rgb
                     await self._publish_keyframe(result, timestamp)
                 
                 # Log FPS periodically
@@ -220,38 +222,105 @@ class SLAM3RProcessor:
     async def _publish_keyframe(self, keyframe_data: Dict, timestamp: int):
         """Publish keyframe to mesh_service via shared memory."""
         try:
+            logger.info(f"Publishing keyframe {self.keyframe_count} with frame_id {keyframe_data['frame_id']}")
+            
+            # Debug the incoming keyframe data
+            pts3d_world = keyframe_data.get('pts3d_world')
+            conf_world = keyframe_data.get('conf_world')
+            
+            if pts3d_world is None:
+                logger.error("pts3d_world is None in keyframe data!")
+                return
+            if conf_world is None:
+                logger.error("conf_world is None in keyframe data!")
+                return
+                
+            logger.info(f"pts3d_world shape: {pts3d_world.shape}, dtype: {pts3d_world.dtype}")
+            logger.info(f"conf_world shape: {conf_world.shape}, dtype: {conf_world.dtype}")
+            
             if self.keyframe_publisher and STREAMING_AVAILABLE:
                 # Prepare keyframe data for mesh_service
                 keyframe = {
                     'timestamp': timestamp,
                     'frame_id': keyframe_data['frame_id'],
                     'keyframe_id': self.keyframe_count,
-                    'pts3d_world': keyframe_data['pts3d_world'].cpu().numpy(),
-                    'conf_world': keyframe_data['conf_world'].cpu().numpy(),
+                    'pts3d_world': pts3d_world.cpu().numpy(),
+                    'conf_world': conf_world.cpu().numpy(),
                     'pose': keyframe_data.get('pose', np.eye(4)),
                 }
                 
                 # Extract points and colors from pts3d_world
-                pts3d = keyframe['pts3d_world'].reshape(-1, 3)
-                conf = keyframe['conf_world'].reshape(-1)
+                # Handle different tensor shapes - matching original implementation
+                pts3d_np = keyframe['pts3d_world']
+                conf_np = keyframe['conf_world']
                 
-                # Filter by confidence
-                conf_thresh = self.config.get('recon_pipeline', {}).get('conf_thres_i2p', 1.5)
+                # Log shapes before reshaping
+                logger.info(f"Before reshape - pts3d_np shape: {pts3d_np.shape}, conf_np shape: {conf_np.shape}")
+                
+                # Handle tensor dimensions - matching original: squeeze(0).cpu().reshape(-1, 3)
+                if pts3d_np.ndim == 4 and pts3d_np.shape[0] == 1:
+                    pts3d_np = pts3d_np.squeeze(0)  # Remove batch dim
+                if conf_np.ndim == 3 and conf_np.shape[0] == 1:
+                    conf_np = conf_np.squeeze(0)  # Remove batch dim
+                
+                # Reshape to flat arrays
+                pts3d = pts3d_np.reshape(-1, 3)
+                conf = conf_np.squeeze().reshape(-1)
+                
+                # Use L2W confidence threshold - matching original
+                conf_thresh = self.config.get('recon_pipeline', {}).get('conf_thres_l2w', 12.0)
                 mask = conf > conf_thresh
+                
+                # Fallback to lower threshold if too few points - matching original
+                if mask.sum() < 3:
+                    conf_thresh_fallback = 0.5 * conf_thresh
+                    mask = conf > conf_thresh_fallback
+                    logger.info(f"Too few points with conf > {conf_thresh}, using fallback threshold {conf_thresh_fallback}")
+                
                 filtered_pts = pts3d[mask]
                 
-                # Create dummy colors (can be improved later)
-                colors = np.ones((len(filtered_pts), 3), dtype=np.uint8) * 200
+                # Check if we have any valid points
+                if len(filtered_pts) == 0:
+                    logger.warning(f"No valid points for keyframe {self.keyframe_count} after confidence filtering. "
+                                 f"Max conf: {conf.max():.3f}, min: {conf.min():.3f}, threshold: {conf_thresh}")
+                    return
                 
-                # Publish via shared memory (sync method, not async)
+                # Extract RGB colors if available
+                if 'rgb_image' in keyframe_data and keyframe_data['rgb_image'] is not None:
+                    rgb_image = keyframe_data['rgb_image']
+                    # Get target shape from confidence tensor
+                    H, W = conf_np.shape[-2:] if conf_np.ndim >= 2 else (224, 224)
+                    
+                    # Resize RGB to match point cloud resolution
+                    if rgb_image.shape[:2] != (H, W):
+                        rgb_resized = cv2.resize(rgb_image, (W, H), interpolation=cv2.INTER_LINEAR)
+                    else:
+                        rgb_resized = rgb_image
+                    
+                    # Extract colors for valid points
+                    rgb_flat = rgb_resized.reshape(-1, 3)
+                    colors = rgb_flat[mask].astype(np.uint8)
+                else:
+                    # Default gray colors
+                    colors = np.ones((len(filtered_pts), 3), dtype=np.uint8) * 200
+                
+                logger.info(f"Publishing keyframe {self.keyframe_count}: {len(filtered_pts)} valid points "
+                           f"(from {len(pts3d)} total, {mask.sum()} passed confidence)")
+                
+                # Get pose matrix
+                pose = keyframe_data.get('pose', np.eye(4))
+                if isinstance(pose, list):
+                    pose = np.array(pose).reshape(4, 4)
+                
+                # Publish via shared memory
                 await self.keyframe_publisher.publish_keyframe(
                     keyframe_id=str(self.keyframe_count),
-                    pose=keyframe['pose'],
-                    points=filtered_pts,
+                    pose=pose,
+                    points=filtered_pts.astype(np.float32),
                     colors=colors
                 )
                 
-                logger.debug(f"Published keyframe {self.keyframe_count} to mesh_service")
+                logger.info(f"Successfully published keyframe {self.keyframe_count} with {len(filtered_pts)} points")
             
             # Also publish to RabbitMQ for compatibility
             if self.keyframe_exchange:

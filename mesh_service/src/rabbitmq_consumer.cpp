@@ -261,7 +261,15 @@ public:
                     
                     // Set default type if not provided
                     if (msg.type.empty()) {
+                        std::cout << "[DEBUG] Message has NO 'type' field, defaulting to 'keyframe_update'" << std::endl;
+                        std::cout << "[DEBUG] Message size: " << body.size() << " bytes" << std::endl;
+                        std::cout << "[DEBUG] Message fields present: timestamp=" << (msg.timestamp_ns > 0 ? "yes" : "no")
+                                  << ", keyframe_id=" << (!msg.keyframe_id.empty() ? "yes" : "no")
+                                  << ", shm_key=" << (!msg.shm_key.empty() ? "yes" : "no")
+                                  << ", point_count=" << msg.point_count << std::endl;
                         msg.type = "keyframe_update";
+                    } else {
+                        std::cout << "[DEBUG] Message has 'type' field: " << msg.type << std::endl;
                     }
                     
                     std::cout << "Parsed message - shm_key: " << msg.shm_key 

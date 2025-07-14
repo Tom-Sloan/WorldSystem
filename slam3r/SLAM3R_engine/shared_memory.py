@@ -7,6 +7,7 @@ import posix_ipc
 import numpy as np
 import struct
 import logging
+import os
 from typing import Tuple, Optional
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ class SharedMemoryManager:
     def __init__(self, prefix="/slam3r_keyframe_"):
         self.prefix = prefix
         self.active_segments = {}  # shm_name -> (shm_object, mapfile)
+        self._cleanup_stale_segments()
         
     def write_keyframe(self, keyframe_id: str, points: np.ndarray, 
                       colors: np.ndarray, pose: np.ndarray,
@@ -62,6 +64,11 @@ class SharedMemoryManager:
         header_format = "QII" + "f" * 16 + "f" * 6  # Q=uint64, I=uint32, f=float32
         header_size = struct.calcsize(header_format)
         
+        # Verify header size matches C++ struct
+        expected_size = 8 + 4 + 4 + 64 + 24  # Should be 104
+        if header_size != expected_size:
+            logger.warning(f"Header size mismatch! Python: {header_size}, Expected: {expected_size}")
+        
         # Data size
         points_size = points.nbytes  # N*3*4 bytes
         colors_size = colors.nbytes  # N*3*1 bytes
@@ -88,6 +95,13 @@ class SharedMemoryManager:
                 *pose.flatten(),          # pose_matrix (16 floats)
                 *bbox                     # bbox (6 floats)
             )
+            
+            logger.debug(f"Header format: {header_format}, size: {header_size}")
+            logger.debug(f"Points shape: {points.shape}, dtype: {points.dtype}")
+            logger.debug(f"Points size: {points_size} bytes, expected: {len(points) * 3 * 4}")
+            logger.debug(f"First few points: {points[:3] if len(points) > 0 else 'none'}")
+            logger.debug(f"Last few points: {points[-3:] if len(points) > 0 else 'none'}")
+            logger.debug(f"Total size calculation: header({header_size}) + points({points_size}) + colors({colors_size}) = {total_size}")
             
             # Write data
             offset = 0
@@ -127,11 +141,41 @@ class SharedMemoryManager:
             except Exception as e:
                 logger.warning(f"Error closing shared memory {shm_name}: {e}")
             del self.active_segments[shm_name]
+        else:
+            # Try to unlink even if not in active_segments (cleanup stale segments)
+            try:
+                shm = posix_ipc.SharedMemory(shm_name)
+                shm.unlink()
+                logger.info(f"Cleaned up stale shared memory segment: {shm_name}")
+            except posix_ipc.ExistentialError:
+                # Segment doesn't exist, that's fine
+                pass
+            except Exception as e:
+                logger.debug(f"Could not cleanup segment {shm_name}: {e}")
             
     def cleanup(self):
         """Clean up all active shared memory segments."""
         for shm_name in list(self.active_segments.keys()):
             self._close_segment(shm_name)
+            
+    def _cleanup_stale_segments(self):
+        """Clean up any stale shared memory segments from previous runs."""
+        try:
+            logger.info("Cleaning up stale shared memory segments")
+            # List all shared memory segments
+            shm_dir = "/dev/shm"
+            if os.path.exists(shm_dir):
+                for filename in os.listdir(shm_dir):
+                    if filename.startswith(self.prefix.lstrip('/')):
+                        shm_name = f"/{filename}"
+                        try:
+                            shm = posix_ipc.SharedMemory(shm_name)
+                            shm.unlink()
+                            logger.info(f"Cleaned up stale segment on startup: {shm_name}")
+                        except Exception as e:
+                            logger.debug(f"Could not cleanup {shm_name}: {e}")
+        except Exception as e:
+            logger.warning(f"Error during startup cleanup: {e}")
             
     def __del__(self):
         """Cleanup on deletion."""
@@ -168,6 +212,8 @@ class StreamingKeyframePublisher:
                 float(points[:, 0].min()), float(points[:, 1].min()), float(points[:, 2].min()),
                 float(points[:, 0].max()), float(points[:, 1].max()), float(points[:, 2].max())
             ]
+            logger.info(f"Keyframe {keyframe_id} bbox: min=({bbox[0]:.2f}, {bbox[1]:.2f}, {bbox[2]:.2f}), "
+                       f"max=({bbox[3]:.2f}, {bbox[4]:.2f}, {bbox[5]:.2f})")
         else:
             # Default bbox for empty point cloud
             bbox = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

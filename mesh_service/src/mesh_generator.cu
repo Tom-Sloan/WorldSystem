@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <unordered_map>
+#include <cfloat>
 
 namespace mesh_service {
 
@@ -203,6 +204,52 @@ void GPUMeshGenerator::generateIncrementalMesh(
     SharedMemoryManager smm;
     float* h_points = smm.get_points(const_cast<SharedKeyframe*>(keyframe));
     uint8_t* h_colors = smm.get_colors(const_cast<SharedKeyframe*>(keyframe));
+    
+    // Debug: Check point cloud bounds
+    std::cout << "[MESH GEN DEBUG] Checking point cloud bounds for " << keyframe->point_count << " points" << std::endl;
+    
+    // Debug first few points raw values
+    std::cout << "[MESH GEN DEBUG] First 5 points raw values:" << std::endl;
+    for (size_t i = 0; i < std::min(size_t(5), size_t(keyframe->point_count)); i++) {
+        std::cout << "  Point " << i << ": [" << h_points[i*3] << ", " 
+                  << h_points[i*3+1] << ", " << h_points[i*3+2] << "]" << std::endl;
+    }
+    
+    float3 min_bound = make_float3(FLT_MAX, FLT_MAX, FLT_MAX);
+    float3 max_bound = make_float3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+    
+    // Limit scan to prevent reading past valid data
+    size_t max_points_to_scan = std::min(size_t(keyframe->point_count), size_t(1000000));
+    if (keyframe->point_count > max_points_to_scan) {
+        std::cout << "[MESH GEN WARNING] Limiting bounds scan to first " << max_points_to_scan 
+                  << " points (total: " << keyframe->point_count << ")" << std::endl;
+    }
+    
+    for (size_t i = 0; i < max_points_to_scan; i++) {
+        float3 pt = make_float3(h_points[i*3], h_points[i*3+1], h_points[i*3+2]);
+        
+        // Sanity check for corrupted data
+        if (std::isfinite(pt.x) && std::isfinite(pt.y) && std::isfinite(pt.z) &&
+            std::abs(pt.x) < 1000000 && std::abs(pt.y) < 1000000 && std::abs(pt.z) < 1000000) {
+            min_bound.x = fminf(min_bound.x, pt.x);
+            min_bound.y = fminf(min_bound.y, pt.y);
+            min_bound.z = fminf(min_bound.z, pt.z);
+            max_bound.x = fmaxf(max_bound.x, pt.x);
+            max_bound.y = fmaxf(max_bound.y, pt.y);
+            max_bound.z = fmaxf(max_bound.z, pt.z);
+        } else {
+            std::cout << "[MESH GEN ERROR] Corrupted point at index " << i 
+                      << ": [" << pt.x << ", " << pt.y << ", " << pt.z << "]" << std::endl;
+            break;
+        }
+    }
+    
+    std::cout << "[MESH GEN DEBUG] Actual point cloud bounds:" << std::endl;
+    std::cout << "  Min: [" << min_bound.x << ", " << min_bound.y << ", " << min_bound.z << "]" << std::endl;
+    std::cout << "  Max: [" << max_bound.x << ", " << max_bound.y << ", " << max_bound.z << "]" << std::endl;
+    std::cout << "[MESH GEN DEBUG] Stored bbox in keyframe:" << std::endl;
+    std::cout << "  Min: [" << keyframe->bbox[0] << ", " << keyframe->bbox[1] << ", " << keyframe->bbox[2] << "]" << std::endl;
+    std::cout << "  Max: [" << keyframe->bbox[3] << ", " << keyframe->bbox[4] << ", " << keyframe->bbox[5] << "]" << std::endl;
     
     // Allocate device memory using memory pool
     float3* d_points = (float3*)pImpl->allocateFromPool(keyframe->point_count * sizeof(float3));

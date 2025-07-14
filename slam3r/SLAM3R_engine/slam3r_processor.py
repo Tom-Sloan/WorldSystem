@@ -324,6 +324,11 @@ class SLAM3RProcessor:
             
             # Also publish to RabbitMQ for compatibility
             if self.keyframe_exchange:
+                # DEBUG: Log what we're sending
+                logger.info(f"[DEBUG] Publishing direct RabbitMQ message for keyframe {self.keyframe_count}")
+                logger.info(f"[DEBUG] Message fields: timestamp, keyframe_id, frame_id, pts3d_world, conf_world")
+                logger.info(f"[DEBUG] Note: NO 'type' field in message")
+                
                 message_body = msgpack.packb({
                     'timestamp': timestamp,
                     'keyframe_id': self.keyframe_count,
@@ -331,6 +336,8 @@ class SLAM3RProcessor:
                     'pts3d_world': keyframe_data['pts3d_world'].cpu().numpy().tolist(),
                     'conf_world': keyframe_data['conf_world'].cpu().numpy().tolist(),
                 })
+                
+                logger.info(f"[DEBUG] Message size: {len(message_body)} bytes")
                 
                 await self.keyframe_exchange.publish(
                     aio_pika.Message(body=message_body),
@@ -394,10 +401,14 @@ class SLAM3RProcessor:
         except KeyboardInterrupt:
             logger.info("Shutting down...")
         finally:
+            # Clean up shared memory
+            if self.keyframe_publisher:
+                logger.info("Cleaning up shared memory segments...")
+                self.keyframe_publisher.cleanup()
+            
+            # Close RabbitMQ connection
             if self.rabbitmq_connection:
                 await self.rabbitmq_connection.close()
-            if self.keyframe_publisher:
-                self.keyframe_publisher.close()
 
 
 async def main():

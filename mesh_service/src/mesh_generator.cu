@@ -16,8 +16,8 @@ uint64_t computeSpatialHashCPU(const float bbox[6]);
 
 // Constants for RTX 3090 optimization
 constexpr size_t VOXEL_BLOCK_SIZE = 256;
-constexpr size_t MAX_POINTS_PER_BLOCK = 500000;
-constexpr int THREADS_PER_BLOCK = 128;  // Optimal for RTX 3090
+// constexpr size_t MAX_POINTS_PER_BLOCK = 500000;  // Reserved for future use
+// constexpr int THREADS_PER_BLOCK = 128;  // Reserved for future use
 
 // Implementation details
 class GPUMeshGenerator::Impl {

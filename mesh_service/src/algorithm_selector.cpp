@@ -83,8 +83,8 @@ bool AlgorithmSelector::initialize() {
 
 ReconstructionMethod AlgorithmSelector::selectAlgorithm(
     float camera_velocity,
-    size_t point_count,
-    float scene_complexity
+    size_t point_count [[maybe_unused]],
+    float scene_complexity [[maybe_unused]]
 ) {
     ReconstructionMethod desired_method = current_method_;
     

@@ -44,10 +44,13 @@ class SharedMemoryManager:
             
         # Calculate bounding box if not provided
         if bbox is None:
-            bbox = np.array([
-                points[:, 0].min(), points[:, 1].min(), points[:, 2].min(),
-                points[:, 0].max(), points[:, 1].max(), points[:, 2].max()
-            ], dtype=np.float32)
+            if len(points) > 0:
+                bbox = np.array([
+                    points[:, 0].min(), points[:, 1].min(), points[:, 2].min(),
+                    points[:, 0].max(), points[:, 1].max(), points[:, 2].max()
+                ], dtype=np.float32)
+            else:
+                bbox = np.zeros(6, dtype=np.float32)
         else:
             bbox = np.asarray(bbox, dtype=np.float32)
             
@@ -159,11 +162,16 @@ class StreamingKeyframePublisher:
             logger.warning("No keyframe exchange configured - skipping RabbitMQ notification")
             return
         
-        # Calculate bounding box
-        bbox = [
-            float(points[:, 0].min()), float(points[:, 1].min()), float(points[:, 2].min()),
-            float(points[:, 0].max()), float(points[:, 1].max()), float(points[:, 2].max())
-        ]
+        # Calculate bounding box (handle empty points)
+        if len(points) > 0:
+            bbox = [
+                float(points[:, 0].min()), float(points[:, 1].min()), float(points[:, 2].min()),
+                float(points[:, 0].max()), float(points[:, 1].max()), float(points[:, 2].max())
+            ]
+        else:
+            # Default bbox for empty point cloud
+            bbox = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            logger.warning(f"Empty point cloud for keyframe {keyframe_id}")
         
         # Publish notification to RabbitMQ
         msg = {

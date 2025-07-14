@@ -399,13 +399,11 @@ services:
       
       # ========== TSDF VOLUME CONFIGURATION ==========
       # Adjust these based on your scene - current values match SLAM3R output range
-      - TSDF_VOLUME_MIN=-1,0,2
-      - TSDF_VOLUME_MAX=1,4,4
+      # Use the actual scene bounds from the data
+      - TSDF_VOLUME_MIN=-1,-1,2
+      - TSDF_VOLUME_MAX=1,1,5
       - TSDF_VOXEL_SIZE=0.02
-      - TSDF_TRUNCATION_DISTANCE=0.06
-      # Override the defaults that the code actually reads
-      - TSDF_SCENE_BOUNDS_MIN=-0.5,-0.5,2.0
-      - TSDF_SCENE_BOUNDS_MAX=0.5,4.0,4.0
+      - TSDF_TRUNCATION_DISTANCE=0.10
       
       # ========== RERUN VISUALIZATION ==========
       - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
@@ -420,9 +418,7 @@ services:
       - MESH_SERVICE_UNLINK_SHM=${MESH_SERVICE_UNLINK_SHM:-false}
       
       # ========== TSDF CONFIGURATION ==========
-      # Core TSDF parameters
-      - TSDF_VOXEL_SIZE=${TSDF_VOXEL_SIZE:-0.04}              # 4cm voxels for architectural detail
-      - TSDF_TRUNCATION_DISTANCE=${TSDF_TRUNCATION_DISTANCE:-0.12}  # 3x voxel size
+      # Core TSDF parameters (removed duplicates - see above)
       - TSDF_MAX_WEIGHT=${TSDF_MAX_WEIGHT:-100.0}             # Temporal averaging weight
       
       # Scene bounds for 25m hallway with atrium

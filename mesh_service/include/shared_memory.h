@@ -7,6 +7,8 @@
 namespace mesh_service {
 
 // Shared memory structure for keyframe data
+// This struct must be POD (Plain Old Data) for shared memory compatibility
+// Do not add any pointers, virtuals, or constructors
 struct SharedKeyframe {
     uint64_t timestamp_ns;
     uint32_t point_count;
@@ -18,10 +20,11 @@ struct SharedKeyframe {
     // float points[point_count * 3];
     // uint8_t colors[point_count * color_channels];
     
-    // Convenience pointers (set by SharedMemoryManager)
-    float* points = nullptr;
-    uint8_t* colors = nullptr;
+    // Use SharedMemoryManager::get_points() and get_colors() to access data
 };
+
+static_assert(sizeof(SharedKeyframe) == 8 + 4 + 4 + 64 + 24, 
+              "SharedKeyframe must be tightly packed");
 
 class SharedMemoryManager {
 public:

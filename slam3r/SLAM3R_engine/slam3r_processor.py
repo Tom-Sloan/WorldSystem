@@ -279,9 +279,24 @@ class SLAM3RProcessor:
                 
                 filtered_pts = pts3d[mask]
                 
+                # Additional validation: filter corrupted points
+                max_coord = 100.0  # 100m scene bounds
+                valid_mask = np.all(np.isfinite(filtered_pts), axis=1)
+                valid_mask &= np.all(np.abs(filtered_pts) < max_coord, axis=1)
+                
+                corrupted_count = (~valid_mask).sum()
+                if corrupted_count > 0:
+                    logger.warning(f"Filtering {corrupted_count} corrupted points with extreme values")
+                    filtered_pts = filtered_pts[valid_mask]
+                    # Need to filter corresponding confidence values for color mapping
+                    if 'rgb_image' in keyframe_data and keyframe_data['rgb_image'] is not None:
+                        # Update mask to reflect additional filtering
+                        original_indices = np.where(mask)[0]
+                        mask[original_indices[~valid_mask]] = False
+                
                 # Check if we have any valid points
                 if len(filtered_pts) == 0:
-                    logger.warning(f"No valid points for keyframe {self.keyframe_count} after confidence filtering. "
+                    logger.warning(f"No valid points for keyframe {self.keyframe_count} after filtering. "
                                  f"Max conf: {conf.max():.3f}, min: {conf.min():.3f}, threshold: {conf_thresh}")
                     return
                 

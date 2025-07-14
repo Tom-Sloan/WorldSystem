@@ -175,6 +175,14 @@ void GPUMeshGenerator::generateIncrementalMesh(
 ) {
     auto start_time = std::chrono::high_resolution_clock::now();
     
+    // Check for empty keyframe
+    if (keyframe->point_count == 0) {
+        std::cout << "[DEBUG] Empty keyframe, skipping mesh generation" << std::endl;
+        update.vertices.clear();
+        update.faces.clear();
+        return;
+    }
+    
     // Update camera velocity
     updateCameraVelocity(keyframe->pose_matrix);
     

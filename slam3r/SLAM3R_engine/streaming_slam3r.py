@@ -265,7 +265,19 @@ class StreamingSLAM3R:
         # Handle initialization
         if not self.is_initialized:
             logger.info(f"Handling initialization, have {len(self.initialization_frames)} frames")
-            return self._handle_initialization(frame)
+            result = self._handle_initialization(frame)
+            if result:
+                logger.info(f"Initialization complete, returning keyframe data")
+            return result
+        
+        # For regular processing, check if this frame should be a keyframe immediately
+        if frame.is_keyframe:
+            logger.info(f"Frame {frame.frame_id} is marked as keyframe, processing immediately")
+            # Process this single frame
+            result = self._process_single_frame(frame, self.window_processor.get_reference_frames())
+            if result:
+                logger.info(f"Returning keyframe result for frame {frame.frame_id}")
+            return result
         
         # Try to accumulate for batch processing
         batch = self.batch_accumulator.add_frame(frame)
@@ -332,15 +344,27 @@ class StreamingSLAM3R:
         """Handle initialization phase"""
         self.initialization_frames.append(frame)
         
-        if len(self.initialization_frames) >= self.config.get('init_frames', 5):
+        min_init_frames = self.config.get('recon_pipeline', {}).get('initial_winsize', 5)
+        if len(self.initialization_frames) >= min_init_frames:
             # Run initialization
             success = self._initialize_slam()
             if success:
                 self.is_initialized = True
-                # Process the initialization frames
-                return self._process_batch(self.initialization_frames)
+                # Return the last keyframe from initialization
+                # All init frames are marked as keyframes in _initialize_slam
+                last_frame = self.initialization_frames[-1]
+                if last_frame.pts3d_world is not None and last_frame.conf_world is not None:
+                    return {
+                        'pose': self._extract_pose(last_frame),
+                        'pts3d_world': last_frame.pts3d_world,
+                        'conf_world': last_frame.conf_world,
+                        'frame_id': last_frame.frame_id,
+                        'timestamp': last_frame.timestamp,
+                        'is_keyframe': True
+                    }
             else:
                 # Reset and try again
+                logger.warning("Initialization failed, resetting")
                 self.initialization_frames = []
                 
         return None
@@ -348,6 +372,8 @@ class StreamingSLAM3R:
     def _initialize_slam(self) -> bool:
         """Initialize SLAM with first frames"""
         try:
+            logger.info(f"Initializing SLAM with {len(self.initialization_frames)} frames")
+            
             # Create views for initialization
             # The views need img_tokens, img_pos, and true_shape for initialize_scene to work
             init_views = []
@@ -364,6 +390,7 @@ class StreamingSLAM3R:
                     'label': f'frame_{frame.frame_id}'
                 }
                 init_views.append(view)
+                logger.debug(f"Init view {frame.frame_id}: tokens shape={frame.img_tokens.shape}, pos shape={frame.img_pos.shape}")
             
             # Adapt keyframe stride if enabled
             if self.use_adaptive_stride and len(self.initialization_frames) >= self.adapt_params['sample_wind_num']:
@@ -390,26 +417,52 @@ class StreamingSLAM3R:
             
             # Run initialization
             # initialize_scene returns (pcs, confs) or (pcs, confs, ref_id)
+            # Get confidence threshold from the recon_pipeline section
+            conf_thres = self.config.get('recon_pipeline', {}).get('conf_thres_i2p', 1.5)
+            logger.info(f"Running initialize_scene with winsize={self.config.get('initial_winsize', 5)}, "
+                       f"conf_thres={conf_thres}")
             pcs, confs, ref_id = initialize_scene(
                 init_views, 
                 self.i2p_model,
                 winsize=self.config.get('initial_winsize', 5),
-                conf_thres=self.config.get('conf_thres_i2p', 5.0),
+                conf_thres=conf_thres,
                 return_ref_id=True
             )
             
             # Check if initialization was successful
             if pcs is not None and len(pcs) > 0:
+                logger.info(f"Initialization returned {len(pcs)} point clouds, ref_id={ref_id}")
+                
+                # IMPORTANT: The initialization returns camera-space points, not world points
+                # For the reference frame (ref_id), these ARE world points
+                # For other frames, these are relative to the reference frame
+                
                 # Store results in frames
-                for i, frame_data in enumerate(zip(self.initialization_frames, pcs, confs)):
-                    frame, pc, conf = frame_data
-                    frame.pts3d_world = pc
-                    frame.conf_world = conf
+                for i, (frame, pc, conf) in enumerate(zip(self.initialization_frames, pcs, confs)):
+                    if i == ref_id:
+                        # Reference frame: points are already in world coordinates
+                        frame.pts3d_world = pc
+                        frame.conf_world = conf
+                    else:
+                        # Non-reference frames: points are in camera coordinates relative to ref
+                        # For now, we'll use them as world coordinates (this is a simplification)
+                        # In a full implementation, you'd transform them properly
+                        frame.pts3d_world = pc
+                        frame.conf_world = conf
+                        # Also store as camera points for L2W processing
+                        frame.pts3d_cam = pc
+                        frame.conf_cam = conf
+                    
                     frame.is_keyframe = True
+                    
+                    logger.info(f"Frame {frame.frame_id} (ref={i==ref_id}): pts3d shape={pc.shape}, "
+                              f"conf shape={conf.shape}, conf range=[{conf.min().item():.3f}, {conf.max().item():.3f}]")
                 
                 logger.info("SLAM initialization successful with %d frames", 
                           len(self.initialization_frames))
                 return True
+            else:
+                logger.error("Initialization failed: pcs is None or empty")
             
         except Exception as e:
             logger.error("SLAM initialization failed: %s", e, exc_info=True)
@@ -473,7 +526,10 @@ class StreamingSLAM3R:
         """Run Image-to-Points inference"""
         if ref_frame is None:
             # No reference, can't compute relative points
+            logger.warning(f"No reference frame for I2P inference on frame {frame.frame_id}")
             return
+        
+        logger.debug(f"Running I2P inference: frame {frame.frame_id} with ref {ref_frame.frame_id}")
         
         # Make sure both frames have tokens
         if ref_frame.img_tokens is None:
@@ -498,6 +554,7 @@ class StreamingSLAM3R:
         ]
         
         # Run inference (unsqueeze=False since views don't have batch dims)
+        logger.debug("Running i2p_inference_batch with ref_id=0")
         output = i2p_inference_batch(
             [views], 
             self.i2p_model,
@@ -507,14 +564,33 @@ class StreamingSLAM3R:
         )
         
         # Extract results
-        preds = output['preds']
+        preds = output.get('preds', [])
+        logger.debug(f"I2P inference returned {len(preds)} predictions")
+        
         if len(preds) > 1:
             # Frame is source view (index 1)
-            frame.pts3d_cam = preds[1]['pts3d_in_other_view']
-            frame.conf_cam = preds[1]['conf']
+            pts3d_cam = preds[1].get('pts3d_in_other_view')
+            conf_cam = preds[1].get('conf')
+            
+            if pts3d_cam is not None:
+                frame.pts3d_cam = pts3d_cam
+                logger.info(f"I2P produced pts3d_cam with shape: {pts3d_cam.shape}")
+            else:
+                logger.error("I2P inference returned None for pts3d_cam")
+                
+            if conf_cam is not None:
+                frame.conf_cam = conf_cam
+                logger.info(f"I2P produced conf_cam with shape: {conf_cam.shape}, "
+                          f"range: [{conf_cam.min().item():.3f}, {conf_cam.max().item():.3f}]")
+            else:
+                logger.error("I2P inference returned None for conf_cam")
+        else:
+            logger.error(f"I2P inference returned insufficient predictions: {len(preds)}")
     
     def _run_l2w_inference(self, frame: FrameData, ref_frames: List[FrameData]):
         """Run Local-to-World inference"""
+        logger.debug(f"Running L2W inference for frame {frame.frame_id}")
+        
         # Create candidate views for scene_frame_retrieve
         cand_views = []
         for ref in ref_frames:
@@ -527,8 +603,10 @@ class StreamingSLAM3R:
                     'label': f'frame_{ref.frame_id}'
                 }
                 cand_views.append(view)
+                logger.debug(f"Added ref frame {ref.frame_id} with pts3d_world shape: {ref.pts3d_world.shape}")
         
         if not cand_views:
+            logger.warning("No candidate views available for L2W inference")
             return
         
         # Make sure frame has tokens
@@ -545,6 +623,9 @@ class StreamingSLAM3R:
         
         if frame.pts3d_cam is not None:
             src_view['pts3d_cam'] = frame.pts3d_cam
+            logger.debug(f"Source view has pts3d_cam with shape: {frame.pts3d_cam.shape}")
+        else:
+            logger.warning(f"Frame {frame.frame_id} has no pts3d_cam for L2W inference")
         
         # Run scene frame retrieval
         selected_refs, _ = scene_frame_retrieve(
@@ -555,25 +636,44 @@ class StreamingSLAM3R:
         )
         
         if not selected_refs:
+            logger.warning("No reference frames selected by scene_frame_retrieve")
             return
+        
+        logger.debug(f"Selected {len(selected_refs)} reference frames for L2W")
         
         # Prepare views for L2W
         l2w_views = selected_refs + [src_view]
         
         # Run L2W inference
+        logger.debug(f"Running L2W with {len(selected_refs)} refs, normalize={self.config.get('recon_pipeline', {}).get('norm_input_l2w', False)}")
         output = l2w_inference(
             l2w_views,
             self.l2w_model,
             ref_ids=list(range(len(selected_refs))),
             device=self.device,
-            normalize=self.config.get('norm_input_l2w', False)
+            normalize=self.config.get('recon_pipeline', {}).get('norm_input_l2w', False)
         )
         
         # Extract results (last output is for source frame)
         if output and len(output) > len(selected_refs):
             result = output[-1]
-            frame.pts3d_world = result.get('pts3d_in_other_view')
-            frame.conf_world = result.get('conf')
+            pts3d_world = result.get('pts3d_in_other_view')
+            conf_world = result.get('conf')
+            
+            if pts3d_world is not None:
+                frame.pts3d_world = pts3d_world
+                logger.info(f"L2W produced pts3d_world with shape: {pts3d_world.shape}")
+            else:
+                logger.error(f"L2W inference returned None for pts3d_world")
+                
+            if conf_world is not None:
+                frame.conf_world = conf_world
+                logger.info(f"L2W produced conf_world with shape: {conf_world.shape}, "
+                          f"min: {conf_world.min().item():.3f}, max: {conf_world.max().item():.3f}")
+            else:
+                logger.error(f"L2W inference returned None for conf_world")
+        else:
+            logger.error(f"L2W output invalid: got {len(output) if output else 0} outputs, expected > {len(selected_refs)}")
     
     def _extract_pose(self, frame: FrameData) -> Optional[np.ndarray]:
         """Extract camera pose from frame data"""

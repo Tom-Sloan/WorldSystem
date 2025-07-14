@@ -274,9 +274,11 @@ public:
                     throw;
                 }
                 
-                // Notify handler
-                if (keyframe_handler) {
+                // Notify handler only for keyframe.new messages
+                if (keyframe_handler && msg.type == "keyframe.new") {
                     keyframe_handler(msg);
+                } else if (msg.type != "keyframe.new") {
+                    std::cout << "Ignoring message with type: " << msg.type << std::endl;
                 }
             }
             

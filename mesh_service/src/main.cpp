@@ -52,15 +52,16 @@ int main(int argc, char* argv[]) {
         auto rabbitmq_consumer = std::make_shared<mesh_service::RabbitMQConsumer>(rabbitmq_url);
         auto rerun_publisher = std::make_shared<mesh_service::RerunPublisher>("mesh_service", rerun_address, rerun_enabled);
         
-        // Configure mesh generator for TSDF-only mode
+        // Configure mesh generator
         mesh_generator->setMethod(mesh_service::MeshMethod::TSDF_MARCHING_CUBES);
-        mesh_generator->setQualityAdaptive(false);  // No adaptive switching in TSDF-only mode
+        mesh_generator->setQualityAdaptive(true);  // Enable adaptive quality based on camera velocity
         mesh_generator->setSimplificationRatio(0.1f);
         
-        std::cout << "Mesh service configured for TSDF-only operation:" << std::endl;
-        std::cout << "  - Enhanced TSDF with Marching Cubes" << std::endl;
+        std::cout << "Mesh service configured with new algorithm selector:" << std::endl;
+        std::cout << "  - NVIDIA Marching Cubes with optimized TSDF" << std::endl;
+        std::cout << "  - Velocity-based algorithm switching (future-ready)" << std::endl;
         std::cout << "  - GPU Octree for spatial indexing" << std::endl;
-        std::cout << "  - Multi-stream CUDA processing (5 streams)" << std::endl;
+        std::cout << "  - Memory pool allocation (1GB)" << std::endl;
         std::cout << "  - 90% spatial overlap deduplication" << std::endl;
         std::cout << "  - Environment-based configuration" << std::endl;
         

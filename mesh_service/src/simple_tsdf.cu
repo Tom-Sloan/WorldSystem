@@ -51,6 +51,12 @@ __global__ void integrateTSDFKernel(
     // Transform point to volume space
     float3 voxel_pos = world_to_volume.transformPoint(point);
     
+    // Debug: Print first few transformed points
+    if (idx < 5) {
+        printf("[TSDF KERNEL] Point %d: world=[%.3f,%.3f,%.3f] -> voxel=[%.3f,%.3f,%.3f]\n",
+               idx, point.x, point.y, point.z, voxel_pos.x, voxel_pos.y, voxel_pos.z);
+    }
+    
     // Get bounding voxels
     int3 voxel_min = make_int3(
         max(0, __float2int_rd(voxel_pos.x - truncation_distance / voxel_size)),
@@ -64,15 +70,30 @@ __global__ void integrateTSDFKernel(
         min(volume_dims.z - 1, __float2int_ru(voxel_pos.z + truncation_distance / voxel_size))
     );
     
+    // Debug: Check if voxel is within bounds
+    if (idx < 5) {
+        printf("[TSDF KERNEL] Point %d voxel bounds: min=[%d,%d,%d], max=[%d,%d,%d], volume_dims=[%d,%d,%d]\n",
+               idx, voxel_min.x, voxel_min.y, voxel_min.z, 
+               voxel_max.x, voxel_max.y, voxel_max.z,
+               volume_dims.x, volume_dims.y, volume_dims.z);
+        
+        // Check if point is outside volume
+        if (voxel_pos.x < 0 || voxel_pos.x >= volume_dims.x ||
+            voxel_pos.y < 0 || voxel_pos.y >= volume_dims.y ||
+            voxel_pos.z < 0 || voxel_pos.z >= volume_dims.z) {
+            printf("[TSDF WARNING] Point %d is outside volume bounds!\n", idx);
+        }
+    }
+    
     // Update TSDF in neighborhood
     for (int z = voxel_min.z; z <= voxel_max.z; z++) {
         for (int y = voxel_min.y; y <= voxel_max.y; y++) {
             for (int x = voxel_min.x; x <= voxel_max.x; x++) {
                 // Get voxel center in world space
                 float3 voxel_center = make_float3(
-                    volume_origin.x + x * voxel_size,
-                    volume_origin.y + y * voxel_size,
-                    volume_origin.z + z * voxel_size
+                    volume_origin.x + (x + 0.5f) * voxel_size,
+                    volume_origin.y + (y + 0.5f) * voxel_size,
+                    volume_origin.z + (z + 0.5f) * voxel_size
                 );
                 
                 // Compute signed distance
@@ -92,8 +113,15 @@ __global__ void integrateTSDFKernel(
                 
                 float updated_weight = old_weight + new_weight;
                 if (updated_weight > 0.0f) {
-                    tsdf_volume[voxel_idx] = (old_tsdf * old_weight + tsdf_value * new_weight) / updated_weight;
+                    float new_tsdf = (old_tsdf * old_weight + tsdf_value * new_weight) / updated_weight;
+                    tsdf_volume[voxel_idx] = new_tsdf;
                     weight_volume[voxel_idx] = min(updated_weight, 100.0f); // Cap weight
+                    
+                    // Debug: Print first few TSDF updates
+                    if (idx < 2 && voxel_idx < 1000) {
+                        printf("[TSDF UPDATE] Point %d updated voxel %d: old_tsdf=%.3f, new_tsdf=%.3f, weight=%.1f\n",
+                               idx, voxel_idx, old_tsdf, new_tsdf, updated_weight);
+                    }
                 }
             }
         }
@@ -160,11 +188,24 @@ public:
         
         // Setup world to volume transform
         d_world_to_volume_.resize(16);
+        // Store in column-major order for CUDA kernel
         float h_transform[16] = {
-            1.0f / voxel_size, 0, 0, -volume_min.x / voxel_size,
-            0, 1.0f / voxel_size, 0, -volume_min.y / voxel_size,
-            0, 0, 1.0f / voxel_size, -volume_min.z / voxel_size,
-            0, 0, 0, 1
+            1.0f / voxel_size,      // m[0] 
+            0,                      // m[1]
+            0,                      // m[2] 
+            0,                      // m[3]
+            0,                      // m[4]
+            1.0f / voxel_size,      // m[5]
+            0,                      // m[6]
+            0,                      // m[7]
+            0,                      // m[8]
+            0,                      // m[9]
+            1.0f / voxel_size,      // m[10]
+            0,                      // m[11]
+            -volume_min.x / voxel_size,  // m[12] translation x
+            -volume_min.y / voxel_size,  // m[13] translation y
+            -volume_min.z / voxel_size,  // m[14] translation z
+            1                            // m[15]
         };
         thrust::copy(h_transform, h_transform + 16, d_world_to_volume_.begin());
         
@@ -193,12 +234,40 @@ void SimpleTSDF::integrate(
     const float* camera_pose,
     cudaStream_t stream
 ) {
-    if (num_points == 0) return;
+    if (num_points == 0) {
+        std::cout << "[TSDF DEBUG] integrate() called with 0 points, returning" << std::endl;
+        return;
+    }
+    
+    std::cout << "[TSDF DEBUG] integrate() called with " << num_points << " points" << std::endl;
+    
+    // Debug: Check first few points on host
+    float3 h_points[10];
+    size_t debug_count = std::min(num_points, size_t(10));
+    cudaMemcpy(h_points, d_points, debug_count * sizeof(float3), cudaMemcpyDeviceToHost);
+    std::cout << "[TSDF DEBUG] First few points (world space):" << std::endl;
+    for (size_t i = 0; i < debug_count; i++) {
+        std::cout << "  Point " << i << ": [" << h_points[i].x << ", " 
+                  << h_points[i].y << ", " << h_points[i].z << "]" << std::endl;
+    }
     
     // Setup transform matrix
     cuda::Matrix4 world_to_volume;
     cudaMemcpy(&world_to_volume.m, pImpl->d_world_to_volume_.data().get(), 
                16 * sizeof(float), cudaMemcpyDeviceToHost);
+    
+    std::cout << "[TSDF DEBUG] World-to-volume transform (column-major):" << std::endl;
+    std::cout << "  Scale X: " << world_to_volume.m[0] << ", Translation X: " << world_to_volume.m[12] << std::endl;
+    std::cout << "  Scale Y: " << world_to_volume.m[5] << ", Translation Y: " << world_to_volume.m[13] << std::endl;
+    std::cout << "  Scale Z: " << world_to_volume.m[10] << ", Translation Z: " << world_to_volume.m[14] << std::endl;
+    
+    std::cout << "[TSDF DEBUG] TSDF volume params:" << std::endl;
+    std::cout << "  Dims: " << pImpl->volume_dims_.x << "x" << pImpl->volume_dims_.y 
+              << "x" << pImpl->volume_dims_.z << std::endl;
+    std::cout << "  Origin: [" << pImpl->volume_origin_.x << ", " << pImpl->volume_origin_.y 
+              << ", " << pImpl->volume_origin_.z << "]" << std::endl;
+    std::cout << "  Voxel size: " << pImpl->voxel_size_ << std::endl;
+    std::cout << "  Truncation distance: " << pImpl->truncation_distance_ << std::endl;
     
     // Launch integration kernel
     dim3 block(256);
@@ -215,6 +284,11 @@ void SimpleTSDF::integrate(
         pImpl->truncation_distance_,
         world_to_volume
     );
+    
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "[TSDF ERROR] Kernel launch failed: " << cudaGetErrorString(err) << std::endl;
+    }
 }
 
 float* SimpleTSDF::getTSDFVolume() const {

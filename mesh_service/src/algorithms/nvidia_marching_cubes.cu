@@ -2,6 +2,7 @@
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <thrust/scan.h>
+#include <thrust/count.h>
 #include <thrust/execution_policy.h>
 #include <cub/cub.cuh>
 #include <iostream>
@@ -85,6 +86,11 @@ __global__ void classifyVoxelKernel(
     uint y = (threadId % (dims.x * dims.y)) / dims.x;
     uint x = threadId % dims.x;
     
+    // Debug first few voxels
+    if (threadId < 5) {
+        printf("[MC CLASSIFY] Voxel %u: coords=[%u,%u,%u]\n", threadId, x, y, z);
+    }
+    
     // Skip boundary voxels
     if (x >= dims.x - 1 || y >= dims.y - 1 || z >= dims.z - 1) {
         voxel_verts[threadId] = 0;
@@ -104,12 +110,25 @@ __global__ void classifyVoxelKernel(
     field[6] = tsdf[idx + 1 + dims.x + dims.x * dims.y];
     field[7] = tsdf[idx + dims.x + dims.x * dims.y];
     
+    // Debug TSDF values for first voxel
+    if (threadId < 5) {
+        printf("[MC CLASSIFY] Voxel %u TSDF values: [%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]\n",
+               threadId, field[0], field[1], field[2], field[3], 
+               field[4], field[5], field[6], field[7]);
+    }
+    
     // Calculate cube index
     uint cube_index = 0;
     for (int i = 0; i < 8; i++) {
         if (field[i] < iso_value) {
             cube_index |= (1 << i);
         }
+    }
+    
+    // Debug cube index
+    if (threadId < 5) {
+        printf("[MC CLASSIFY] Voxel %u: cube_index=%u, iso_value=%.3f\n", 
+               threadId, cube_index, iso_value);
     }
     
     // Use lookup table
@@ -324,8 +343,38 @@ bool NvidiaMarchingCubes::reconstruct(
     MeshUpdate& output,
     cudaStream_t stream
 ) {
+    std::cout << "[MC DEBUG] reconstruct() called with " << num_points << " points" << std::endl;
+    
     // Step 1: Integrate points into TSDF
+    std::cout << "[MC DEBUG] Integrating points into TSDF..." << std::endl;
     tsdf_->integrate(d_points, d_normals, num_points, camera_pose, stream);
+    cudaStreamSynchronize(stream);
+    std::cout << "[MC DEBUG] TSDF integration complete" << std::endl;
+    
+    // Debug: Check if TSDF has been modified
+    float* d_tsdf_debug = tsdf_->getTSDFVolume();
+    float* d_weight_debug = tsdf_->getWeightVolume();
+    int3 dims_debug = tsdf_->getVolumeDims();
+    size_t total_voxels = dims_debug.x * dims_debug.y * dims_debug.z;
+    
+    // Count non-default TSDF values
+    thrust::device_ptr<float> d_tsdf_ptr(d_tsdf_debug);
+    thrust::device_ptr<float> d_weight_ptr(d_weight_debug);
+    
+    float truncation = params_.marching_cubes.truncation_distance;
+    auto count_modified = thrust::count_if(d_tsdf_ptr, d_tsdf_ptr + total_voxels,
+                                          [truncation] __device__ (float val) {
+                                              return fabsf(val - truncation) > 0.001f;
+                                          });
+    auto count_weighted = thrust::count_if(d_weight_ptr, d_weight_ptr + total_voxels,
+                                          [] __device__ (float val) {
+                                              return val > 0.0f;
+                                          });
+    
+    std::cout << "[MC DEBUG] TSDF volume stats:" << std::endl;
+    std::cout << "  Total voxels: " << total_voxels << std::endl;
+    std::cout << "  Modified voxels: " << count_modified << std::endl;
+    std::cout << "  Weighted voxels: " << count_weighted << std::endl;
     
     // Get TSDF data
     float* d_tsdf = tsdf_->getTSDFVolume();
@@ -333,11 +382,19 @@ bool NvidiaMarchingCubes::reconstruct(
     float3 origin = tsdf_->getVolumeOrigin();
     float voxel_size = tsdf_->getVoxelSize();
     
+    std::cout << "[MC DEBUG] TSDF volume info:" << std::endl;
+    std::cout << "  Dims: " << dims.x << "x" << dims.y << "x" << dims.z << std::endl;
+    std::cout << "  Origin: [" << origin.x << ", " << origin.y << ", " << origin.z << "]" << std::endl;
+    std::cout << "  Voxel size: " << voxel_size << std::endl;
+    
     // Step 2: Classify voxels
+    std::cout << "[MC DEBUG] Classifying voxels..." << std::endl;
     classifyVoxels(d_tsdf, dims, 
                    buffers_.d_voxel_verts_scan,
                    buffers_.d_voxel_occupied_scan,
                    stream);
+    cudaStreamSynchronize(stream);
+    std::cout << "[MC DEBUG] Voxel classification complete" << std::endl;
     
     // Step 3: Scan to get total vertices and compaction offsets
     size_t temp_storage_bytes = 0;
@@ -393,7 +450,14 @@ bool NvidiaMarchingCubes::reconstruct(
     uint total_vertices = h_last_vert_scan + h_last_vert_orig;
     uint active_voxels = h_last_occupied_scan + h_last_occupied_orig;
     
+    std::cout << "[MC DEBUG] Scan results:" << std::endl;
+    std::cout << "  Active voxels: " << active_voxels << std::endl;
+    std::cout << "  Total vertices to generate: " << total_vertices << std::endl;
+    std::cout << "  Last vert scan: " << h_last_vert_scan << ", orig: " << h_last_vert_orig << std::endl;
+    std::cout << "  Last occupied scan: " << h_last_occupied_scan << ", orig: " << h_last_occupied_orig << std::endl;
+    
     if (total_vertices == 0) {
+        std::cout << "[MC WARNING] No vertices to generate! Returning empty mesh." << std::endl;
         output.vertices.clear();
         output.faces.clear();
         return true;

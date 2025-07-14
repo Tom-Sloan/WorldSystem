@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <cerrno>
 #include <iostream>
+#include <cstddef>
 
 namespace mesh_service {
 
@@ -46,6 +47,14 @@ SharedKeyframe* SharedMemoryManager::open_keyframe(const std::string& shm_name) 
     
     // First, map just the header to read the size
     std::cout << "[SHM DEBUG] Mapping header, size: " << sizeof(SharedKeyframe) << std::endl;
+    
+    // Debug struct offsets
+    std::cout << "[SHM DEBUG] SharedKeyframe struct layout:" << std::endl;
+    std::cout << "  offset of timestamp_ns: " << offsetof(SharedKeyframe, timestamp_ns) << std::endl;
+    std::cout << "  offset of point_count: " << offsetof(SharedKeyframe, point_count) << std::endl;
+    std::cout << "  offset of color_channels: " << offsetof(SharedKeyframe, color_channels) << std::endl;
+    std::cout << "  offset of pose_matrix: " << offsetof(SharedKeyframe, pose_matrix) << std::endl;
+    std::cout << "  offset of bbox: " << offsetof(SharedKeyframe, bbox) << std::endl;
     void* header_ptr = mmap(nullptr, sizeof(SharedKeyframe), 
                            PROT_READ, MAP_SHARED, fd, 0);
     if (header_ptr == MAP_FAILED) {
@@ -57,6 +66,10 @@ SharedKeyframe* SharedMemoryManager::open_keyframe(const std::string& shm_name) 
     auto* header = static_cast<SharedKeyframe*>(header_ptr);
     std::cout << "[SHM DEBUG] Header mapped, point_count: " << header->point_count 
               << ", color_channels: " << header->color_channels << std::endl;
+    std::cout << "[SHM DEBUG] Header timestamp: " << header->timestamp_ns << std::endl;
+    std::cout << "[SHM DEBUG] Header bbox: [" 
+              << header->bbox[0] << ", " << header->bbox[1] << ", " << header->bbox[2] << "] to ["
+              << header->bbox[3] << ", " << header->bbox[4] << ", " << header->bbox[5] << "]" << std::endl;
     
     // Calculate total size including point data
     size_t total_size = calculate_size(header->point_count, 

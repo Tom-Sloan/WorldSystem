@@ -19,8 +19,8 @@ bool AlgorithmSelector::initialize() {
     mc_params.marching_cubes.max_vertices = 5000000;
     
     // Get volume bounds from environment if available
-    const char* bounds_min_env = std::getenv("TSDF_SCENE_BOUNDS_MIN");
-    const char* bounds_max_env = std::getenv("TSDF_SCENE_BOUNDS_MAX");
+    const char* bounds_min_env = std::getenv("TSDF_VOLUME_MIN");
+    const char* bounds_max_env = std::getenv("TSDF_VOLUME_MAX");
     
     if (bounds_min_env && bounds_max_env) {
         float x, y, z;

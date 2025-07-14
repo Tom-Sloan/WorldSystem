@@ -397,6 +397,16 @@ services:
       # Input exchanges from SLAM3R
       - SLAM3R_KEYFRAME_EXCHANGE=${SLAM3R_KEYFRAME_EXCHANGE:-slam3r_keyframe_exchange}
       
+      # ========== TSDF VOLUME CONFIGURATION ==========
+      # Adjust these based on your scene - current values match SLAM3R output range
+      - TSDF_VOLUME_MIN=-1,0,2
+      - TSDF_VOLUME_MAX=1,4,4
+      - TSDF_VOXEL_SIZE=0.02
+      - TSDF_TRUNCATION_DISTANCE=0.06
+      # Override the defaults that the code actually reads
+      - TSDF_SCENE_BOUNDS_MIN=-0.5,-0.5,2.0
+      - TSDF_SCENE_BOUNDS_MAX=0.5,4.0,4.0
+      
       # ========== RERUN VISUALIZATION ==========
       - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
       - RERUN_ENABLED=${RERUN_ENABLED:-true}

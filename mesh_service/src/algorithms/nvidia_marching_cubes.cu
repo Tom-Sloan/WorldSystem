@@ -13,6 +13,10 @@ extern "C" {
 #include "../../external/nvidia_mc/tables.h"
 }
 
+// Device copies of the tables
+__constant__ uint d_numVertsTable[256];
+__constant__ int d_triTable[256][16];
+
 // Helper CUDA kernels
 namespace cuda {
 
@@ -92,7 +96,7 @@ __global__ void classifyVoxelKernel(
     }
     
     // Use lookup table
-    uint num_verts = numVertsTable[cube_index];
+    uint num_verts = d_numVertsTable[cube_index];
     voxel_verts[threadId] = num_verts;
     voxel_occupied[threadId] = (num_verts > 0) ? 1 : 0;
 }
@@ -184,9 +188,9 @@ __global__ void generateTrianglesKernel(
     
     // Generate triangles
     uint num_triangles = 0;
-    for (int i = 0; triTable[cube_index][i] != -1; i += 3) {
+    for (int i = 0; d_triTable[cube_index][i] != -1; i += 3) {
         for (int j = 0; j < 3; j++) {
-            int edge = triTable[cube_index][i + j];
+            int edge = d_triTable[cube_index][i + j];
             int v0 = edge_vertex[edge][0];
             int v1 = edge_vertex[edge][1];
             
@@ -247,8 +251,9 @@ bool NvidiaMarchingCubes::initialize(const AlgorithmParams& params) {
 }
 
 void NvidiaMarchingCubes::uploadTables() {
-    // Tables are already in constant memory from tables.h
-    // No need to upload separately
+    // Copy tables to constant memory
+    cudaMemcpyToSymbol(d_numVertsTable, numVertsTable, 256 * sizeof(uint));
+    cudaMemcpyToSymbol(d_triTable, triTable, 256 * 16 * sizeof(int));
 }
 
 void NvidiaMarchingCubes::allocateBuffers(const int3& volume_dims) {

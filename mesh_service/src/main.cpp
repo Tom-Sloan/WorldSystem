@@ -11,6 +11,8 @@
 #include "rabbitmq_consumer.h"
 #include "metrics.h"
 #include "rerun_publisher.h"
+#include "config/configuration_manager.h"
+#include "config/mesh_service_config.h"
 
 std::atomic<bool> g_running{true};
 
@@ -28,6 +30,20 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signal_handler);
     
     std::cout << "Mesh Service starting..." << std::endl;
+    
+    // Initialize configuration manager
+    auto& config = mesh_service::ConfigurationManager::getInstance();
+    
+    // Validate configuration
+    if (!config.validateConfiguration()) {
+        std::cerr << "Invalid configuration detected. Please check environment variables." << std::endl;
+        return 1;
+    }
+    
+    // Log configuration if debug mode is enabled
+    if (std::getenv("MESH_DEBUG_CONFIG")) {
+        config.logConfiguration();
+    }
     
     try {
         // Get configuration from environment
@@ -52,10 +68,12 @@ int main(int argc, char* argv[]) {
         auto rabbitmq_consumer = std::make_shared<mesh_service::RabbitMQConsumer>(rabbitmq_url);
         auto rerun_publisher = std::make_shared<mesh_service::RerunPublisher>("mesh_service", rerun_address, rerun_enabled);
         
-        // Configure mesh generator
+        // Configure mesh generator using configuration manager
         mesh_generator->setMethod(mesh_service::MeshMethod::TSDF_MARCHING_CUBES);
         mesh_generator->setQualityAdaptive(true);  // Enable adaptive quality based on camera velocity
-        mesh_generator->setSimplificationRatio(0.1f);
+        mesh_generator->setSimplificationRatio(
+            CONFIG_FLOAT("MESH_SIMPLIFICATION_RATIO", mesh_service::config::AlgorithmConfig::DEFAULT_SIMPLIFICATION_RATIO)
+        );
         
         std::cout << "Mesh service configured with new algorithm selector:" << std::endl;
         std::cout << "  - NVIDIA Marching Cubes with optimized TSDF" << std::endl;
@@ -217,7 +235,7 @@ int main(int argc, char* argv[]) {
                     }
                     
                     // Log FPS periodically
-                    if (frame_count % 10 == 0) {
+                    if (frame_count % CONFIG_INT("MESH_FPS_LOG_INTERVAL", mesh_service::config::DebugConfig::DEFAULT_FPS_LOG_INTERVAL) == 0) {
                         auto now = std::chrono::steady_clock::now();
                         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
                         if (elapsed > 0) {

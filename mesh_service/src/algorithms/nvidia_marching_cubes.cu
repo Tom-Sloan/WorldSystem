@@ -1,4 +1,6 @@
 #include "algorithms/nvidia_marching_cubes.h"
+#include "config/configuration_manager.h"
+#include "config/mesh_service_config.h"
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <thrust/scan.h>

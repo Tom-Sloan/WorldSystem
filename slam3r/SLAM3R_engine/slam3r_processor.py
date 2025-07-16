@@ -21,6 +21,7 @@ import numpy as np
 import torch
 import yaml
 import msgpack
+import trimesh
 
 # Configure logging
 logging.basicConfig(
@@ -80,6 +81,13 @@ class SLAM3RProcessor:
         # Video segment handling
         self.current_video_id = None
         self.segment_frame_count = 0
+        
+        # PCD saving configuration
+        self.save_pcd = os.getenv("SLAM3R_SAVE_PCD", "false").lower() == "true"
+        self.pcd_output_dir = os.getenv("SLAM3R_PCD_OUTPUT_DIR", "/debug_output/pcd")
+        if self.save_pcd:
+            os.makedirs(self.pcd_output_dir, exist_ok=True)
+            logger.info(f"PCD saving enabled. Output directory: {self.pcd_output_dir}")
     
     def _load_config(self) -> Dict:
         """Load configuration from YAML file."""
@@ -300,6 +308,21 @@ class SLAM3RProcessor:
                                  f"Max conf: {conf.max():.3f}, min: {conf.min():.3f}, threshold: {conf_thresh}")
                     return
                 
+                # Save point cloud for debugging
+                if self.save_pcd and self.keyframe_count % 10 == 0:
+                    # Get colors if available
+                    debug_colors = None
+                    if 'rgb_image' in keyframe_data and keyframe_data['rgb_image'] is not None:
+                        rgb_image = keyframe_data['rgb_image']
+                        H, W = conf_np.shape[-2:] if conf_np.ndim >= 2 else (224, 224)
+                        if rgb_image.shape[:2] != (H, W):
+                            rgb_resized = cv2.resize(rgb_image, (W, H), interpolation=cv2.INTER_LINEAR)
+                        else:
+                            rgb_resized = rgb_image
+                        rgb_flat = rgb_resized.reshape(-1, 3)
+                        debug_colors = rgb_flat[mask]
+                    self._save_debug_pointcloud(filtered_pts, conf[mask], self.keyframe_count, debug_colors)
+                
                 # Extract RGB colors if available
                 if 'rgb_image' in keyframe_data and keyframe_data['rgb_image'] is not None:
                     rgb_image = keyframe_data['rgb_image']
@@ -379,6 +402,54 @@ class SLAM3RProcessor:
         
         self.last_fps_time = current_time
         self.last_fps_frame_count = self.frame_count
+    
+    def _save_debug_pointcloud(self, points: np.ndarray, confidence: np.ndarray, keyframe_id: int, colors: np.ndarray = None):
+        """Save point cloud to PLY file for debugging using trimesh."""
+        try:
+            debug_dir = "/debug_output"
+            os.makedirs(debug_dir, exist_ok=True)
+            
+            filename = os.path.join(debug_dir, f"slam3r_keyframe_{keyframe_id:06d}.ply")
+            
+            # Create metadata dict with confidence values
+            metadata = {
+                'confidence_min': float(confidence.min()),
+                'confidence_max': float(confidence.max()),
+                'confidence_mean': float(confidence.mean()),
+                'keyframe_id': keyframe_id,
+                'point_count': len(points)
+            }
+            
+            # If no colors provided, use confidence-based coloring
+            if colors is None:
+                # Normalize confidence to 0-1 range for coloring
+                conf_norm = (confidence - confidence.min()) / (confidence.max() - confidence.min() + 1e-6)
+                # Create red-to-green gradient based on confidence
+                colors = np.zeros((len(points), 3))
+                colors[:, 0] = (1 - conf_norm) * 255  # Red for low confidence
+                colors[:, 1] = conf_norm * 255        # Green for high confidence
+                colors = colors.astype(np.uint8)
+            
+            # Ensure colors are in 0-255 range for trimesh
+            if colors.max() <= 1.0:
+                colors = (colors * 255).astype(np.uint8)
+            
+            # Create point cloud with trimesh
+            pcd = trimesh.points.PointCloud(points, colors=colors)
+            
+            # Add metadata
+            for key, value in metadata.items():
+                pcd.metadata[key] = value
+            
+            # Export to PLY
+            pcd.export(filename)
+            
+            logger.info(f"[PCD] Saved point cloud to {filename} ({len(points)} points)")
+            logger.info(f"[PCD] Point cloud bounds - Min: {points.min(axis=0)}, Max: {points.max(axis=0)}")
+            logger.info(f"[PCD] Confidence stats - Min: {confidence.min():.3f}, Max: {confidence.max():.3f}, Mean: {confidence.mean():.3f}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save debug point cloud: {e}", exc_info=True)
     
     async def run(self):
         """Main processing loop."""

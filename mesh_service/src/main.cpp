@@ -69,16 +69,16 @@ int main(int argc, char* argv[]) {
         const char* voxel_size = std::getenv("TSDF_VOXEL_SIZE");
         const char* truncation = std::getenv("TSDF_TRUNCATION_DISTANCE");
         const char* max_weight = std::getenv("TSDF_MAX_WEIGHT");
-        const char* bounds_min = std::getenv("TSDF_SCENE_BOUNDS_MIN");
-        const char* bounds_max = std::getenv("TSDF_SCENE_BOUNDS_MAX");
+        const char* bounds_min = std::getenv("TSDF_VOLUME_MIN");
+        const char* bounds_max = std::getenv("TSDF_VOLUME_MAX");
         
         if (voxel_size || truncation || max_weight || bounds_min || bounds_max) {
             std::cout << "\nTSDF Environment Configuration:" << std::endl;
             if (voxel_size) std::cout << "  TSDF_VOXEL_SIZE: " << voxel_size << "m" << std::endl;
             if (truncation) std::cout << "  TSDF_TRUNCATION_DISTANCE: " << truncation << "m" << std::endl;
             if (max_weight) std::cout << "  TSDF_MAX_WEIGHT: " << max_weight << std::endl;
-            if (bounds_min) std::cout << "  TSDF_SCENE_BOUNDS_MIN: " << bounds_min << std::endl;
-            if (bounds_max) std::cout << "  TSDF_SCENE_BOUNDS_MAX: " << bounds_max << std::endl;
+            if (bounds_min) std::cout << "  TSDF_VOLUME_MIN: " << bounds_min << std::endl;
+            if (bounds_max) std::cout << "  TSDF_VOLUME_MAX: " << bounds_max << std::endl;
         }
         
         // Connect to Rerun

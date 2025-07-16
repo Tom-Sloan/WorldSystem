@@ -10,3 +10,5 @@ __pycache__/
 .idea/
 CMakeCache.txt
 CMakeFiles/
+debug_output/
+build_test/

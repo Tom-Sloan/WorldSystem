@@ -199,6 +199,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
     updateCameraVelocity(keyframe->pose_matrix);
     
     // Check spatial deduplication with GPU octree
+    auto dedup_start = std::chrono::high_resolution_clock::now();
     float overlap_threshold = CONFIG_FLOAT("MESH_OVERLAP_THRESHOLD", mesh_service::config::SceneConfig::DEFAULT_OVERLAP_THRESHOLD);
     bool has_overlap = pImpl->gpu_octree->checkRegionOverlap(keyframe->bbox, overlap_threshold);
     float velocity_threshold = CONFIG_FLOAT("MESH_CAMERA_VELOCITY_THRESHOLD", mesh_service::config::PerformanceConfig::DEFAULT_CAMERA_VELOCITY_THRESHOLD);
@@ -207,6 +208,9 @@ void GPUMeshGenerator::generateIncrementalMesh(
         std::cout << "[DEBUG] Region has 90% overlap with existing data, skipping" << std::endl;
         return;
     }
+    auto dedup_end = std::chrono::high_resolution_clock::now();
+    auto dedup_ms = std::chrono::duration_cast<std::chrono::microseconds>(dedup_end - dedup_start).count();
+    std::cout << "[TIMING] Spatial deduplication check: " << dedup_ms << " µs" << std::endl;
     
     uint64_t spatial_hash = computeSpatialHashCPU(keyframe->bbox);
     std::cout << "[DEBUG] Processing keyframe: spatial_hash=" << spatial_hash 
@@ -214,9 +218,13 @@ void GPUMeshGenerator::generateIncrementalMesh(
               << ", points=" << keyframe->point_count << std::endl;
     
     // Get point and color data
+    auto data_access_start = std::chrono::high_resolution_clock::now();
     SharedMemoryManager smm;
     float* h_points = smm.get_points(const_cast<SharedKeyframe*>(keyframe));
     uint8_t* h_colors = smm.get_colors(const_cast<SharedKeyframe*>(keyframe));
+    auto data_access_end = std::chrono::high_resolution_clock::now();
+    auto data_access_us = std::chrono::duration_cast<std::chrono::microseconds>(data_access_end - data_access_start).count();
+    std::cout << "[TIMING] Point/color data access: " << data_access_us << " µs" << std::endl;
     
     // Debug: Check point cloud bounds
     std::cout << "[MESH GEN DEBUG] Checking point cloud bounds for " << keyframe->point_count << " points" << std::endl;
@@ -267,6 +275,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
     std::cout << "  Max: [" << keyframe->bbox[3] << ", " << keyframe->bbox[4] << ", " << keyframe->bbox[5] << "]" << std::endl;
     
     // Filter corrupted points before processing
+    auto filter_start = std::chrono::high_resolution_clock::now();
     std::vector<float3> valid_points;
     std::vector<uint8_t> valid_colors;
     valid_points.reserve(keyframe->point_count);
@@ -298,6 +307,9 @@ void GPUMeshGenerator::generateIncrementalMesh(
             valid_colors.push_back(h_colors[i*3+2]);
         }
     }
+    auto filter_end = std::chrono::high_resolution_clock::now();
+    auto filter_ms = std::chrono::duration_cast<std::chrono::milliseconds>(filter_end - filter_start).count();
+    std::cout << "[TIMING] Point filtering: " << filter_ms << " ms" << std::endl;
     
     size_t valid_point_count = valid_points.size();
     
@@ -314,34 +326,53 @@ void GPUMeshGenerator::generateIncrementalMesh(
     }
     
     // Allocate device memory for valid points only
+    auto gpu_alloc_start = std::chrono::high_resolution_clock::now();
     float3* d_points = (float3*)pImpl->allocateFromPool(valid_point_count * sizeof(float3));
     if (!d_points) {
         // Fallback to regular allocation
         cudaMallocAsync(&d_points, valid_point_count * sizeof(float3), pImpl->stream);
     }
+    auto gpu_alloc_end = std::chrono::high_resolution_clock::now();
+    auto gpu_alloc_us = std::chrono::duration_cast<std::chrono::microseconds>(gpu_alloc_end - gpu_alloc_start).count();
+    std::cout << "[TIMING] GPU memory allocation: " << gpu_alloc_us << " µs" << std::endl;
     
     // Copy valid points to device
+    auto h2d_start = std::chrono::high_resolution_clock::now();
     cudaMemcpyAsync(d_points, valid_points.data(), 
                     valid_point_count * sizeof(float3), 
                     cudaMemcpyHostToDevice, pImpl->stream);
+    cudaStreamSynchronize(pImpl->stream);  // Sync to measure actual transfer time
+    auto h2d_end = std::chrono::high_resolution_clock::now();
+    auto h2d_ms = std::chrono::duration_cast<std::chrono::milliseconds>(h2d_end - h2d_start).count();
+    std::cout << "[TIMING] Host to device copy: " << h2d_ms << " ms (" << (valid_point_count * sizeof(float3) / 1024.0 / 1024.0) << " MB)" << std::endl;
     
     // Allocate device memory for normals
     pImpl->d_normals.resize(valid_point_count);
     
     // Estimate normals
     // Update octree with new points for neighbor queries
+    auto octree_start = std::chrono::high_resolution_clock::now();
     pImpl->gpu_octree->incrementalUpdate(d_points, valid_point_count, 
                                         keyframe->pose_matrix, pImpl->stream);
+    cudaStreamSynchronize(pImpl->stream);
+    auto octree_end = std::chrono::high_resolution_clock::now();
+    auto octree_ms = std::chrono::duration_cast<std::chrono::milliseconds>(octree_end - octree_start).count();
+    std::cout << "[TIMING] Octree update: " << octree_ms << " ms" << std::endl;
     
     // Estimate normals using octree for efficient neighbor search
+    auto normal_start = std::chrono::high_resolution_clock::now();
     pImpl->normal_estimator->estimateNormals(
         d_points, 
         valid_point_count,
         pImpl->d_normals.data().get(),
         pImpl->stream
     );
+    auto normal_end = std::chrono::high_resolution_clock::now();
+    auto normal_ms = std::chrono::duration_cast<std::chrono::milliseconds>(normal_end - normal_start).count();
+    std::cout << "[TIMING] Normal estimation breakdown: " << normal_ms << " ms" << std::endl;
     
     // Process with algorithm selector
+    auto algo_start = std::chrono::high_resolution_clock::now();
     bool success = pImpl->algorithm_selector->processWithAutoSelect(
         d_points,
         pImpl->d_normals.data().get(),
@@ -351,6 +382,9 @@ void GPUMeshGenerator::generateIncrementalMesh(
         update,
         pImpl->stream
     );
+    auto algo_end = std::chrono::high_resolution_clock::now();
+    auto algo_ms = std::chrono::duration_cast<std::chrono::milliseconds>(algo_end - algo_start).count();
+    std::cout << "[TIMING] Algorithm processing (TSDF + MC): " << algo_ms << " ms" << std::endl;
     
     if (!success) {
         std::cerr << "Mesh generation failed" << std::endl;
@@ -359,6 +393,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
     }
     
     // Copy colors if available
+    auto color_start = std::chrono::high_resolution_clock::now();
     if (!valid_colors.empty() && update.vertices.size() > 0) {
         update.vertex_colors.resize(update.vertices.size());
         // Simple color assignment for now - could be improved
@@ -368,6 +403,11 @@ void GPUMeshGenerator::generateIncrementalMesh(
             update.vertex_colors[i*3+1] = valid_colors[i*3+1];
             update.vertex_colors[i*3+2] = valid_colors[i*3+2];
         }
+    }
+    auto color_end = std::chrono::high_resolution_clock::now();
+    auto color_ms = std::chrono::duration_cast<std::chrono::milliseconds>(color_end - color_start).count();
+    if (!valid_colors.empty()) {
+        std::cout << "[TIMING] Color assignment: " << color_ms << " ms" << std::endl;
     }
     
     // Periodic debug saves - moved here from NvidiaMarchingCubes::reconstruct
@@ -457,6 +497,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
     pImpl->processed_regions[spatial_hash] = keyframe->timestamp_ns;
     
     // Clean up
+    auto cleanup_start = std::chrono::high_resolution_clock::now();
     if (pImpl->allocateFromPool(0)) {  // Check if we used pool
         pImpl->releaseToPool(d_points);
     } else {
@@ -465,6 +506,9 @@ void GPUMeshGenerator::generateIncrementalMesh(
     
     // Synchronize
     cudaStreamSynchronize(pImpl->stream);
+    auto cleanup_end = std::chrono::high_resolution_clock::now();
+    auto cleanup_us = std::chrono::duration_cast<std::chrono::microseconds>(cleanup_end - cleanup_start).count();
+    std::cout << "[TIMING] GPU cleanup: " << cleanup_us << " µs" << std::endl;
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -473,6 +517,19 @@ void GPUMeshGenerator::generateIncrementalMesh(
     std::cout << "Mesh generation completed in " << duration << "ms: "
               << update.vertices.size()/3 << " vertices, "
               << update.faces.size()/3 << " faces" << std::endl;
+    
+    // Print timing summary
+    std::cout << "\n[TIMING SUMMARY]" << std::endl;
+    std::cout << "  Total mesh generation: " << duration << " ms" << std::endl;
+    std::cout << "  Major components:" << std::endl;
+    std::cout << "    - Point filtering: ~" << filter_ms << " ms" << std::endl;
+    std::cout << "    - Normal estimation: ~" << normal_ms << " ms (largest component)" << std::endl;
+    std::cout << "    - TSDF + Marching Cubes: ~" << algo_ms << " ms" << std::endl;
+    std::cout << "  Performance metrics:" << std::endl;
+    std::cout << "    - Points processed: " << valid_point_count << std::endl;
+    std::cout << "    - Points/sec: " << (valid_point_count * 1000.0 / duration) << std::endl;
+    std::cout << "    - Vertices generated: " << update.vertices.size()/3 << std::endl;
+    std::cout << "    - Faces generated: " << update.faces.size()/3 << std::endl;
 }
 
 void GPUMeshGenerator::generateMesh(

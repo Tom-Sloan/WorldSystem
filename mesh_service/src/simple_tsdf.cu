@@ -5,6 +5,7 @@
 #include <thrust/device_vector.h>
 #include <thrust/fill.h>
 #include <iostream>
+#include <chrono>
 
 namespace mesh_service {
 
@@ -314,6 +315,8 @@ void SimpleTSDF::integrate(
     const float* camera_pose,
     cudaStream_t stream
 ) {
+    auto tsdf_start = std::chrono::high_resolution_clock::now();
+    
     // Extract camera position from 4x4 pose matrix (translation part)
     float3 camera_position = make_float3(0.0f, 0.0f, 0.0f);
     if (camera_pose) {
@@ -337,9 +340,14 @@ void SimpleTSDF::integrate(
     std::cout << "[TSDF DEBUG] integrate() called with " << num_points << " points" << std::endl;
     
     // Debug: Check first few points on host
+    auto debug_copy_start = std::chrono::high_resolution_clock::now();
     float3 h_points[10];
     size_t debug_count = std::min(num_points, size_t(10));
     cudaMemcpy(h_points, d_points, debug_count * sizeof(float3), cudaMemcpyDeviceToHost);
+    auto debug_copy_end = std::chrono::high_resolution_clock::now();
+    auto debug_copy_us = std::chrono::duration_cast<std::chrono::microseconds>(debug_copy_end - debug_copy_start).count();
+    std::cout << "[TIMING] TSDF debug copy: " << debug_copy_us << " µs" << std::endl;
+    
     std::cout << "[TSDF DEBUG] First few points (world space):" << std::endl;
     for (size_t i = 0; i < debug_count; i++) {
         std::cout << "  Point " << i << ": [" << h_points[i].x << ", " 
@@ -368,6 +376,7 @@ void SimpleTSDF::integrate(
     dim3 block(256);
     dim3 grid((num_points + block.x - 1) / block.x);
     
+    auto kernel_start = std::chrono::high_resolution_clock::now();
     cuda::integrateTSDFKernel<<<grid, block, 0, stream>>>(
         pImpl->d_tsdf_volume_.data().get(),
         pImpl->d_weight_volume_.data().get(),
@@ -382,10 +391,20 @@ void SimpleTSDF::integrate(
         camera_position
     );
     
+    // Synchronize to measure kernel time
+    cudaStreamSynchronize(stream);
+    auto kernel_end = std::chrono::high_resolution_clock::now();
+    auto kernel_ms = std::chrono::duration_cast<std::chrono::milliseconds>(kernel_end - kernel_start).count();
+    std::cout << "[TIMING] TSDF integration kernel: " << kernel_ms << " ms" << std::endl;
+    
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         std::cerr << "[TSDF ERROR] Kernel launch failed: " << cudaGetErrorString(err) << std::endl;
     }
+    
+    auto tsdf_end = std::chrono::high_resolution_clock::now();
+    auto tsdf_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(tsdf_end - tsdf_start).count();
+    std::cout << "[TIMING] Total TSDF integration: " << tsdf_total_ms << " ms" << std::endl;
 }
 
 float* SimpleTSDF::getTSDFVolume() const {

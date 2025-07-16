@@ -36,15 +36,6 @@
 **Current State**: Only basic triangle mesh generation implemented (`simple_mesh_generator.cu`)
 
 **TODO**:
-- [ ] Implement Incremental Poisson Surface Reconstruction (IPSR)
-  - Block-based processing for 256³ voxel regions
-  - True incremental updates without full recomputation
-  - Memory-efficient streaming architecture
-  
-- [ ] Implement Neural Kernel Surface Reconstruction (NKSR)
-  - For scenes exceeding GPU memory
-  - Out-of-core processing support
-  - Leverage NVIDIA's 2023 algorithm
   
 - [ ] Implement GPU Marching Cubes with TSDF
   - Fast preview mode during camera motion

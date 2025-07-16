@@ -1,4 +1,6 @@
 #include "simple_tsdf.h"
+#include "config/configuration_manager.h"
+#include "config/mesh_service_config.h"
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <thrust/fill.h>
@@ -230,7 +232,8 @@ public:
     // Transform matrix
     thrust::device_vector<float> d_world_to_volume_;
     
-    Impl() : voxel_size_(0.05f), truncation_distance_(0.10f) {}
+    Impl() : voxel_size_(CONFIG_FLOAT("MESH_VOXEL_SIZE", mesh_service::config::AlgorithmConfig::DEFAULT_VOXEL_SIZE)), 
+             truncation_distance_(CONFIG_FLOAT("MESH_TRUNCATION_DISTANCE", mesh_service::config::AlgorithmConfig::DEFAULT_TRUNCATION_DISTANCE)) {}
     
     void initialize(const float3& volume_min, const float3& volume_max, float voxel_size) {
         volume_min_ = volume_min;

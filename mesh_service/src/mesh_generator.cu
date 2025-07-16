@@ -2,6 +2,8 @@
 #include "algorithm_selector.h"
 #include "normal_estimation.h"
 #include "gpu_octree.h"
+#include "config/configuration_manager.h"
+#include "config/mesh_service_config.h"
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <iostream>
@@ -16,7 +18,7 @@ namespace mesh_service {
 uint64_t computeSpatialHashCPU(const float bbox[6]);
 
 // Constants for RTX 3090 optimization
-constexpr size_t VOXEL_BLOCK_SIZE = 256;
+constexpr size_t VOXEL_BLOCK_SIZE = mesh_service::config::CudaConfig::VOXEL_BLOCK_SIZE;
 // constexpr size_t MAX_POINTS_PER_BLOCK = 500000;  // Reserved for future use
 // constexpr int THREADS_PER_BLOCK = 128;  // Reserved for future use
 
@@ -60,14 +62,19 @@ public:
         // Create CUDA stream
         cudaStreamCreate(&stream);
         
-        // Allocate memory pool (1GB for RTX 3090)
-        memory_pool_size = 1024 * 1024 * 1024;
+        // Allocate memory pool from configuration
+        memory_pool_size = CONFIG_SIZE("MESH_MEMORY_POOL_SIZE", 
+                                       mesh_service::config::MemoryConfig::DEFAULT_MEMORY_POOL_SIZE);
         cudaMalloc(&d_memory_pool, memory_pool_size);
         
         // Initialize components
         algorithm_selector = std::make_unique<AlgorithmSelector>();
         normal_estimator = std::make_unique<NormalEstimation>();
-        gpu_octree = std::make_unique<GPUOctree>(10.0f, 8, 64);  // 10m scene, depth 8
+        gpu_octree = std::make_unique<GPUOctree>(
+            CONFIG_FLOAT("MESH_OCTREE_SCENE_SIZE", mesh_service::config::SceneConfig::DEFAULT_OCTREE_SCENE_SIZE),
+            CONFIG_INT("MESH_OCTREE_MAX_DEPTH", mesh_service::config::SceneConfig::DEFAULT_OCTREE_MAX_DEPTH),
+            CONFIG_INT("MESH_OCTREE_LEAF_SIZE", mesh_service::config::SceneConfig::DEFAULT_OCTREE_LEAF_SIZE)
+        );
         
         if (!algorithm_selector->initialize()) {
             throw std::runtime_error("Failed to initialize algorithm selector");
@@ -76,13 +83,15 @@ public:
         // Configure normal estimation
         NormalEstimation::Parameters normal_params;
         normal_params.method = NormalEstimation::PCA;
-        normal_params.k_neighbors = 30;
+        normal_params.k_neighbors = CONFIG_INT("MESH_NORMAL_K_NEIGHBORS", 
+                                               mesh_service::config::AlgorithmConfig::DEFAULT_NORMAL_K_NEIGHBORS);
         normal_estimator->setParameters(normal_params);
         
         last_frame_time = std::chrono::steady_clock::now();
         
         // Initialize memory pool blocks
-        size_t memory_block_size = 64 * 1024 * 1024;  // 64MB blocks
+        size_t memory_block_size = CONFIG_SIZE("MESH_MEMORY_BLOCK_SIZE", 
+                                              mesh_service::config::MemoryConfig::DEFAULT_MEMORY_BLOCK_SIZE);
         size_t num_blocks = memory_pool_size / memory_block_size;
         for (size_t i = 0; i < num_blocks; i++) {
             MemoryBlock block;
@@ -110,7 +119,7 @@ public:
         auto now = std::chrono::steady_clock::now();
         float dt = std::chrono::duration<float>(now - last_frame_time).count();
         
-        if (dt > 0.001f) {  // Avoid division by zero
+        if (dt > CONFIG_FLOAT("MESH_TIME_DELTA_THRESHOLD", mesh_service::config::PerformanceConfig::DEFAULT_TIME_DELTA_THRESHOLD)) {
             float3 diff = make_float3(
                 camera_pos.x - prev_camera_pos.x,
                 camera_pos.y - prev_camera_pos.y,
@@ -121,7 +130,9 @@ public:
             
             // Smooth velocity with exponential moving average
             static float smooth_velocity = 0.0f;
-            smooth_velocity = 0.8f * smooth_velocity + 0.2f * camera_velocity;
+            float smooth_factor = CONFIG_FLOAT("MESH_VELOCITY_SMOOTH_FACTOR", mesh_service::config::PerformanceConfig::DEFAULT_VELOCITY_SMOOTH_FACTOR);
+            float current_factor = CONFIG_FLOAT("MESH_VELOCITY_CURRENT_FACTOR", mesh_service::config::PerformanceConfig::DEFAULT_VELOCITY_CURRENT_FACTOR);
+            smooth_velocity = smooth_factor * smooth_velocity + current_factor * camera_velocity;
             camera_velocity = smooth_velocity;
         }
         
@@ -187,9 +198,11 @@ void GPUMeshGenerator::generateIncrementalMesh(
     // Update camera velocity
     updateCameraVelocity(keyframe->pose_matrix);
     
-    // Check spatial deduplication with GPU octree (handle 90% overlap)
-    bool has_overlap = pImpl->gpu_octree->checkRegionOverlap(keyframe->bbox, 0.9f);
-    if (has_overlap && pImpl->camera_velocity < 0.1f) {
+    // Check spatial deduplication with GPU octree
+    float overlap_threshold = CONFIG_FLOAT("MESH_OVERLAP_THRESHOLD", mesh_service::config::SceneConfig::DEFAULT_OVERLAP_THRESHOLD);
+    bool has_overlap = pImpl->gpu_octree->checkRegionOverlap(keyframe->bbox, overlap_threshold);
+    float velocity_threshold = CONFIG_FLOAT("MESH_CAMERA_VELOCITY_THRESHOLD", mesh_service::config::PerformanceConfig::DEFAULT_CAMERA_VELOCITY_THRESHOLD);
+    if (has_overlap && pImpl->camera_velocity < velocity_threshold) {
         // Skip if significant overlap and camera is not moving much
         std::cout << "[DEBUG] Region has 90% overlap with existing data, skipping" << std::endl;
         return;
@@ -209,8 +222,9 @@ void GPUMeshGenerator::generateIncrementalMesh(
     std::cout << "[MESH GEN DEBUG] Checking point cloud bounds for " << keyframe->point_count << " points" << std::endl;
     
     // Debug first few points raw values
-    std::cout << "[MESH GEN DEBUG] First 5 points raw values:" << std::endl;
-    for (size_t i = 0; i < std::min(size_t(5), size_t(keyframe->point_count)); i++) {
+    int debug_limit = CONFIG_INT("MESH_DEBUG_PRINT_LIMIT", mesh_service::config::DebugConfig::DEFAULT_DEBUG_PRINT_LIMIT);
+    std::cout << "[MESH GEN DEBUG] First " << debug_limit << " points raw values:" << std::endl;
+    for (size_t i = 0; i < std::min(size_t(debug_limit), size_t(keyframe->point_count)); i++) {
         std::cout << "  Point " << i << ": [" << h_points[i*3] << ", " 
                   << h_points[i*3+1] << ", " << h_points[i*3+2] << "]" << std::endl;
     }
@@ -219,7 +233,8 @@ void GPUMeshGenerator::generateIncrementalMesh(
     float3 max_bound = make_float3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
     
     // Limit scan to prevent reading past valid data
-    size_t max_points_to_scan = std::min(size_t(keyframe->point_count), size_t(1000000));
+    size_t max_points_to_scan = std::min(size_t(keyframe->point_count), 
+                                         CONFIG_SIZE("MESH_MAX_POINTS_TO_SCAN", mesh_service::config::DebugConfig::DEFAULT_MAX_POINTS_TO_SCAN));
     if (keyframe->point_count > max_points_to_scan) {
         std::cout << "[MESH GEN WARNING] Limiting bounds scan to first " << max_points_to_scan 
                   << " points (total: " << keyframe->point_count << ")" << std::endl;
@@ -260,7 +275,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
     }
     
     size_t corrupted_count = 0;
-    const float max_coord = 1000.0f; // 1km scene bounds
+    const float max_coord = CONFIG_FLOAT("MESH_MAX_SCENE_COORDINATE", mesh_service::config::SceneConfig::DEFAULT_MAX_SCENE_COORDINATE);
     
     for (size_t i = 0; i < keyframe->point_count; i++) {
         float3 pt = make_float3(h_points[i*3], h_points[i*3+1], h_points[i*3+2]);
@@ -269,7 +284,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
         if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z) ||
             std::abs(pt.x) > max_coord || std::abs(pt.y) > max_coord || std::abs(pt.z) > max_coord) {
             corrupted_count++;
-            if (corrupted_count <= 5) { // Log first few corrupted points
+            if (corrupted_count <= CONFIG_INT("MESH_DEBUG_PRINT_LIMIT", mesh_service::config::DebugConfig::DEFAULT_DEBUG_PRINT_LIMIT)) {
                 std::cout << "[MESH GEN] Filtering corrupted point " << i 
                           << ": [" << pt.x << ", " << pt.y << ", " << pt.z << "]" << std::endl;
             }
@@ -359,7 +374,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
     static int debug_frame_count = 0;
     debug_frame_count++;
     
-    if (debug_frame_count % 10 == 0) {
+    if (debug_frame_count % CONFIG_INT("MESH_DEBUG_SAVE_INTERVAL", mesh_service::config::DebugConfig::DEFAULT_DEBUG_SAVE_INTERVAL) == 0) {
         std::cout << "[MESH GEN DEBUG SAVE] Saving debug data for frame " << debug_frame_count << std::endl;
         
         // Save point cloud to PLY file

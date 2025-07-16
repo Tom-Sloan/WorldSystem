@@ -45,6 +45,7 @@ set(SOURCES
     src/metrics.cpp
     src/rerun_publisher.cpp
     src/normal_estimation.cu  # Still needed for normals
+    src/configuration_manager.cpp  # New configuration system
     
     # New algorithm implementation
     src/simple_tsdf.cu

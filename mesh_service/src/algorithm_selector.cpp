@@ -1,5 +1,7 @@
 #include "algorithm_selector.h"
 #include "algorithms/nvidia_marching_cubes.h"
+#include "config/configuration_manager.h"
+#include "config/mesh_service_config.h"
 #include <iostream>
 
 namespace mesh_service {
@@ -14,9 +16,9 @@ bool AlgorithmSelector::initialize() {
     // Initialize NVIDIA Marching Cubes
     auto nvidia_mc = std::make_shared<NvidiaMarchingCubes>();
     AlgorithmParams mc_params;
-    mc_params.marching_cubes.iso_value = 0.0f;
-    mc_params.marching_cubes.truncation_distance = 0.15f;
-    mc_params.marching_cubes.max_vertices = 5000000;
+    mc_params.marching_cubes.iso_value = CONFIG_FLOAT("MESH_ISO_VALUE", mesh_service::config::AlgorithmConfig::DEFAULT_ISO_VALUE);
+    mc_params.marching_cubes.truncation_distance = CONFIG_FLOAT("MESH_TRUNCATION_DISTANCE", mesh_service::config::AlgorithmConfig::DEFAULT_TRUNCATION_DISTANCE);
+    mc_params.marching_cubes.max_vertices = CONFIG_INT("MESH_MAX_VERTICES", mesh_service::config::AlgorithmConfig::DEFAULT_MAX_VERTICES);
     
     // Get volume bounds from environment if available
     const char* bounds_min_env = std::getenv("TSDF_VOLUME_MIN");
@@ -35,17 +37,19 @@ bool AlgorithmSelector::initialize() {
                       << x << ", " << y << ", " << z << "]" << std::endl;
         }
     } else {
-        // CRITICAL FIX: Use bounds for hallway with large atrium
-        // Scene: 25m long hallway with 15m x 7m atrium in center
-        std::cout << "[VOLUME BOUNDS FIX] No environment bounds set, using hallway+atrium defaults" << std::endl;
-        std::cout << "[VOLUME BOUNDS FIX] Old bounds were: min=(-1,-1,2), max=(1,1,5)" << std::endl;
+        // Use default bounds from configuration
+        std::cout << "[VOLUME BOUNDS] No environment bounds set, using configuration defaults" << std::endl;
         
-        // Assuming hallway runs along X axis, atrium extends in Y
-        // X: -2 to 28 meters (25m hallway + margin)
-        // Y: -10 to 10 meters (20m total for non-centered atrium)
-        // Z: 0 to 8 meters (7m height + margin)
-        mc_params.volume_min = make_float3(-2.0f, -10.0f, 0.0f);
-        mc_params.volume_max = make_float3(28.0f, 10.0f, 8.0f);
+        mc_params.volume_min = make_float3(
+            mesh_service::config::SceneConfig::DEFAULT_TSDF_MIN_X,
+            mesh_service::config::SceneConfig::DEFAULT_TSDF_MIN_Y,
+            mesh_service::config::SceneConfig::DEFAULT_TSDF_MIN_Z
+        );
+        mc_params.volume_max = make_float3(
+            mesh_service::config::SceneConfig::DEFAULT_TSDF_MAX_X,
+            mesh_service::config::SceneConfig::DEFAULT_TSDF_MAX_Y,
+            mesh_service::config::SceneConfig::DEFAULT_TSDF_MAX_Z
+        );
         
         std::cout << "[VOLUME BOUNDS FIX] New hallway bounds: min=(-2,-10,0), max=(28,10,8)" << std::endl;
         std::cout << "[VOLUME BOUNDS FIX] This gives 30x20x8 meter volume for hallway+atrium" << std::endl;
@@ -129,11 +133,14 @@ ReconstructionMethod AlgorithmSelector::selectAlgorithm(
     ReconstructionMethod desired_method = current_method_;
     
     // High velocity: Always use fast marching cubes
-    if (camera_velocity > thresholds_.velocity_threshold_high) {
+    float velocity_high = CONFIG_FLOAT("MESH_VELOCITY_THRESHOLD_HIGH", mesh_service::config::PerformanceConfig::DEFAULT_VELOCITY_THRESHOLD_HIGH);
+    float velocity_low = CONFIG_FLOAT("MESH_VELOCITY_THRESHOLD_LOW", mesh_service::config::PerformanceConfig::DEFAULT_VELOCITY_THRESHOLD_LOW);
+    
+    if (camera_velocity > velocity_high) {
         desired_method = ReconstructionMethod::NVIDIA_MARCHING_CUBES;
     }
     // Low velocity: Can use higher quality (when available)
-    else if (camera_velocity < thresholds_.velocity_threshold_low) {
+    else if (camera_velocity < velocity_low) {
         // For now, always use NVIDIA MC until other algorithms are implemented
         desired_method = ReconstructionMethod::NVIDIA_MARCHING_CUBES;
         
@@ -151,7 +158,7 @@ ReconstructionMethod AlgorithmSelector::selectAlgorithm(
     // Implement hysteresis to prevent rapid switching
     if (desired_method != current_method_) {
         method_stable_frames_++;
-        if (method_stable_frames_ >= SWITCH_STABILITY_FRAMES) {
+        if (method_stable_frames_ >= CONFIG_INT("MESH_SWITCH_STABILITY_FRAMES", mesh_service::config::PerformanceConfig::DEFAULT_SWITCH_STABILITY_FRAMES)) {
             current_method_ = desired_method;
             method_stable_frames_ = 0;
             std::cout << "Switched to algorithm: " 
@@ -184,7 +191,8 @@ bool AlgorithmSelector::processWithAutoSelect(
     cudaStream_t stream
 ) {
     // Calculate scene complexity (simple heuristic for now)
-    float scene_complexity = std::min(1.0f, num_points / 500000.0f);
+    float point_threshold = static_cast<float>(CONFIG_SIZE("MESH_POINT_COUNT_THRESHOLD", mesh_service::config::PerformanceConfig::DEFAULT_POINT_COUNT_THRESHOLD));
+    float scene_complexity = std::min(1.0f, num_points / point_threshold);
     
     // Select algorithm
     ReconstructionMethod method = selectAlgorithm(

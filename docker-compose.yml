@@ -405,11 +405,10 @@ services:
       - SLAM3R_KEYFRAME_EXCHANGE=${SLAM3R_KEYFRAME_EXCHANGE:-slam3r_keyframe_exchange}
       
       # ========== TSDF VOLUME CONFIGURATION ==========
-      # Adjust these based on your scene - current values match SLAM3R output range
-      # Use the actual scene bounds from the data
-      - TSDF_VOLUME_MIN=-1,-1,2
-      - TSDF_VOLUME_MAX=1,1,5
-      - TSDF_VOXEL_SIZE=0.02
+      # Adjust these based on your scene - current values for hallway scene
+      - TSDF_VOLUME_MIN=-5,-5,0
+      - TSDF_VOLUME_MAX=30,5,5
+      - TSDF_VOXEL_SIZE=0.05
       - TSDF_TRUNCATION_DISTANCE=0.10
       
       # ========== RERUN VISUALIZATION ==========
@@ -447,6 +446,52 @@ services:
       # ========== ALGORITHM SELECTION (NEW) ==========
       # Algorithm selection mode
       - MESH_ALGORITHM=${MESH_ALGORITHM:-AUTO}                       # AUTO, MARCHING_CUBES, POISSON, NKSR
+      
+      # ========== MEMORY CONFIGURATION ==========
+      - MESH_MEMORY_POOL_SIZE=${MESH_MEMORY_POOL_SIZE:-1073741824}      # 1GB in bytes
+      - MESH_MEMORY_BLOCK_SIZE=${MESH_MEMORY_BLOCK_SIZE:-67108864}      # 64MB in bytes
+      - MESH_OCTREE_POOL_SIZE=${MESH_OCTREE_POOL_SIZE:-536870912}       # 512MB in bytes
+      - MESH_SOLVER_POOL_SIZE=${MESH_SOLVER_POOL_SIZE:-268435456}       # 256MB in bytes
+      - MESH_MAX_GPU_MEMORY=${MESH_MAX_GPU_MEMORY:-4294967296}          # 4GB limit
+      
+      # ========== ALGORITHM PARAMETERS ==========
+      - MESH_NORMAL_K_NEIGHBORS=${MESH_NORMAL_K_NEIGHBORS:-30}
+      - MESH_TRUNCATION_DISTANCE=${MESH_TRUNCATION_DISTANCE:-0.15}
+      - MESH_MAX_VERTICES=${MESH_MAX_VERTICES:-5000000}
+      - MESH_SIMPLIFICATION_RATIO=${MESH_SIMPLIFICATION_RATIO:-0.1}
+      - MESH_MAX_TSDF_WEIGHT=${MESH_MAX_TSDF_WEIGHT:-100.0}
+      - MESH_CONFIDENCE_THRESHOLD=${MESH_CONFIDENCE_THRESHOLD:-0.1}
+      - MESH_INFLUENCE_RADIUS=${MESH_INFLUENCE_RADIUS:-0.1}
+      - MESH_VOXEL_SIZE=${MESH_VOXEL_SIZE:-0.05}
+      - MESH_ISO_VALUE=${MESH_ISO_VALUE:-0.0}
+      
+      # ========== SCENE CONFIGURATION ==========
+      - MESH_MAX_SCENE_COORDINATE=${MESH_MAX_SCENE_COORDINATE:-1000.0}  # 1km max
+      - MESH_OCTREE_SCENE_SIZE=${MESH_OCTREE_SCENE_SIZE:-10.0}         # 10m octree
+      - MESH_OCTREE_MAX_DEPTH=${MESH_OCTREE_MAX_DEPTH:-8}
+      - MESH_OCTREE_LEAF_SIZE=${MESH_OCTREE_LEAF_SIZE:-64}
+      - MESH_OVERLAP_THRESHOLD=${MESH_OVERLAP_THRESHOLD:-0.9}           # 90% overlap
+      
+      # ========== PERFORMANCE THRESHOLDS ==========
+      - MESH_CAMERA_VELOCITY_THRESHOLD=${MESH_CAMERA_VELOCITY_THRESHOLD:-0.1}    # m/s
+      - MESH_VELOCITY_THRESHOLD_HIGH=${MESH_VELOCITY_THRESHOLD_HIGH:-2.0}        # m/s
+      - MESH_VELOCITY_THRESHOLD_LOW=${MESH_VELOCITY_THRESHOLD_LOW:-0.5}          # m/s
+      - MESH_TIME_DELTA_THRESHOLD=${MESH_TIME_DELTA_THRESHOLD:-0.001}            # seconds
+      - MESH_VELOCITY_SMOOTH_FACTOR=${MESH_VELOCITY_SMOOTH_FACTOR:-0.8}
+      - MESH_VELOCITY_CURRENT_FACTOR=${MESH_VELOCITY_CURRENT_FACTOR:-0.2}
+      - MESH_SWITCH_STABILITY_FRAMES=${MESH_SWITCH_STABILITY_FRAMES:-5}
+      - MESH_POINT_COUNT_THRESHOLD=${MESH_POINT_COUNT_THRESHOLD:-100000}
+      - MESH_COMPLEXITY_THRESHOLD=${MESH_COMPLEXITY_THRESHOLD:-0.7}
+      
+      # ========== DEBUG CONFIGURATION ==========
+      - MESH_FPS_LOG_INTERVAL=${MESH_FPS_LOG_INTERVAL:-30}              # Log FPS every N frames
+      - MESH_DEBUG_SAVE_INTERVAL=${MESH_DEBUG_SAVE_INTERVAL:-10}        # Save debug every N frames
+      - MESH_DEBUG_PRINT_LIMIT=${MESH_DEBUG_PRINT_LIMIT:-5}             # Print first N items
+      - MESH_MAX_POINTS_TO_SCAN=${MESH_MAX_POINTS_TO_SCAN:-1000000}     # Max points for bounds
+      - MESH_DEBUG_VOXEL_LIMIT=${MESH_DEBUG_VOXEL_LIMIT:-10}           # Debug voxel limit
+      - MESH_DEBUG_POINT_LIMIT=${MESH_DEBUG_POINT_LIMIT:-10}           # Debug point limit
+      - MESH_DEBUG_CONFIG=${MESH_DEBUG_CONFIG:-false}                   # Log config at startup
+      - MESH_DEBUG_OUTPUT_DIR=${MESH_DEBUG_OUTPUT_DIR:-/debug_output}   # Debug output directory
       
       # Velocity thresholds for adaptive quality
       - VELOCITY_THRESHOLD_HIGH=${VELOCITY_THRESHOLD_HIGH:-0.5}      # High velocity threshold (m/s)

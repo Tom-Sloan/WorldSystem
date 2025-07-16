@@ -1,6 +1,32 @@
-# Mesh Service Debug Output
+# Mesh Service
 
-This directory contains debug output from the mesh service. Files are saved every 10 frames.
+Real-time 3D mesh generation service for the WorldSystem project.
+
+## Overview
+
+The mesh service converts point clouds from SLAM3R into 3D meshes using TSDF (Truncated Signed Distance Function) integration and marching cubes extraction. It features:
+
+- GPU-accelerated TSDF integration
+- Real-time marching cubes mesh extraction
+- Adaptive quality based on camera velocity
+- Spatial deduplication for efficiency
+- Comprehensive configuration system
+
+## Configuration
+
+The mesh service now features a comprehensive configuration system that allows runtime parameter tuning without recompilation. See [CONFIG.md](CONFIG.md) for detailed documentation of all parameters.
+
+Quick example:
+```bash
+# Set environment variables for docker-compose
+export MESH_VOXEL_SIZE=0.02        # Finer detail
+export MESH_DEBUG_CONFIG=true      # Log configuration
+docker-compose --profile mesh_service up
+```
+
+## Debug Output
+
+This directory contains debug output from the mesh service. Files are saved every N frames (configurable via `MESH_DEBUG_SAVE_INTERVAL`, default 10).
 
 ## Files Generated
 

@@ -26,10 +26,30 @@ bool AlgorithmSelector::initialize() {
         float x, y, z;
         if (sscanf(bounds_min_env, "%f,%f,%f", &x, &y, &z) == 3) {
             mc_params.volume_min = make_float3(x, y, z);
+            std::cout << "[VOLUME BOUNDS FIX] Using environment TSDF_VOLUME_MIN: [" 
+                      << x << ", " << y << ", " << z << "]" << std::endl;
         }
         if (sscanf(bounds_max_env, "%f,%f,%f", &x, &y, &z) == 3) {
             mc_params.volume_max = make_float3(x, y, z);
+            std::cout << "[VOLUME BOUNDS FIX] Using environment TSDF_VOLUME_MAX: [" 
+                      << x << ", " << y << ", " << z << "]" << std::endl;
         }
+    } else {
+        // CRITICAL FIX: Use bounds for hallway with large atrium
+        // Scene: 25m long hallway with 15m x 7m atrium in center
+        std::cout << "[VOLUME BOUNDS FIX] No environment bounds set, using hallway+atrium defaults" << std::endl;
+        std::cout << "[VOLUME BOUNDS FIX] Old bounds were: min=(-1,-1,2), max=(1,1,5)" << std::endl;
+        
+        // Assuming hallway runs along X axis, atrium extends in Y
+        // X: -2 to 28 meters (25m hallway + margin)
+        // Y: -10 to 10 meters (20m total for non-centered atrium)
+        // Z: 0 to 8 meters (7m height + margin)
+        mc_params.volume_min = make_float3(-2.0f, -10.0f, 0.0f);
+        mc_params.volume_max = make_float3(28.0f, 10.0f, 8.0f);
+        
+        std::cout << "[VOLUME BOUNDS FIX] New hallway bounds: min=(-2,-10,0), max=(28,10,8)" << std::endl;
+        std::cout << "[VOLUME BOUNDS FIX] This gives 30x20x8 meter volume for hallway+atrium" << std::endl;
+        std::cout << "[VOLUME BOUNDS FIX] Supports 25m hallway length + 20m Y-axis range" << std::endl;
     }
     
     // Get voxel size from environment
@@ -51,6 +71,26 @@ bool AlgorithmSelector::initialize() {
               << mc_params.volume_max.y << ", " << mc_params.volume_max.z << "]" << std::endl;
     std::cout << "  Voxel size: " << mc_params.voxel_size << "m" << std::endl;
     std::cout << "  Truncation distance: " << mc_params.marching_cubes.truncation_distance << "m" << std::endl;
+    
+    // Calculate and display memory usage
+    float3 volume_size = make_float3(
+        mc_params.volume_max.x - mc_params.volume_min.x,
+        mc_params.volume_max.y - mc_params.volume_min.y,
+        mc_params.volume_max.z - mc_params.volume_min.z
+    );
+    int3 voxel_count = make_int3(
+        (int)(volume_size.x / mc_params.voxel_size),
+        (int)(volume_size.y / mc_params.voxel_size),
+        (int)(volume_size.z / mc_params.voxel_size)
+    );
+    size_t total_voxels = voxel_count.x * voxel_count.y * voxel_count.z;
+    size_t memory_mb = (total_voxels * 2 * sizeof(float)) / (1024 * 1024); // TSDF + weights
+    
+    std::cout << "  Volume dimensions: " << volume_size.x << " x " << volume_size.y 
+              << " x " << volume_size.z << " meters" << std::endl;
+    std::cout << "  Voxel grid: " << voxel_count.x << " x " << voxel_count.y 
+              << " x " << voxel_count.z << " = " << total_voxels << " voxels" << std::endl;
+    std::cout << "  Estimated TSDF memory: " << memory_mb << " MB" << std::endl;
     
     if (!nvidia_mc->initialize(mc_params)) {
         std::cerr << "Failed to initialize NVIDIA Marching Cubes" << std::endl;
@@ -151,6 +191,11 @@ bool AlgorithmSelector::processWithAutoSelect(
         camera_velocity, num_points, scene_complexity
     );
     
+    std::cout << "[ALGORITHM SELECTOR] Selected method: " << static_cast<int>(method)
+              << " (0=PoissonRecon, 1=MarchingCubes)" << std::endl;
+    std::cout << "[ALGORITHM SELECTOR] Camera velocity: " << camera_velocity << " m/s" << std::endl;
+    std::cout << "[ALGORITHM SELECTOR] Points: " << num_points << ", Complexity: " << scene_complexity << std::endl;
+    
     // Get algorithm instance
     auto algorithm = algorithms_[method];
     if (!algorithm) {
@@ -159,10 +204,14 @@ bool AlgorithmSelector::processWithAutoSelect(
     }
     
     // Process
-    return algorithm->reconstruct(
+    std::cout << "[ALGORITHM SELECTOR] Starting reconstruction..." << std::endl;
+    bool result = algorithm->reconstruct(
         d_points, d_normals, num_points, 
         camera_pose, output, stream
     );
+    std::cout << "[ALGORITHM SELECTOR] Reconstruction " << (result ? "succeeded" : "failed") << std::endl;
+    
+    return result;
 }
 
 } // namespace mesh_service

@@ -261,13 +261,14 @@ public:
                     
                     // Set default type if not provided
                     if (msg.type.empty()) {
-                        std::cout << "[DEBUG] Message has NO 'type' field, defaulting to 'keyframe_update'" << std::endl;
-                        std::cout << "[DEBUG] Message size: " << body.size() << " bytes" << std::endl;
-                        std::cout << "[DEBUG] Message fields present: timestamp=" << (msg.timestamp_ns > 0 ? "yes" : "no")
+                        std::cout << "[MESSAGE TYPE FIX] Message has NO 'type' field, defaulting to 'keyframe.new'" << std::endl;
+                        std::cout << "[MESSAGE TYPE FIX] Message size: " << body.size() << " bytes" << std::endl;
+                        std::cout << "[MESSAGE TYPE FIX] Message fields present: timestamp=" << (msg.timestamp_ns > 0 ? "yes" : "no")
                                   << ", keyframe_id=" << (!msg.keyframe_id.empty() ? "yes" : "no")
                                   << ", shm_key=" << (!msg.shm_key.empty() ? "yes" : "no")
                                   << ", point_count=" << msg.point_count << std::endl;
-                        msg.type = "keyframe_update";
+                        // CRITICAL FIX: Default to keyframe.new to process messages without type field
+                        msg.type = "keyframe.new";
                     } else {
                         std::cout << "[DEBUG] Message has 'type' field: " << msg.type << std::endl;
                     }
@@ -282,11 +283,13 @@ public:
                     throw;
                 }
                 
-                // Notify handler only for keyframe.new messages
-                if (keyframe_handler && msg.type == "keyframe.new") {
+                // CRITICAL FIX: Accept both keyframe.new and keyframe_update messages
+                // Previously only processed keyframe.new, causing most messages to be ignored
+                if (keyframe_handler && (msg.type == "keyframe.new" || msg.type == "keyframe_update")) {
+                    std::cout << "[MESSAGE TYPE FIX] Processing message with type: " << msg.type << std::endl;
                     keyframe_handler(msg);
-                } else if (msg.type != "keyframe.new") {
-                    std::cout << "Ignoring message with type: " << msg.type << std::endl;
+                } else if (keyframe_handler) {
+                    std::cout << "[MESSAGE TYPE FIX] Ignoring unknown message type: " << msg.type << std::endl;
                 }
             }
             

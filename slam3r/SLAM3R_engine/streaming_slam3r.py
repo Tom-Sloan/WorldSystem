@@ -200,7 +200,13 @@ class SlidingWindowProcessor:
 
 
 class StreamingSLAM3R:
-    """Main class for streaming SLAM3R processing"""
+    """Main class for streaming SLAM3R processing
+    
+    IMPORTANT: SLAM3R models are trained on 224x224 images and require
+    this exact resolution. The models have learned spatial relationships
+    specific to this resolution and will produce incorrect results with
+    other image sizes.
+    """
     
     def __init__(self, 
                  i2p_model: Image2PointsModel,
@@ -290,28 +296,24 @@ class StreamingSLAM3R:
     
     def _create_frame(self, image: np.ndarray, timestamp: int) -> FrameData:
         """Create a FrameData object from raw input"""
-        # Store original shape
-        original_h, original_w = image.shape[:2]
+        # SLAM3R requires fixed 224x224 resolution (as per paper and training)
+        TARGET_IMAGE_WIDTH = 224
+        TARGET_IMAGE_HEIGHT = 224
         
-        # Check if dimensions are divisible by 16
-        if original_h % 16 != 0 or original_w % 16 != 0:
-            # Calculate nearest dimensions divisible by 16
-            new_h = ((original_h + 15) // 16) * 16
-            new_w = ((original_w + 15) // 16) * 16
-            
-            # Resize image using cv2 (already imported in slam3r_processor)
-            import cv2
-            image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-            logger.debug(f"Resized image from {original_h}x{original_w} to {new_h}x{new_w}")
+        # Resize image to required resolution
+        import cv2
+        image_resized = cv2.resize(image, (TARGET_IMAGE_WIDTH, TARGET_IMAGE_HEIGHT), 
+                                  interpolation=cv2.INTER_LINEAR)
+        logger.debug(f"Resized image from {image.shape[:2]} to {TARGET_IMAGE_HEIGHT}x{TARGET_IMAGE_WIDTH}")
         
         # Convert image to tensor and normalize
-        img_tensor = torch.from_numpy(image).float() / 255.0
+        img_tensor = torch.from_numpy(image_resized).float() / 255.0
         if img_tensor.dim() == 2:
             img_tensor = img_tensor.unsqueeze(-1).repeat(1, 1, 3)
         img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0).to(self.device)
         
-        # Use actual tensor shape for true_shape to match what the model will process
-        true_shape = torch.tensor([image.shape[0], image.shape[1]], 
+        # Use fixed shape for true_shape to match model expectations
+        true_shape = torch.tensor([TARGET_IMAGE_HEIGHT, TARGET_IMAGE_WIDTH], 
                                  dtype=torch.float32, device=self.device)
         
         frame = FrameData(

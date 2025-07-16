@@ -6,6 +6,9 @@
 #include <thrust/execution_policy.h>
 #include <cub/cub.cuh>
 #include <iostream>
+#include <algorithm>
+#include <cstdio>
+#include <cfloat>
 
 // CUDA error checking macro
 #define CUDA_CHECK(call) do { \
@@ -28,6 +31,66 @@ extern "C" {
 __constant__ uint d_numVertsTable[256];
 __constant__ int d_triTable[256][16];
 
+// Functors for thrust operations (must be defined at namespace level)
+struct CheckModified {
+    float truncation;
+    CheckModified(float t) : truncation(t) {}
+    __device__ bool operator()(float val) const {
+        return fabsf(val - truncation) > 0.001f;
+    }
+};
+
+struct CheckWeighted {
+    __device__ bool operator()(float val) const {
+        return val > 0.0f;
+    }
+};
+
+// Helper function to save PLY point cloud
+void savePLYPointCloud(const char* filename, const std::vector<float3>& points) {
+    FILE* fp = fopen(filename, "w");
+    if (!fp) {
+        std::cerr << "Failed to open " << filename << " for writing" << std::endl;
+        return;
+    }
+    
+    fprintf(fp, "ply\n");
+    fprintf(fp, "format ascii 1.0\n");
+    fprintf(fp, "element vertex %zu\n", points.size());
+    fprintf(fp, "property float x\n");
+    fprintf(fp, "property float y\n");
+    fprintf(fp, "property float z\n");
+    fprintf(fp, "end_header\n");
+    
+    for (const auto& p : points) {
+        fprintf(fp, "%.6f %.6f %.6f\n", p.x, p.y, p.z);
+    }
+    
+    fclose(fp);
+}
+
+// Helper function to save TSDF slice
+void saveTSDFSlice(const char* filename, const float* tsdf_volume, 
+                   int3 dims, int z_slice, float voxel_size, float3 origin) {
+    FILE* fp = fopen(filename, "w");
+    if (!fp) return;
+    
+    fprintf(fp, "# TSDF slice at Z=%d (%.2f meters)\n", z_slice, origin.z + z_slice * voxel_size);
+    fprintf(fp, "# Format: X Y TSDF_value Weight\n");
+    
+    for (int y = 0; y < dims.y; y++) {
+        for (int x = 0; x < dims.x; x++) {
+            int idx = x + y * dims.x + z_slice * dims.x * dims.y;
+            float world_x = origin.x + x * voxel_size;
+            float world_y = origin.y + y * voxel_size;
+            fprintf(fp, "%.3f %.3f %.6f\n", world_x, world_y, tsdf_volume[idx]);
+        }
+        fprintf(fp, "\n"); // Empty line between rows for gnuplot
+    }
+    
+    fclose(fp);
+}
+
 // Helper CUDA kernels
 namespace cuda {
 
@@ -37,6 +100,36 @@ __device__ const int edge_vertex[12][2] = {
     {4, 5}, {5, 6}, {6, 7}, {7, 4},  // Top face edges
     {0, 4}, {1, 5}, {2, 6}, {3, 7}   // Vertical edges
 };
+
+// Find voxels that have been updated (weight > 0)
+__global__ void findActiveVoxelsKernel(
+    const float* weight_volume,
+    uint* active_voxels,
+    uint* active_count,
+    uint num_voxels,
+    uint buffer_size  // Add buffer size parameter
+) {
+    uint idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_voxels) return;
+    
+    if (weight_volume[idx] > 0.0f) {
+        uint pos = atomicAdd(active_count, 1);
+        
+        // Debug: First few active voxels
+        if (pos < 10) {
+            printf("[FIND ACTIVE DEBUG] Found active voxel at idx %u, weight=%.3f, pos=%u\n", 
+                   idx, weight_volume[idx], pos);
+        }
+        
+        // Critical bounds check to prevent buffer overflow
+        if (pos < buffer_size) {
+            active_voxels[pos] = idx;
+        } else if (pos == buffer_size) {
+            // Log once when we hit the limit
+            printf("[FIND ACTIVE WARNING] Active voxel buffer full at %u entries!\n", buffer_size);
+        }
+    }
+}
 
 // Conversion kernels
 __global__ void convertFloat4ToFloat3(
@@ -81,39 +174,58 @@ __global__ void classifyVoxelKernel(
     
     if (threadId >= num_voxels) return;
     
-    // Convert to 3D coordinates
-    uint z = threadId / (dims.x * dims.y);
-    uint y = (threadId % (dims.x * dims.y)) / dims.x;
-    uint x = threadId % dims.x;
+    // This function is currently not used - keeping for potential future use
+    // The active voxel version below is used instead
+}
+
+// Classify only active voxels
+__global__ void classifyActiveVoxelsKernel(
+    const float* tsdf,
+    const uint* active_voxels,
+    uint num_active,
+    int3 dims,
+    float iso_value,
+    uint* voxel_verts,
+    uint* voxel_occupied
+) {
+    uint idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_active) return;
     
-    // Debug first few voxels
-    if (threadId < 5) {
-        printf("[MC CLASSIFY] Voxel %u: coords=[%u,%u,%u]\n", threadId, x, y, z);
+    uint voxel_idx = active_voxels[idx];
+    
+    // Convert to 3D coordinates
+    uint z = voxel_idx / (dims.x * dims.y);
+    uint y = (voxel_idx % (dims.x * dims.y)) / dims.x;
+    uint x = voxel_idx % dims.x;
+    
+    // Debug first few active voxels
+    if (idx < 5) {
+        printf("[MC CLASSIFY ACTIVE] Active voxel %u (global idx %u): coords=[%u,%u,%u]\n", 
+               idx, voxel_idx, x, y, z);
     }
     
     // Skip boundary voxels
     if (x >= dims.x - 1 || y >= dims.y - 1 || z >= dims.z - 1) {
-        voxel_verts[threadId] = 0;
-        voxel_occupied[threadId] = 0;
+        voxel_verts[idx] = 0;
+        voxel_occupied[idx] = 0;
         return;
     }
     
     // Sample 8 corners of the voxel
     float field[8];
-    uint idx = x + y * dims.x + z * dims.x * dims.y;
-    field[0] = tsdf[idx];
-    field[1] = tsdf[idx + 1];
-    field[2] = tsdf[idx + 1 + dims.x];
-    field[3] = tsdf[idx + dims.x];
-    field[4] = tsdf[idx + dims.x * dims.y];
-    field[5] = tsdf[idx + 1 + dims.x * dims.y];
-    field[6] = tsdf[idx + 1 + dims.x + dims.x * dims.y];
-    field[7] = tsdf[idx + dims.x + dims.x * dims.y];
+    field[0] = tsdf[voxel_idx];
+    field[1] = tsdf[voxel_idx + 1];
+    field[2] = tsdf[voxel_idx + 1 + dims.x];
+    field[3] = tsdf[voxel_idx + dims.x];
+    field[4] = tsdf[voxel_idx + dims.x * dims.y];
+    field[5] = tsdf[voxel_idx + 1 + dims.x * dims.y];
+    field[6] = tsdf[voxel_idx + 1 + dims.x + dims.x * dims.y];
+    field[7] = tsdf[voxel_idx + dims.x + dims.x * dims.y];
     
-    // Debug TSDF values for first voxel
-    if (threadId < 5) {
-        printf("[MC CLASSIFY] Voxel %u TSDF values: [%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]\n",
-               threadId, field[0], field[1], field[2], field[3], 
+    // Debug TSDF values for first few active voxels
+    if (idx < 5) {
+        printf("[MC CLASSIFY ACTIVE] Voxel %u TSDF values: [%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]\n",
+               idx, field[0], field[1], field[2], field[3], 
                field[4], field[5], field[6], field[7]);
     }
     
@@ -125,16 +237,15 @@ __global__ void classifyVoxelKernel(
         }
     }
     
-    // Debug cube index
-    if (threadId < 5) {
-        printf("[MC CLASSIFY] Voxel %u: cube_index=%u, iso_value=%.3f\n", 
-               threadId, cube_index, iso_value);
-    }
-    
     // Use lookup table
     uint num_verts = d_numVertsTable[cube_index];
-    voxel_verts[threadId] = num_verts;
-    voxel_occupied[threadId] = (num_verts > 0) ? 1 : 0;
+    voxel_verts[idx] = num_verts;
+    voxel_occupied[idx] = (num_verts > 0) ? 1 : 0;
+    
+    if (idx < 5) {
+        printf("[MC CLASSIFY ACTIVE] Voxel %u: cube_index=%u, num_verts=%u\n", 
+               idx, cube_index, num_verts);
+    }
 }
 
 // Compact voxels
@@ -288,6 +399,14 @@ NvidiaMarchingCubes::~NvidiaMarchingCubes() {
 bool NvidiaMarchingCubes::initialize(const AlgorithmParams& params) {
     params_ = params;
     
+    std::cout << "[NVIDIA MC INIT] Initializing with bounds:" << std::endl;
+    std::cout << "  Volume min: [" << params.volume_min.x << ", " 
+              << params.volume_min.y << ", " << params.volume_min.z << "]" << std::endl;
+    std::cout << "  Volume max: [" << params.volume_max.x << ", " 
+              << params.volume_max.y << ", " << params.volume_max.z << "]" << std::endl;
+    std::cout << "  Voxel size: " << params.voxel_size << "m" << std::endl;
+    std::cout << "  Truncation distance: " << params.marching_cubes.truncation_distance << "m" << std::endl;
+    
     // Initialize TSDF volume
     tsdf_->initialize(
         params.volume_min,
@@ -302,6 +421,7 @@ bool NvidiaMarchingCubes::initialize(const AlgorithmParams& params) {
     // Pre-allocate buffers based on volume size
     allocateBuffers(tsdf_->getVolumeDims());
     
+    std::cout << "[NVIDIA MC INIT] NvidiaMarchingCubes initialized successfully" << std::endl;
     return true;
 }
 
@@ -351,6 +471,70 @@ bool NvidiaMarchingCubes::reconstruct(
     cudaStreamSynchronize(stream);
     std::cout << "[MC DEBUG] TSDF integration complete" << std::endl;
     
+    // Periodic debugging: Save point cloud every 10 frames
+    static int frame_count = 0;
+    frame_count++;
+    
+    if (frame_count % 5 == 0) {  // Save every 5 frames for better debugging
+        std::cout << "[DEBUG SAVE] Saving debug data for frame " << frame_count << std::endl;
+        
+        // Save point cloud to PLY file
+        std::vector<float3> h_points(num_points);
+        cudaMemcpy(h_points.data(), d_points, num_points * sizeof(float3), cudaMemcpyDeviceToHost);
+        
+        char filename[256];
+        snprintf(filename, sizeof(filename), "/debug_output/pointcloud_%06d.ply", frame_count);
+        savePLYPointCloud(filename, h_points);
+        std::cout << "[DEBUG SAVE] Saved point cloud to " << filename 
+                  << " (" << num_points << " points)" << std::endl;
+        
+        // Sample first few points for orientation check
+        std::cout << "[DEBUG ORIENTATION] First 5 points:" << std::endl;
+        for (int i = 0; i < std::min(5, (int)num_points); i++) {
+            std::cout << "  Point " << i << ": [" << h_points[i].x 
+                      << ", " << h_points[i].y << ", " << h_points[i].z << "]" << std::endl;
+        }
+        
+        // Calculate point cloud bounds
+        float3 min_pt = make_float3(FLT_MAX, FLT_MAX, FLT_MAX);
+        float3 max_pt = make_float3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+        for (const auto& p : h_points) {
+            min_pt.x = fminf(min_pt.x, p.x);
+            min_pt.y = fminf(min_pt.y, p.y);
+            min_pt.z = fminf(min_pt.z, p.z);
+            max_pt.x = fmaxf(max_pt.x, p.x);
+            max_pt.y = fmaxf(max_pt.y, p.y);
+            max_pt.z = fmaxf(max_pt.z, p.z);
+        }
+        std::cout << "[DEBUG BOUNDS] Point cloud bounds: min=[" << min_pt.x << ", " << min_pt.y 
+                  << ", " << min_pt.z << "], max=[" << max_pt.x << ", " << max_pt.y 
+                  << ", " << max_pt.z << "]" << std::endl;
+        
+        // Get camera position from pose matrix
+        float cam_x = camera_pose[12];
+        float cam_y = camera_pose[13];
+        float cam_z = camera_pose[14];
+        std::cout << "[DEBUG CAMERA] Camera position: [" << cam_x 
+                  << ", " << cam_y << ", " << cam_z << "]" << std::endl;
+        
+        // Save TSDF slice at camera height
+        int3 dims = tsdf_->getVolumeDims();
+        float3 origin = tsdf_->getVolumeOrigin();
+        float voxel_size = tsdf_->getVoxelSize();
+        int z_slice = (int)((cam_z - origin.z) / voxel_size);
+        z_slice = std::max(0, std::min(dims.z - 1, z_slice));
+        
+        // Get TSDF data for slice
+        size_t slice_size = dims.x * dims.y * dims.z;
+        std::vector<float> h_tsdf(slice_size);
+        cudaMemcpy(h_tsdf.data(), tsdf_->getTSDFVolume(), slice_size * sizeof(float), cudaMemcpyDeviceToHost);
+        
+        snprintf(filename, sizeof(filename), "/debug_output/tsdf_slice_%06d.txt", frame_count);
+        saveTSDFSlice(filename, h_tsdf.data(), dims, z_slice, voxel_size, origin);
+        std::cout << "[DEBUG SAVE] Saved TSDF slice at Z=" << z_slice 
+                  << " to " << filename << std::endl;
+    }
+    
     // Debug: Check if TSDF has been modified
     float* d_tsdf_debug = tsdf_->getTSDFVolume();
     float* d_weight_debug = tsdf_->getWeightVolume();
@@ -361,15 +545,10 @@ bool NvidiaMarchingCubes::reconstruct(
     thrust::device_ptr<float> d_tsdf_ptr(d_tsdf_debug);
     thrust::device_ptr<float> d_weight_ptr(d_weight_debug);
     
-    float truncation = params_.marching_cubes.truncation_distance;
-    auto count_modified = thrust::count_if(d_tsdf_ptr, d_tsdf_ptr + total_voxels,
-                                          [truncation] __device__ (float val) {
-                                              return fabsf(val - truncation) > 0.001f;
-                                          });
-    auto count_weighted = thrust::count_if(d_weight_ptr, d_weight_ptr + total_voxels,
-                                          [] __device__ (float val) {
-                                              return val > 0.0f;
-                                          });
+    // Count non-default values using thrust
+    CheckModified check_mod(params_.marching_cubes.truncation_distance);
+    auto count_modified = thrust::count_if(d_tsdf_ptr, d_tsdf_ptr + total_voxels, check_mod);
+    auto count_weighted = thrust::count_if(d_weight_ptr, d_weight_ptr + total_voxels, CheckWeighted());
     
     std::cout << "[MC DEBUG] TSDF volume stats:" << std::endl;
     std::cout << "  Total voxels: " << total_voxels << std::endl;
@@ -387,71 +566,148 @@ bool NvidiaMarchingCubes::reconstruct(
     std::cout << "  Origin: [" << origin.x << ", " << origin.y << ", " << origin.z << "]" << std::endl;
     std::cout << "  Voxel size: " << voxel_size << std::endl;
     
-    // Step 2: Classify voxels
-    std::cout << "[MC DEBUG] Classifying voxels..." << std::endl;
-    classifyVoxels(d_tsdf, dims, 
-                   buffers_.d_voxel_verts_scan,
-                   buffers_.d_voxel_occupied_scan,
-                   stream);
+    // Step 2: Find active voxels (those with weight > 0)
+    float* d_weights = tsdf_->getWeightVolume();
+    
+    // Allocate with safety margin to prevent overflow
+    size_t active_buffer_size = std::min(total_voxels, std::max(size_t(count_weighted * 2), size_t(1000)));
+    thrust::device_vector<uint> d_active_voxels(active_buffer_size); 
+    thrust::device_vector<uint> d_active_count(1);
+    
+    // CRITICAL FIX: Explicitly set count to 0 to prevent garbage values
+    cudaMemset(d_active_count.data().get(), 0, sizeof(uint));
+    CUDA_CHECK(cudaGetLastError());
+    
+    std::cout << "[MC DEBUG FIX] Initialized d_active_count to 0" << std::endl;
+    std::cout << "[MC DEBUG FIX] Allocated buffer for " << active_buffer_size << " active voxels (safety margin from " << count_weighted << " weighted)" << std::endl;
+    
+    dim3 find_block(256);
+    dim3 find_grid((total_voxels + find_block.x - 1) / find_block.x);
+    
+    std::cout << "[MC DEBUG] Finding active voxels from " << count_weighted << " weighted voxels..." << std::endl;
+    cuda::findActiveVoxelsKernel<<<find_grid, find_block, 0, stream>>>(
+        d_weights,
+        d_active_voxels.data().get(),
+        d_active_count.data().get(),
+        total_voxels,
+        active_buffer_size  // Pass buffer size to prevent overflow
+    );
+    CUDA_CHECK(cudaGetLastError());
     cudaStreamSynchronize(stream);
-    std::cout << "[MC DEBUG] Voxel classification complete" << std::endl;
     
-    // Step 3: Scan to get total vertices and compaction offsets
+    // Get active count
+    uint h_active_count;
+    cudaMemcpy(&h_active_count, d_active_count.data().get(), sizeof(uint), cudaMemcpyDeviceToHost);
+    std::cout << "[MC DEBUG] Found " << h_active_count << " active voxels to process" << std::endl;
+    
+    // CRITICAL DEBUG: Verify active count is reasonable
+    if (h_active_count > active_buffer_size) {
+        std::cout << "[MC ERROR] Active count (" << h_active_count 
+                  << ") exceeds buffer size (" << active_buffer_size << ")!" << std::endl;
+        std::cout << "[MC ERROR] This indicates memory corruption or uninitialized memory" << std::endl;
+        h_active_count = active_buffer_size;  // Clamp to prevent crash
+    }
+    
+    if (h_active_count == 0) {
+        std::cout << "[MC WARNING] No active voxels found! Check TSDF integration." << std::endl;
+        std::cout << "[MC DEBUG] Total voxels: " << total_voxels 
+                  << ", Weighted voxels: " << count_weighted << std::endl;
+        output.vertices.clear();
+        output.faces.clear();
+        return true;
+    }
+    
+    // Additional debug: Sample some weights to verify they're being set
+    if (count_weighted > 0) {
+        std::vector<float> sample_weights(std::min(size_t(10), total_voxels));
+        cudaMemcpy(sample_weights.data(), d_weights, sample_weights.size() * sizeof(float), cudaMemcpyDeviceToHost);
+        std::cout << "[MC DEBUG] First few weight values: ";
+        for (size_t i = 0; i < sample_weights.size(); i++) {
+            std::cout << sample_weights[i] << " ";
+        }
+        std::cout << std::endl;
+    }
+    
+    // Step 3: Classify only active voxels
+    std::cout << "[MC DEBUG] Classifying " << h_active_count << " active voxels..." << std::endl;
+    
+    // Allocate smaller arrays for active voxel processing
+    thrust::device_vector<uint> d_active_voxel_verts(h_active_count);
+    thrust::device_vector<uint> d_active_voxel_occupied(h_active_count);
+    
+    dim3 classify_block(256);
+    dim3 classify_grid((h_active_count + classify_block.x - 1) / classify_block.x);
+    
+    cuda::classifyActiveVoxelsKernel<<<classify_grid, classify_block, 0, stream>>>(
+        d_tsdf,
+        d_active_voxels.data().get(),
+        h_active_count,
+        dims,
+        params_.marching_cubes.iso_value,
+        d_active_voxel_verts.data().get(),
+        d_active_voxel_occupied.data().get()
+    );
+    cudaStreamSynchronize(stream);
+    std::cout << "[MC DEBUG] Active voxel classification complete" << std::endl;
+    
+    // Step 4: Scan to get total vertices and compaction offsets for active voxels
     size_t temp_storage_bytes = 0;
-    uint num_voxels = dims.x * dims.y * dims.z;
     
-    // Get scan storage requirements
+    // Get scan storage requirements for active voxels
     cub::DeviceScan::ExclusiveSum(nullptr, temp_storage_bytes,
-                                   buffers_.d_voxel_verts_scan,
-                                   buffers_.d_voxel_verts_scan,
-                                   num_voxels, stream);
+                                   d_active_voxel_verts.data().get(),
+                                   d_active_voxel_verts.data().get(),
+                                   h_active_count, stream);
     
     // Allocate temporary storage
     thrust::device_vector<uint8_t> d_temp_storage(temp_storage_bytes);
     
-    // Perform scans
+    // Create scan arrays for active voxels
+    thrust::device_vector<uint> d_active_voxel_verts_scan(h_active_count);
+    thrust::device_vector<uint> d_active_voxel_occupied_scan(h_active_count);
+    
+    // Perform scans on active voxels only
     cub::DeviceScan::ExclusiveSum(d_temp_storage.data().get(), temp_storage_bytes,
-                                   buffers_.d_voxel_verts_scan,
-                                   buffers_.d_voxel_verts_scan,
-                                   num_voxels, stream);
+                                   d_active_voxel_verts.data().get(),
+                                   d_active_voxel_verts_scan.data().get(),
+                                   h_active_count, stream);
     
     cub::DeviceScan::ExclusiveSum(d_temp_storage.data().get(), temp_storage_bytes,
-                                   buffers_.d_voxel_occupied_scan,
-                                   buffers_.d_voxel_occupied_scan,
-                                   num_voxels, stream);
-    
-    // Get total counts by using thrust to get the last element + sum
-    thrust::device_ptr<uint> d_verts_ptr(buffers_.d_voxel_verts_scan);
-    thrust::device_ptr<uint> d_occupied_ptr(buffers_.d_voxel_occupied_scan);
-    
-    // The total is the last scan value + the last original value
-    // Since we need the original values, let's save them before scan
-    thrust::device_vector<uint> d_voxel_verts_orig(buffers_.d_voxel_verts_scan, 
-                                                   buffers_.d_voxel_verts_scan + num_voxels);
-    thrust::device_vector<uint> d_voxel_occupied_orig(buffers_.d_voxel_occupied_scan,
-                                                      buffers_.d_voxel_occupied_scan + num_voxels);
-    
-    // Now do the exclusive scan (this modifies the buffers in place)
-    thrust::exclusive_scan(thrust::cuda::par.on(stream),
-                          d_voxel_verts_orig.begin(), d_voxel_verts_orig.end(),
-                          d_verts_ptr);
-    thrust::exclusive_scan(thrust::cuda::par.on(stream),
-                          d_voxel_occupied_orig.begin(), d_voxel_occupied_orig.end(),
-                          d_occupied_ptr);
+                                   d_active_voxel_occupied.data().get(),
+                                   d_active_voxel_occupied_scan.data().get(),
+                                   h_active_count, stream);
     
     cudaStreamSynchronize(stream);
     
-    // Get totals
-    uint h_last_vert_scan = d_verts_ptr[num_voxels - 1];
-    uint h_last_vert_orig = d_voxel_verts_orig[num_voxels - 1];
-    uint h_last_occupied_scan = d_occupied_ptr[num_voxels - 1];
-    uint h_last_occupied_orig = d_voxel_occupied_orig[num_voxels - 1];
+    // Get totals from active voxel arrays
+    uint h_last_vert_scan, h_last_vert_orig;
+    uint h_last_occupied_scan, h_last_occupied_orig;
+    
+    if (h_active_count > 0) {
+        // Copy last elements
+        cudaMemcpy(&h_last_vert_scan, 
+                   d_active_voxel_verts_scan.data().get() + h_active_count - 1, 
+                   sizeof(uint), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_last_vert_orig, 
+                   d_active_voxel_verts.data().get() + h_active_count - 1, 
+                   sizeof(uint), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_last_occupied_scan, 
+                   d_active_voxel_occupied_scan.data().get() + h_active_count - 1, 
+                   sizeof(uint), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_last_occupied_orig, 
+                   d_active_voxel_occupied.data().get() + h_active_count - 1, 
+                   sizeof(uint), cudaMemcpyDeviceToHost);
+    } else {
+        h_last_vert_scan = h_last_vert_orig = 0;
+        h_last_occupied_scan = h_last_occupied_orig = 0;
+    }
     
     uint total_vertices = h_last_vert_scan + h_last_vert_orig;
-    uint active_voxels = h_last_occupied_scan + h_last_occupied_orig;
+    uint active_voxels_with_triangles = h_last_occupied_scan + h_last_occupied_orig;
     
     std::cout << "[MC DEBUG] Scan results:" << std::endl;
-    std::cout << "  Active voxels: " << active_voxels << std::endl;
+    std::cout << "  Active voxels processed: " << h_active_count << std::endl;
+    std::cout << "  Active voxels with triangles: " << active_voxels_with_triangles << std::endl;
     std::cout << "  Total vertices to generate: " << total_vertices << std::endl;
     std::cout << "  Last vert scan: " << h_last_vert_scan << ", orig: " << h_last_vert_orig << std::endl;
     std::cout << "  Last occupied scan: " << h_last_occupied_scan << ", orig: " << h_last_occupied_orig << std::endl;
@@ -470,21 +726,24 @@ bool NvidiaMarchingCubes::reconstruct(
         total_vertices = buffers_.allocated_vertices;  // Clamp to allocated size
     }
     
-    // Step 4: Compact active voxels
-    compactVoxels(d_voxel_occupied_orig.data().get(),  // Need the original occupied flags, not scan
-                  buffers_.d_voxel_occupied_scan,
-                  buffers_.d_compressed_voxel_array,
-                  num_voxels,
-                  stream);
+    // Step 5: Compact active voxels (only those that have triangles)
+    thrust::device_vector<uint> d_compressed_active_voxels(active_voxels_with_triangles);
     
-    // Step 5: Generate triangles
-    generateTriangles(d_tsdf, dims, origin,
-                      buffers_.d_compressed_voxel_array,
-                      buffers_.d_voxel_verts_scan,
-                      active_voxels,
-                      buffers_.d_vertex_buffer,
-                      buffers_.d_normal_buffer,
-                      stream);
+    dim3 compact_block(256);
+    dim3 compact_grid((h_active_count + compact_block.x - 1) / compact_block.x);
+    
+    cuda::compactVoxelsKernel<<<compact_grid, compact_block, 0, stream>>>(
+        d_active_voxel_occupied.data().get(),
+        d_active_voxel_occupied_scan.data().get(),
+        d_compressed_active_voxels.data().get(),
+        h_active_count
+    );
+    
+    // Step 6: Generate triangles for active voxels only
+    // Need to modify generateTriangles to work with active voxel indices
+    // For now, let's see if we get any vertices at all
+    std::cout << "[MC DEBUG] Would generate triangles for " << active_voxels_with_triangles 
+              << " active voxels with " << total_vertices << " vertices" << std::endl;
     
     // Step 6: Copy results to output
     uint num_triangles = total_vertices / 3;
@@ -540,6 +799,44 @@ bool NvidiaMarchingCubes::reconstruct(
     
     // Final synchronization to ensure all operations complete
     cudaStreamSynchronize(stream);
+    
+    // Save generated mesh periodically for debugging
+    if (frame_count % 5 == 0 && output.vertices.size() > 0) {  // Match point cloud saving frequency
+        char mesh_filename[256];
+        snprintf(mesh_filename, sizeof(mesh_filename), "/debug_output/mesh_%06d.ply", frame_count);
+        
+        FILE* fp = fopen(mesh_filename, "w");
+        if (fp) {
+            size_t num_verts = output.vertices.size() / 3;
+            size_t num_faces = output.faces.size() / 3;
+            
+            fprintf(fp, "ply\n");
+            fprintf(fp, "format ascii 1.0\n");
+            fprintf(fp, "element vertex %zu\n", num_verts);
+            fprintf(fp, "property float x\n");
+            fprintf(fp, "property float y\n");
+            fprintf(fp, "property float z\n");
+            fprintf(fp, "element face %zu\n", num_faces);
+            fprintf(fp, "property list uchar int vertex_indices\n");
+            fprintf(fp, "end_header\n");
+            
+            // Write vertices
+            for (size_t i = 0; i < output.vertices.size(); i += 3) {
+                fprintf(fp, "%.6f %.6f %.6f\n", 
+                        output.vertices[i], output.vertices[i+1], output.vertices[i+2]);
+            }
+            
+            // Write faces
+            for (size_t i = 0; i < output.faces.size(); i += 3) {
+                fprintf(fp, "3 %u %u %u\n", 
+                        output.faces[i], output.faces[i+1], output.faces[i+2]);
+            }
+            
+            fclose(fp);
+            std::cout << "[DEBUG SAVE] Saved mesh to " << mesh_filename 
+                      << " (" << num_verts << " vertices, " << num_faces << " faces)" << std::endl;
+        }
+    }
     
     return true;
 }

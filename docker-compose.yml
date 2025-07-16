@@ -191,6 +191,7 @@ services:
       - /dev/shm:/dev/shm  # Shared memory for IPC with mesh_service
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
+      - ./slam3r/debug_output:/debug_output  # Mount local directory for debug saves
 
     # ---------- key change: share the host network namespace ----------
     network_mode: host
@@ -332,6 +333,11 @@ services:
       - SLAM3R_SAVE_SEGMENT_POINTCLOUDS=${SLAM3R_SAVE_SEGMENT_POINTCLOUDS:-false}
       - SLAM3R_SEGMENT_OUTPUT_DIR=${SLAM3R_SEGMENT_OUTPUT_DIR:-/tmp/slam3r_segments}
 
+      # ========== POINT CLOUD DEBUGGING ==========
+      # Save point clouds to PLY files for verification
+      - SLAM3R_SAVE_PCD=${SLAM3R_SAVE_PCD:-true}
+      - SLAM3R_PCD_OUTPUT_DIR=${SLAM3R_PCD_OUTPUT_DIR:-/debug_output/pcd}
+
       # ========== MISC ==========
       - HOME=${HOME}
       - TZ=${TZ:-UTC}
@@ -366,6 +372,7 @@ services:
       - /dev/shm:/dev/shm  # Shared memory for zero-copy IPC with SLAM3R
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
+      - ./mesh_service/debug_output:/debug_output  # Mount local directory for debug saves
     
     # Shared memory size for large point clouds
     shm_size: '4gb'
@@ -421,10 +428,10 @@ services:
       # Core TSDF parameters (removed duplicates - see above)
       - TSDF_MAX_WEIGHT=${TSDF_MAX_WEIGHT:-100.0}             # Temporal averaging weight
       
-      # Scene bounds for 25m hallway with atrium
+      # Volume bounds optimized for actual point cloud data
       # Format: "x_min,y_min,z_min" and "x_max,y_max,z_max"
-      - TSDF_SCENE_BOUNDS_MIN=${TSDF_SCENE_BOUNDS_MIN:--2,-2,0}    # Slight padding
-      - TSDF_SCENE_BOUNDS_MAX=${TSDF_SCENE_BOUNDS_MAX:-28,15,8}    # 25m hallway + atrium
+      - TSDF_VOLUME_MIN=${TSDF_VOLUME_MIN:--1.5,-3.5,4}    # Small margin around actual bounds
+      - TSDF_VOLUME_MAX=${TSDF_VOLUME_MAX:-2,1.5,20}       # 3.5x5x16m volume (70x smaller!)
       
       # Performance tuning
       - TSDF_BLOCK_SIZE=${TSDF_BLOCK_SIZE:-8}                 # Voxel blocks for cache efficiency

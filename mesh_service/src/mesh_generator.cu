@@ -355,6 +355,84 @@ void GPUMeshGenerator::generateIncrementalMesh(
         }
     }
     
+    // Periodic debug saves - moved here from NvidiaMarchingCubes::reconstruct
+    static int debug_frame_count = 0;
+    debug_frame_count++;
+    
+    if (debug_frame_count % 10 == 0) {
+        std::cout << "[MESH GEN DEBUG SAVE] Saving debug data for frame " << debug_frame_count << std::endl;
+        
+        // Save point cloud to PLY file
+        char filename[256];
+        snprintf(filename, sizeof(filename), "/debug_output/pointcloud_%06d.ply", debug_frame_count);
+        
+        FILE* fp = fopen(filename, "w");
+        if (fp) {
+            fprintf(fp, "ply\n");
+            fprintf(fp, "format ascii 1.0\n");
+            fprintf(fp, "element vertex %zu\n", valid_point_count);
+            fprintf(fp, "property float x\n");
+            fprintf(fp, "property float y\n");
+            fprintf(fp, "property float z\n");
+            if (!valid_colors.empty()) {
+                fprintf(fp, "property uchar red\n");
+                fprintf(fp, "property uchar green\n");
+                fprintf(fp, "property uchar blue\n");
+            }
+            fprintf(fp, "end_header\n");
+            
+            for (size_t i = 0; i < valid_point_count; i++) {
+                fprintf(fp, "%.6f %.6f %.6f", valid_points[i].x, valid_points[i].y, valid_points[i].z);
+                if (!valid_colors.empty()) {
+                    fprintf(fp, " %d %d %d", valid_colors[i*3], valid_colors[i*3+1], valid_colors[i*3+2]);
+                }
+                fprintf(fp, "\n");
+            }
+            
+            fclose(fp);
+            std::cout << "[MESH GEN DEBUG SAVE] Saved point cloud to " << filename 
+                      << " (" << valid_point_count << " points)" << std::endl;
+        } else {
+            std::cerr << "[MESH GEN DEBUG SAVE] Failed to open " << filename << " for writing" << std::endl;
+        }
+        
+        // Save mesh if we have one
+        if (update.vertices.size() > 0) {
+            snprintf(filename, sizeof(filename), "/debug_output/mesh_%06d.ply", debug_frame_count);
+            fp = fopen(filename, "w");
+            if (fp) {
+                size_t num_verts = update.vertices.size() / 3;
+                size_t num_faces = update.faces.size() / 3;
+                
+                fprintf(fp, "ply\n");
+                fprintf(fp, "format ascii 1.0\n");
+                fprintf(fp, "element vertex %zu\n", num_verts);
+                fprintf(fp, "property float x\n");
+                fprintf(fp, "property float y\n");
+                fprintf(fp, "property float z\n");
+                fprintf(fp, "element face %zu\n", num_faces);
+                fprintf(fp, "property list uchar int vertex_indices\n");
+                fprintf(fp, "end_header\n");
+                
+                for (size_t i = 0; i < num_verts; i++) {
+                    fprintf(fp, "%.6f %.6f %.6f\n", 
+                            update.vertices[i*3], update.vertices[i*3+1], update.vertices[i*3+2]);
+                }
+                
+                for (size_t i = 0; i < num_faces; i++) {
+                    fprintf(fp, "3 %d %d %d\n", 
+                            update.faces[i*3], update.faces[i*3+1], update.faces[i*3+2]);
+                }
+                
+                fclose(fp);
+                std::cout << "[MESH GEN DEBUG SAVE] Saved mesh to " << filename 
+                          << " (" << num_verts << " vertices, " << num_faces << " faces)" << std::endl;
+            }
+        } else {
+            std::cout << "[MESH GEN DEBUG SAVE] No mesh generated yet for frame " << debug_frame_count << std::endl;
+        }
+    }
+    
     // Update metadata
     update.keyframe_id = std::to_string(keyframe->timestamp_ns);
     update.timestamp_ns = keyframe->timestamp_ns;

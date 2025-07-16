@@ -180,8 +180,14 @@ __global__ void integrateTSDFKernel(
                     
                     // Debug: Print first few TSDF updates including sign
                     if (idx < 2 && voxel_idx < 1000) {
-                        printf("[TSDF UPDATE] Point %d updated voxel %d: old_tsdf=%.3f, new_tsdf=%.3f, weight=%.1f, sign=%.1f\n",
-                               idx, voxel_idx, old_tsdf, new_tsdf, updated_weight, sign);
+                        printf("[TSDF UPDATE] Point %d updated voxel %d: old_tsdf=%.3f, new_tsdf=%.3f, weight=%.1f\n",
+                               idx, voxel_idx, old_tsdf, new_tsdf, updated_weight);
+                    }
+                    
+                    // Additional debug: Check for sign changes
+                    if (idx < 5 && new_tsdf < 0.0f && voxel_idx < 10000) {
+                        printf("[TSDF SIGN] Negative TSDF at voxel %d: %.3f (from point %d)\n",
+                               voxel_idx, new_tsdf, idx);
                     }
                 }
             }
@@ -224,13 +230,18 @@ public:
     // Transform matrix
     thrust::device_vector<float> d_world_to_volume_;
     
-    Impl() : voxel_size_(0.05f), truncation_distance_(0.15f) {}
+    Impl() : voxel_size_(0.05f), truncation_distance_(0.10f) {}
     
     void initialize(const float3& volume_min, const float3& volume_max, float voxel_size) {
         volume_min_ = volume_min;
         volume_max_ = volume_max;
         voxel_size_ = voxel_size;
         volume_origin_ = volume_min;
+        
+        std::cout << "[SIMPLE TSDF INIT] Initializing TSDF volume:" << std::endl;
+        std::cout << "  Volume min: [" << volume_min.x << ", " << volume_min.y << ", " << volume_min.z << "]" << std::endl;
+        std::cout << "  Volume max: [" << volume_max.x << ", " << volume_max.y << ", " << volume_max.z << "]" << std::endl;
+        std::cout << "  Voxel size: " << voxel_size << "m" << std::endl;
         
         // Calculate dimensions
         volume_dims_ = make_int3(
@@ -240,13 +251,16 @@ public:
         );
         
         size_t num_voxels = volume_dims_.x * volume_dims_.y * volume_dims_.z;
+        std::cout << "  Volume dimensions: [" << volume_dims_.x << ", " << volume_dims_.y << ", " << volume_dims_.z << "]" << std::endl;
+        std::cout << "  Total voxels: " << num_voxels << std::endl;
         
         // Allocate memory
         d_tsdf_volume_.resize(num_voxels);
         d_weight_volume_.resize(num_voxels);
         
         // Initialize volumes
-        thrust::fill(d_tsdf_volume_.begin(), d_tsdf_volume_.end(), truncation_distance_);
+        // Use large positive value for empty space, not truncation_distance
+        thrust::fill(d_tsdf_volume_.begin(), d_tsdf_volume_.end(), 1.0f);  // 1 meter = far from surface
         thrust::fill(d_weight_volume_.begin(), d_weight_volume_.end(), 0.0f);
         
         // Setup world to volume transform

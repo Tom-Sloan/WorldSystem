@@ -429,8 +429,8 @@ services:
       
       # Volume bounds optimized for actual point cloud data
       # Format: "x_min,y_min,z_min" and "x_max,y_max,z_max"
-      - TSDF_VOLUME_MIN=${TSDF_VOLUME_MIN:--1.5,-3.5,4}    # Small margin around actual bounds
-      - TSDF_VOLUME_MAX=${TSDF_VOLUME_MAX:-2,1.5,20}       # 3.5x5x16m volume (70x smaller!)
+      - TSDF_VOLUME_MIN=${TSDF_VOLUME_MIN:--2,-3,0}    # Encompasses min [-0.716, -2.072, 0.707]
+      - TSDF_VOLUME_MAX=${TSDF_VOLUME_MAX:-2,2,10}     # Encompasses max [0.575, 1.014, 7.722]
       
       # Performance tuning
       - TSDF_BLOCK_SIZE=${TSDF_BLOCK_SIZE:-8}                 # Voxel blocks for cache efficiency

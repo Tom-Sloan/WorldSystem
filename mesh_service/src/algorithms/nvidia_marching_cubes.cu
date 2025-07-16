@@ -208,6 +208,10 @@ __global__ void classifyActiveVoxelsKernel(
     
     // Skip boundary voxels
     if (x >= dims.x - 1 || y >= dims.y - 1 || z >= dims.z - 1) {
+        if (idx < 5) {
+            printf("[MC CLASSIFY ACTIVE] Skipping boundary voxel %u at [%u,%u,%u], dims=[%d,%d,%d]\n", 
+                   voxel_idx, x, y, z, dims.x, dims.y, dims.z);
+        }
         voxel_verts[idx] = 0;
         voxel_occupied[idx] = 0;
         return;
@@ -265,6 +269,40 @@ __global__ void compactVoxelsKernel(
     }
 }
 
+// Extract compressed data with proper global indices and vertex counts
+__global__ void extractCompressedDataKernel(
+    const uint* active_voxels,        // Global voxel indices
+    const uint* voxel_occupied,       // Which active voxels have triangles
+    const uint* voxel_occupied_scan,  // Scan of occupied
+    const uint* voxel_verts,          // Vertex counts for active voxels
+    uint* compressed_global_voxels,   // Output: global voxel indices
+    uint* compressed_verts,           // Output: vertex counts (not scan)
+    uint num_active_voxels,
+    uint num_compressed_voxels       // Maximum output size
+) {
+    uint idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_active_voxels) return;
+    
+    if (voxel_occupied[idx]) {
+        uint out_idx = voxel_occupied_scan[idx];
+        
+        // Debug first few extractions
+        if (out_idx < 5) {
+            printf("[EXTRACT] idx=%u, out_idx=%u, global_voxel=%u, verts=%u\n",
+                   idx, out_idx, active_voxels[idx], voxel_verts[idx]);
+        }
+        
+        // Bounds check to prevent writing out of bounds
+        if (out_idx >= num_compressed_voxels) {
+            printf("[EXTRACT ERROR] out_idx %u >= num_compressed %u for idx %u\n", 
+                   out_idx, num_compressed_voxels, idx);
+            return;
+        }
+        compressed_global_voxels[out_idx] = active_voxels[idx];  // Store GLOBAL voxel index
+        compressed_verts[out_idx] = voxel_verts[idx];           // Store vertex COUNT
+    }
+}
+
 // Simplified triangle generation
 __global__ void generateTrianglesKernel(
     const float* tsdf,
@@ -282,13 +320,32 @@ __global__ void generateTrianglesKernel(
     uint idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= num_active_voxels) return;
     
-    uint voxel_idx = compressed_voxels[idx];
-    uint vertex_offset = num_verts_scan[voxel_idx];
+    
+    uint voxel_idx = compressed_voxels[idx];  // This is now a GLOBAL voxel index
+    uint vertex_offset = num_verts_scan[idx]; // Use idx directly since num_verts_scan is compressed
+    
+    if (idx < 3) {
+        printf("[KERNEL] Thread %u: voxel_idx=%u, vertex_offset=%u\n", idx, voxel_idx, vertex_offset);
+    }
     
     // Convert voxel index to 3D coordinates
     uint z = voxel_idx / (dims.x * dims.y);
     uint y = (voxel_idx % (dims.x * dims.y)) / dims.x;
     uint x = voxel_idx % dims.x;
+    
+    if (idx < 3) {
+        printf("[KERNEL] Thread %u: coords=[%u,%u,%u], dims=[%d,%d,%d]\n", 
+               idx, x, y, z, dims.x, dims.y, dims.z);
+    }
+    
+    // Skip boundary voxels - they can't form complete cubes
+    // We need all 8 corners, which requires x+1, y+1, z+1 to be valid
+    if (x >= dims.x - 1 || y >= dims.y - 1 || z >= dims.z - 1) {
+        if (idx < 3) {
+            printf("[KERNEL] Thread %u: Skipping boundary voxel\n", idx);
+        }
+        return;
+    }
     
     // Calculate world position of voxel corner
     float3 pos = make_float3(
@@ -300,6 +357,13 @@ __global__ void generateTrianglesKernel(
     // Sample field values at 8 corners
     float field[8];
     uint base_idx = x + y * dims.x + z * dims.x * dims.y;
+    
+    if (idx < 3) {
+        printf("[KERNEL] Thread %u: base_idx=%u, max_idx=%u\n", 
+               idx, base_idx, dims.x * dims.y * dims.z);
+    }
+    
+    // Now safe to access all 8 corners since we checked boundaries above
     field[0] = tsdf[base_idx];
     field[1] = tsdf[base_idx + 1];
     field[2] = tsdf[base_idx + 1 + dims.x];
@@ -309,11 +373,24 @@ __global__ void generateTrianglesKernel(
     field[6] = tsdf[base_idx + 1 + dims.x + dims.x * dims.y];
     field[7] = tsdf[base_idx + dims.x + dims.x * dims.y];
     
+    if (idx < 3) {
+        printf("[KERNEL] Thread %u: Successfully loaded field values\n", idx);
+    }
+    
     // Calculate cube index
     uint cube_index = 0;
     for (int i = 0; i < 8; i++) {
         if (field[i] < iso_value) {
             cube_index |= (1 << i);
+        }
+    }
+    
+    if (idx < 3) {
+        printf("[KERNEL] Thread %u: Calculated cube_index=%u\n", idx, cube_index);
+        // Check if accessing the table is safe
+        if (cube_index >= 256) {
+            printf("[KERNEL ERROR] Thread %u: cube_index %u out of bounds!\n", idx, cube_index);
+            return;
         }
     }
     
@@ -332,9 +409,27 @@ __global__ void generateTrianglesKernel(
     
     // Generate triangles
     uint num_triangles = 0;
-    for (int i = 0; d_triTable[cube_index][i] != -1; i += 3) {
+    
+    if (idx < 3) {
+        printf("[KERNEL] Thread %u: Starting triangle generation, vertex_offset=%u\n", 
+               idx, vertex_offset);
+    }
+    
+    for (int i = 0; i < 16 && d_triTable[cube_index][i] != -1; i += 3) {
         for (int j = 0; j < 3; j++) {
             int edge = d_triTable[cube_index][i + j];
+            
+            // Check for sentinel value (-1 marks end of triangle list)
+            if (edge == -1) {
+                break;
+            }
+            
+            // Validate edge indices (edge should be 0-11)
+            if (edge < 0 || edge >= 12) {
+                // Skip this - it's a sentinel value or invalid edge
+                continue;
+            }
+            
             int v0 = edge_vertex[edge][0];
             int v1 = edge_vertex[edge][1];
             
@@ -348,19 +443,26 @@ __global__ void generateTrianglesKernel(
                 vertex_pos[v0].z + t * (vertex_pos[v1].z - vertex_pos[v0].z)
             );
             
-            // Store vertex
-            vertices[vertex_offset + num_triangles * 3 + j] = make_float4(p.x, p.y, p.z, 1.0f);
+            // Store vertex - ensure we don't write out of bounds
+            uint vertex_idx = vertex_offset + num_triangles * 3 + j;
+            
+            if (idx < 3 && num_triangles == 0 && j == 0) {
+                printf("[KERNEL] Thread %u: Writing vertex at idx=%u\n", idx, vertex_idx);
+            }
+            
+            vertices[vertex_idx] = make_float4(p.x, p.y, p.z, 1.0f);
             
             // Compute normal using TSDF gradient (finite differences)
             float3 gradient;
             
             // Sample TSDF at neighboring voxels for gradient computation
-            float dx_pos = (x + 1 < dims.x) ? tsdf[voxel_idx + 1] : field[0];
-            float dx_neg = (x > 0) ? tsdf[voxel_idx - 1] : field[0];
-            float dy_pos = (y + 1 < dims.y) ? tsdf[voxel_idx + dims.x] : field[0];
-            float dy_neg = (y > 0) ? tsdf[voxel_idx - dims.x] : field[0];
-            float dz_pos = (z + 1 < dims.z) ? tsdf[voxel_idx + dims.x * dims.y] : field[0];
-            float dz_neg = (z > 0) ? tsdf[voxel_idx - dims.x * dims.y] : field[0];
+            // Use base_idx which is correctly calculated from x,y,z coordinates
+            float dx_pos = (x + 1 < dims.x) ? tsdf[base_idx + 1] : field[0];
+            float dx_neg = (x > 0) ? tsdf[base_idx - 1] : field[0];
+            float dy_pos = (y + 1 < dims.y) ? tsdf[base_idx + dims.x] : field[0];
+            float dy_neg = (y > 0) ? tsdf[base_idx - dims.x] : field[0];
+            float dz_pos = (z + 1 < dims.z) ? tsdf[base_idx + dims.x * dims.y] : field[0];
+            float dz_neg = (z > 0) ? tsdf[base_idx - dims.x * dims.y] : field[0];
             
             // Central differences for gradient
             gradient.x = (dx_pos - dx_neg) * 0.5f;
@@ -377,7 +479,8 @@ __global__ void generateTrianglesKernel(
                 gradient = make_float3(0.0f, 0.0f, 1.0f); // Default if gradient is too small
             }
             
-            normals[vertex_offset + num_triangles * 3 + j] = make_float4(gradient.x, gradient.y, gradient.z, 0.0f);
+            // Store normal
+            normals[vertex_idx] = make_float4(gradient.x, gradient.y, gradient.z, 0.0f);
         }
         num_triangles++;
     }
@@ -417,8 +520,9 @@ bool NvidiaMarchingCubes::initialize(const AlgorithmParams& params) {
     );
     tsdf_->setTruncationDistance(params.marching_cubes.truncation_distance);
     
-    // Upload marching cubes tables to GPU
+    // Upload marching cubes lookup tables to GPU constant memory
     uploadTables();
+    std::cout << "[NVIDIA MC INIT] Marching cubes tables uploaded to GPU" << std::endl;
     
     // Pre-allocate buffers based on volume size
     allocateBuffers(tsdf_->getVolumeDims());
@@ -742,10 +846,128 @@ bool NvidiaMarchingCubes::reconstruct(
     );
     
     // Step 6: Generate triangles for active voxels only
-    // Need to modify generateTriangles to work with active voxel indices
-    // For now, let's see if we get any vertices at all
-    std::cout << "[MC DEBUG] Would generate triangles for " << active_voxels_with_triangles 
-              << " active voxels with " << total_vertices << " vertices" << std::endl;
+    if (active_voxels_with_triangles > 0 && total_vertices > 0) {
+        std::cout << "[MC DEBUG] Generating triangles for " << active_voxels_with_triangles 
+                  << " active voxels with " << total_vertices << " vertices" << std::endl;
+        
+        // Verify allocations before proceeding
+        std::cout << "[MC DIAG] Buffer allocations:" << std::endl;
+        std::cout << "  Allocated vertices: " << buffers_.allocated_vertices << std::endl;
+        std::cout << "  Allocated voxels: " << buffers_.allocated_voxels << std::endl;
+        std::cout << "  Active voxels with triangles: " << active_voxels_with_triangles << std::endl;
+        std::cout << "  Total vertices needed: " << total_vertices << std::endl;
+        
+        CUDA_CHECK(cudaGetLastError());
+        std::cout << "[MC DIAG] Pre-allocation check passed" << std::endl;
+        
+        // Create a compressed array of GLOBAL voxel indices (not indices into active array)
+        thrust::device_vector<uint> d_compressed_global_voxels(active_voxels_with_triangles);
+        std::cout << "[MC DIAG] Allocated d_compressed_global_voxels size: " << d_compressed_global_voxels.size() << std::endl;
+        CUDA_CHECK(cudaGetLastError());
+        
+        // Create compressed vertex counts for occupied voxels only
+        thrust::device_vector<uint> d_compressed_verts(active_voxels_with_triangles);
+        std::cout << "[MC DIAG] Allocated d_compressed_verts size: " << d_compressed_verts.size() << std::endl;
+        CUDA_CHECK(cudaGetLastError());
+        
+        // Compact to get global voxel indices and corresponding vertex counts
+        dim3 extract_block(256);
+        dim3 extract_grid((h_active_count + extract_block.x - 1) / extract_block.x);
+        
+        cuda::extractCompressedDataKernel<<<extract_grid, extract_block, 0, stream>>>(
+            d_active_voxels.data().get(),
+            d_active_voxel_occupied.data().get(),
+            d_active_voxel_occupied_scan.data().get(),
+            d_active_voxel_verts.data().get(),  // Pass vertex counts, not scan
+            d_compressed_global_voxels.data().get(),
+            d_compressed_verts.data().get(),
+            h_active_count,
+            active_voxels_with_triangles  // Pass max output size
+        );
+        CUDA_CHECK(cudaGetLastError());
+        std::cout << "[MC DIAG] extractCompressedDataKernel launched successfully" << std::endl;
+        
+        // Synchronize to ensure kernel completes before thrust operations
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        std::cout << "[MC DIAG] Stream synchronized after extract kernel" << std::endl;
+        
+        // Now compute the scan of the compressed vertex counts
+        thrust::device_vector<uint> d_compressed_verts_scan(active_voxels_with_triangles);
+        std::cout << "[MC DIAG] Allocated d_compressed_verts_scan size: " << d_compressed_verts_scan.size() << std::endl;
+        
+        // Check sizes before scan
+        std::cout << "[MC DIAG] Before exclusive_scan:" << std::endl;
+        std::cout << "  Input size: " << d_compressed_verts.size() << std::endl;
+        std::cout << "  Output size: " << d_compressed_verts_scan.size() << std::endl;
+        
+        try {
+            thrust::exclusive_scan(
+                d_compressed_verts.begin(), 
+                d_compressed_verts.end(), 
+                d_compressed_verts_scan.begin()
+            );
+            std::cout << "[MC DIAG] exclusive_scan completed successfully" << std::endl;
+        } catch (const thrust::system_error& e) {
+            std::cerr << "[MC ERROR] Thrust exclusive_scan failed: " << e.what() << std::endl;
+            throw;
+        }
+        
+        CUDA_CHECK(cudaGetLastError());
+        std::cout << "[MC DIAG] Post-scan CUDA check passed" << std::endl;
+        
+        // Debug: Check scan results
+        if (active_voxels_with_triangles > 0) {
+            std::vector<uint> h_compressed_verts(std::min(10u, active_voxels_with_triangles));
+            std::vector<uint> h_compressed_verts_scan(std::min(10u, active_voxels_with_triangles));
+            
+            cudaMemcpy(h_compressed_verts.data(), d_compressed_verts.data().get(), 
+                      h_compressed_verts.size() * sizeof(uint), cudaMemcpyDeviceToHost);
+            cudaMemcpy(h_compressed_verts_scan.data(), d_compressed_verts_scan.data().get(), 
+                      h_compressed_verts_scan.size() * sizeof(uint), cudaMemcpyDeviceToHost);
+            
+            std::cout << "[MC DIAG] First few compressed verts and their scan:" << std::endl;
+            for (size_t i = 0; i < h_compressed_verts.size(); i++) {
+                std::cout << "  [" << i << "] verts=" << h_compressed_verts[i] 
+                          << ", scan=" << h_compressed_verts_scan[i] << std::endl;
+            }
+            
+            // Check last element to see total
+            uint last_vert_count, last_scan_value;
+            cudaMemcpy(&last_vert_count, d_compressed_verts.data().get() + active_voxels_with_triangles - 1, 
+                      sizeof(uint), cudaMemcpyDeviceToHost);
+            cudaMemcpy(&last_scan_value, d_compressed_verts_scan.data().get() + active_voxels_with_triangles - 1, 
+                      sizeof(uint), cudaMemcpyDeviceToHost);
+            std::cout << "  Last element: verts=" << last_vert_count << ", scan=" << last_scan_value 
+                      << ", total=" << (last_scan_value + last_vert_count) << std::endl;
+        }
+        
+        // Verify pointers before calling generateTriangles
+        std::cout << "[MC DIAG] Verifying pointers before generateTriangles:" << std::endl;
+        std::cout << "  d_tsdf: " << (void*)d_tsdf << std::endl;
+        std::cout << "  d_compressed_global_voxels ptr: " << (void*)d_compressed_global_voxels.data().get() << std::endl;
+        std::cout << "  d_compressed_verts_scan ptr: " << (void*)d_compressed_verts_scan.data().get() << std::endl;
+        std::cout << "  d_vertex_buffer: " << (void*)buffers_.d_vertex_buffer << std::endl;
+        std::cout << "  d_normal_buffer: " << (void*)buffers_.d_normal_buffer << std::endl;
+        
+        // Generate the actual triangles using the class method
+        std::cout << "[MC DIAG] Calling generateTriangles..." << std::endl;
+        generateTriangles(
+            d_tsdf,
+            dims,
+            origin,
+            d_compressed_global_voxels.data().get(),
+            d_compressed_verts_scan.data().get(),
+            active_voxels_with_triangles,
+            buffers_.d_vertex_buffer,
+            buffers_.d_normal_buffer,
+            stream
+        );
+        std::cout << "[MC DIAG] generateTriangles returned" << std::endl;
+        
+        std::cout << "[MC DEBUG] Triangle generation complete" << std::endl;
+    } else {
+        std::cout << "[MC DEBUG] No triangles to generate" << std::endl;
+    }
     
     // Step 6: Copy results to output
     uint num_triangles = total_vertices / 3;
@@ -893,11 +1115,24 @@ void NvidiaMarchingCubes::generateTriangles(
     float4* d_normals,
     cudaStream_t stream
 ) {
+    std::cout << "[MC GENTRI] generateTriangles called with:" << std::endl;
+    std::cout << "  dims: " << dims.x << "x" << dims.y << "x" << dims.z << std::endl;
+    std::cout << "  origin: [" << origin.x << ", " << origin.y << ", " << origin.z << "]" << std::endl;
+    std::cout << "  num_active_voxels: " << num_active_voxels << std::endl;
+    std::cout << "  voxel_size: " << tsdf_->getVoxelSize() << std::endl;
+    std::cout << "  iso_value: " << params_.marching_cubes.iso_value << std::endl;
+    
+    CUDA_CHECK(cudaGetLastError());
+    std::cout << "[MC GENTRI] Pre-kernel CUDA check passed" << std::endl;
+    
     thrust::device_vector<uint> d_face_count(1, 0);
+    std::cout << "[MC GENTRI] Allocated d_face_count" << std::endl;
     
     dim3 block(64);
     dim3 grid((num_active_voxels + block.x - 1) / block.x);
+    std::cout << "[MC GENTRI] Kernel config - grid: " << grid.x << ", block: " << block.x << std::endl;
     
+    std::cout << "[MC GENTRI] Launching generateTrianglesKernel..." << std::endl;
     cuda::generateTrianglesKernel<<<grid, block, 0, stream>>>(
         d_tsdf, dims, origin, tsdf_->getVoxelSize(),
         params_.marching_cubes.iso_value,
@@ -909,6 +1144,10 @@ void NvidiaMarchingCubes::generateTriangles(
         d_face_count.data().get()
     );
     CUDA_CHECK(cudaGetLastError());
+    std::cout << "[MC GENTRI] Kernel launched successfully" << std::endl;
+    
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    std::cout << "[MC GENTRI] Kernel execution completed" << std::endl;
 }
 
 size_t NvidiaMarchingCubes::getMemoryUsage() const {

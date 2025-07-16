@@ -195,6 +195,7 @@ public:
     }
     
     void handleMessage(const AMQP::Message& message, uint64_t deliveryTag) {
+        auto msg_start = std::chrono::high_resolution_clock::now();
         try {
             // Get message body
             std::string body(message.body(), message.bodySize());
@@ -203,8 +204,12 @@ public:
             std::cout << "Received message, size: " << body.size() << " bytes" << std::endl;
             
             // Deserialize with msgpack
+            auto unpack_start = std::chrono::high_resolution_clock::now();
             msgpack::object_handle oh = msgpack::unpack(body.data(), body.size());
             msgpack::object obj = oh.get();
+            auto unpack_end = std::chrono::high_resolution_clock::now();
+            auto unpack_ms = std::chrono::duration_cast<std::chrono::microseconds>(unpack_end - unpack_start).count();
+            std::cout << "[TIMING] msgpack unpacking: " << unpack_ms << " µs" << std::endl;
             
             // Debug: Print object type
             std::cout << "Message type: " << obj.type << std::endl;
@@ -215,6 +220,7 @@ public:
             // Extract fields from msgpack map
             if (obj.type == msgpack::type::MAP) {
                 try {
+                    auto parse_start = std::chrono::high_resolution_clock::now();
                     // Try to iterate through the map directly without converting
                     std::cout << "Iterating through msgpack map:" << std::endl;
                     
@@ -278,6 +284,10 @@ public:
                              << ", type: " << msg.type
                              << ", point_count: " << msg.point_count << std::endl;
                     
+                    auto parse_end = std::chrono::high_resolution_clock::now();
+                    auto parse_ms = std::chrono::duration_cast<std::chrono::microseconds>(parse_end - parse_start).count();
+                    std::cout << "[TIMING] Message parsing: " << parse_ms << " µs" << std::endl;
+                    
                 } catch (const std::exception& e) {
                     std::cerr << "Error parsing msgpack fields: " << e.what() << std::endl;
                     throw;
@@ -287,7 +297,11 @@ public:
                 // Previously only processed keyframe.new, causing most messages to be ignored
                 if (keyframe_handler && (msg.type == "keyframe.new" || msg.type == "keyframe_update")) {
                     std::cout << "[MESSAGE TYPE FIX] Processing message with type: " << msg.type << std::endl;
+                    auto handler_start = std::chrono::high_resolution_clock::now();
                     keyframe_handler(msg);
+                    auto handler_end = std::chrono::high_resolution_clock::now();
+                    auto handler_ms = std::chrono::duration_cast<std::chrono::milliseconds>(handler_end - handler_start).count();
+                    std::cout << "[TIMING] Keyframe handler total: " << handler_ms << " ms" << std::endl;
                 } else if (keyframe_handler) {
                     std::cout << "[MESSAGE TYPE FIX] Ignoring unknown message type: " << msg.type << std::endl;
                 }
@@ -295,6 +309,10 @@ public:
             
             // Acknowledge message
             channel->ack(deliveryTag);
+            
+            auto msg_end = std::chrono::high_resolution_clock::now();
+            auto msg_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(msg_end - msg_start).count();
+            std::cout << "[TIMING] Total message handling: " << msg_total_ms << " ms" << std::endl;
             
         } catch (const std::exception& e) {
             std::cerr << "Error handling message: " << e.what() << std::endl;

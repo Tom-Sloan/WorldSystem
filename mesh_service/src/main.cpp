@@ -165,6 +165,9 @@ int main(int argc, char* argv[]) {
                              << update.faces.size() / 3 << " faces"
                              << " in " << process_time << "ms" << std::endl;
                     
+                    // Store individual component times for summary
+                    auto mesh_gen_time = process_time;
+                    
                     // Record metrics
                     std::cout << "[DEBUG] Recording metrics" << std::endl;
                     mesh_service::Metrics::instance().recordMeshGeneration(
@@ -174,6 +177,8 @@ int main(int argc, char* argv[]) {
                     mesh_service::Metrics::instance().recordProcessingTime(process_time / 1000.0);
                     
                     // Send mesh to Rerun
+                    auto rerun_start = std::chrono::steady_clock::now();
+                    long rerun_total_ms = 0;  // Initialize at outer scope
                     std::cout << "[DEBUG] Checking Rerun: enabled=" << rerun_enabled 
                              << ", connected=" << (rerun_publisher ? rerun_publisher->isConnected() : false) << std::endl;
                     if (rerun_enabled && rerun_publisher->isConnected()) {
@@ -184,6 +189,7 @@ int main(int argc, char* argv[]) {
                         if (keyframe_colors && update.vertices.size() > 0) {
                             // Colors are in the keyframe data
                             std::cout << "[DEBUG] Extracting colors for " << keyframe->point_count << " points" << std::endl;
+                            auto color_extract_start = std::chrono::steady_clock::now();
                             
                             // Get colors pointer from shared memory
                             uint8_t* shm_colors = shared_memory->get_colors(keyframe);
@@ -195,34 +201,61 @@ int main(int argc, char* argv[]) {
                                 for (uint32_t i = 0; i < keyframe->point_count * 3; i++) {
                                     colors.push_back(shm_colors[i]);
                                 }
+                                auto color_extract_end = std::chrono::steady_clock::now();
+                                auto color_extract_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    color_extract_end - color_extract_start).count();
                                 std::cout << "[DEBUG] Color extraction complete, size: " << colors.size() << std::endl;
+                                std::cout << "[TIMING] Color extraction: " << color_extract_ms << " ms" << std::endl;
                                 
                                 // Publish colored mesh
                                 std::cout << "[DEBUG] Publishing colored mesh to Rerun" << std::endl;
+                                auto publish_start = std::chrono::steady_clock::now();
                                 rerun_publisher->publishColoredMesh(
                                     update.vertices, 
                                     update.faces, 
                                     colors,
                                     "/mesh_service/reconstruction"
                                 );
+                                auto publish_end = std::chrono::steady_clock::now();
+                                auto publish_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    publish_end - publish_start).count();
                                 std::cout << "[DEBUG] Colored mesh published" << std::endl;
+                                std::cout << "[TIMING] Rerun publish (colored): " << publish_ms << " ms" << std::endl;
                             }
                         } else {
                             // Publish mesh without colors
                             std::cout << "[DEBUG] Publishing mesh without colors to Rerun" << std::endl;
+                            auto publish_start = std::chrono::steady_clock::now();
                             rerun_publisher->publishMesh(update, "/mesh_service/reconstruction");
+                            auto publish_end = std::chrono::steady_clock::now();
+                            auto publish_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                publish_end - publish_start).count();
                             std::cout << "[DEBUG] Mesh published" << std::endl;
+                            std::cout << "[TIMING] Rerun publish (no color): " << publish_ms << " ms" << std::endl;
                         }
                         
                         // Also log camera pose if available
                         if (keyframe->pose_matrix[0] != 0.0f) {  // Check if pose is valid
                             std::cout << "[DEBUG] Logging camera pose" << std::endl;
+                            auto pose_start = std::chrono::steady_clock::now();
                             rerun_publisher->logCameraPose(keyframe->pose_matrix, "/mesh_service/camera");
+                            auto pose_end = std::chrono::steady_clock::now();
+                            auto pose_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                pose_end - pose_start).count();
                             std::cout << "[DEBUG] Camera pose logged" << std::endl;
+                            std::cout << "[TIMING] Camera pose log: " << pose_us << " µs" << std::endl;
                         }
                     }
                     
+                    auto rerun_end = std::chrono::steady_clock::now();
+                    rerun_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        rerun_end - rerun_start).count();
+                    if (rerun_enabled && rerun_publisher->isConnected()) {
+                        std::cout << "[TIMING] Total Rerun publishing: " << rerun_total_ms << " ms" << std::endl;
+                    }
+                    
                     // Close shared memory
+                    auto cleanup_start = std::chrono::steady_clock::now();
                     std::cout << "[DEBUG] Closing shared memory" << std::endl;
                     shared_memory->close_keyframe(keyframe);
                     std::cout << "[DEBUG] Shared memory closed" << std::endl;
@@ -233,6 +266,33 @@ int main(int argc, char* argv[]) {
                         shared_memory->unlink_keyframe(msg.shm_key);
                         std::cout << "[DEBUG] Shared memory unlinked" << std::endl;
                     }
+                    auto cleanup_end = std::chrono::steady_clock::now();
+                    auto cleanup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        cleanup_end - cleanup_start).count();
+                    std::cout << "[TIMING] Cleanup operations: " << cleanup_ms << " ms" << std::endl;
+                    
+                    // Calculate total frame processing time
+                    auto frame_end = std::chrono::steady_clock::now();
+                    auto frame_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        frame_end - process_start).count();
+                    
+                    // Print comprehensive timing summary
+                    std::cout << "\n========== FRAME PROCESSING TIMING SUMMARY ==========" << std::endl;
+                    std::cout << "Frame " << frame_count << " - Total Time: " << frame_total_ms << " ms" << std::endl;
+                    std::cout << "Breakdown:" << std::endl;
+                    std::cout << "  1. Mesh Generation: " << mesh_gen_time << " ms (" 
+                             << (mesh_gen_time * 100.0 / frame_total_ms) << "%)" << std::endl;
+                    std::cout << "     - Normal estimation: SKIPPED (0 ms)" << std::endl;
+                    std::cout << "     - TSDF + MC: ~" << (mesh_gen_time * 0.80) << " ms (estimate)" << std::endl;
+                    std::cout << "     - Other: ~" << (mesh_gen_time * 0.20) << " ms (estimate)" << std::endl;
+                    std::cout << "  2. Rerun Publishing: " << rerun_total_ms << " ms (" 
+                             << (rerun_total_ms * 100.0 / frame_total_ms) << "%)" << std::endl;
+                    std::cout << "  3. Cleanup: " << cleanup_ms << " ms (" 
+                             << (cleanup_ms * 100.0 / frame_total_ms) << "%)" << std::endl;
+                    std::cout << "  4. Other (metrics, etc): " << (frame_total_ms - mesh_gen_time - rerun_total_ms - cleanup_ms) 
+                             << " ms" << std::endl;
+                    std::cout << "Performance: " << (1000.0 / frame_total_ms) << " FPS potential" << std::endl;
+                    std::cout << "===================================================\n" << std::endl;
                     
                     // Log FPS periodically
                     if (frame_count % CONFIG_INT("MESH_FPS_LOG_INTERVAL", mesh_service::config::DebugConfig::DEFAULT_FPS_LOG_INTERVAL) == 0) {

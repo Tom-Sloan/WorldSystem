@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cfloat>
+#include <chrono>
 
 // CUDA error checking macro
 #define CUDA_CHECK(call) do { \
@@ -569,13 +570,18 @@ bool NvidiaMarchingCubes::reconstruct(
     MeshUpdate& output,
     cudaStream_t stream
 ) {
+    auto mc_start = std::chrono::high_resolution_clock::now();
     std::cout << "[MC DEBUG] reconstruct() called with " << num_points << " points" << std::endl;
     
     // Step 1: Integrate points into TSDF
     std::cout << "[MC DEBUG] Integrating points into TSDF..." << std::endl;
+    auto tsdf_integrate_start = std::chrono::high_resolution_clock::now();
     tsdf_->integrate(d_points, d_normals, num_points, camera_pose, stream);
     cudaStreamSynchronize(stream);
+    auto tsdf_integrate_end = std::chrono::high_resolution_clock::now();
+    auto tsdf_integrate_ms = std::chrono::duration_cast<std::chrono::milliseconds>(tsdf_integrate_end - tsdf_integrate_start).count();
     std::cout << "[MC DEBUG] TSDF integration complete" << std::endl;
+    std::cout << "[TIMING] TSDF integration (in MC): " << tsdf_integrate_ms << " ms" << std::endl;
     
     // Periodic debugging: Save point cloud every 10 frames
     static int frame_count = 0;
@@ -642,6 +648,7 @@ bool NvidiaMarchingCubes::reconstruct(
     }
     
     // Debug: Check if TSDF has been modified
+    auto tsdf_check_start = std::chrono::high_resolution_clock::now();
     float* d_tsdf_debug = tsdf_->getTSDFVolume();
     float* d_weight_debug = tsdf_->getWeightVolume();
     int3 dims_debug = tsdf_->getVolumeDims();
@@ -655,6 +662,9 @@ bool NvidiaMarchingCubes::reconstruct(
     CheckModified check_mod(params_.marching_cubes.truncation_distance);
     auto count_modified = thrust::count_if(d_tsdf_ptr, d_tsdf_ptr + total_voxels, check_mod);
     auto count_weighted = thrust::count_if(d_weight_ptr, d_weight_ptr + total_voxels, CheckWeighted());
+    auto tsdf_check_end = std::chrono::high_resolution_clock::now();
+    auto tsdf_check_ms = std::chrono::duration_cast<std::chrono::milliseconds>(tsdf_check_end - tsdf_check_start).count();
+    std::cout << "[TIMING] TSDF volume check: " << tsdf_check_ms << " ms" << std::endl;
     
     std::cout << "[MC DEBUG] TSDF volume stats:" << std::endl;
     std::cout << "  Total voxels: " << total_voxels << std::endl;
@@ -691,6 +701,7 @@ bool NvidiaMarchingCubes::reconstruct(
     dim3 find_grid((total_voxels + find_block.x - 1) / find_block.x);
     
     std::cout << "[MC DEBUG] Finding active voxels from " << count_weighted << " weighted voxels..." << std::endl;
+    auto find_active_start = std::chrono::high_resolution_clock::now();
     cuda::findActiveVoxelsKernel<<<find_grid, find_block, 0, stream>>>(
         d_weights,
         d_active_voxels.data().get(),
@@ -704,7 +715,10 @@ bool NvidiaMarchingCubes::reconstruct(
     // Get active count
     uint h_active_count;
     cudaMemcpy(&h_active_count, d_active_count.data().get(), sizeof(uint), cudaMemcpyDeviceToHost);
+    auto find_active_end = std::chrono::high_resolution_clock::now();
+    auto find_active_ms = std::chrono::duration_cast<std::chrono::milliseconds>(find_active_end - find_active_start).count();
     std::cout << "[MC DEBUG] Found " << h_active_count << " active voxels to process" << std::endl;
+    std::cout << "[TIMING] Find active voxels: " << find_active_ms << " ms" << std::endl;
     
     // CRITICAL DEBUG: Verify active count is reasonable
     if (h_active_count > active_buffer_size) {
@@ -736,6 +750,7 @@ bool NvidiaMarchingCubes::reconstruct(
     
     // Step 3: Classify only active voxels
     std::cout << "[MC DEBUG] Classifying " << h_active_count << " active voxels..." << std::endl;
+    auto classify_start = std::chrono::high_resolution_clock::now();
     
     // Allocate smaller arrays for active voxel processing
     thrust::device_vector<uint> d_active_voxel_verts(h_active_count);
@@ -754,7 +769,10 @@ bool NvidiaMarchingCubes::reconstruct(
         d_active_voxel_occupied.data().get()
     );
     cudaStreamSynchronize(stream);
+    auto classify_end = std::chrono::high_resolution_clock::now();
+    auto classify_ms = std::chrono::duration_cast<std::chrono::milliseconds>(classify_end - classify_start).count();
     std::cout << "[MC DEBUG] Active voxel classification complete" << std::endl;
+    std::cout << "[TIMING] Classify active voxels: " << classify_ms << " ms" << std::endl;
     
     // Step 4: Scan to get total vertices and compaction offsets for active voxels
     size_t temp_storage_bytes = 0;
@@ -844,6 +862,9 @@ bool NvidiaMarchingCubes::reconstruct(
         d_compressed_active_voxels.data().get(),
         h_active_count
     );
+    
+    // Initialize timing variable for triangle generation
+    long triangle_gen_ms = 0;
     
     // Step 6: Generate triangles for active voxels only
     if (active_voxels_with_triangles > 0 && total_vertices > 0) {
@@ -951,6 +972,7 @@ bool NvidiaMarchingCubes::reconstruct(
         
         // Generate the actual triangles using the class method
         std::cout << "[MC DIAG] Calling generateTriangles..." << std::endl;
+        auto triangle_gen_start = std::chrono::high_resolution_clock::now();
         generateTriangles(
             d_tsdf,
             dims,
@@ -962,7 +984,10 @@ bool NvidiaMarchingCubes::reconstruct(
             buffers_.d_normal_buffer,
             stream
         );
+        auto triangle_gen_end = std::chrono::high_resolution_clock::now();
+        triangle_gen_ms = std::chrono::duration_cast<std::chrono::milliseconds>(triangle_gen_end - triangle_gen_start).count();
         std::cout << "[MC DIAG] generateTriangles returned" << std::endl;
+        std::cout << "[TIMING] Triangle generation: " << triangle_gen_ms << " ms" << std::endl;
         
         std::cout << "[MC DEBUG] Triangle generation complete" << std::endl;
     } else {
@@ -970,6 +995,7 @@ bool NvidiaMarchingCubes::reconstruct(
     }
     
     // Step 6: Copy results to output
+    auto output_copy_start = std::chrono::high_resolution_clock::now();
     uint num_triangles = total_vertices / 3;
     output.vertices.resize(total_vertices * 3);
     output.faces.resize(num_triangles * 3);
@@ -1023,6 +1049,9 @@ bool NvidiaMarchingCubes::reconstruct(
     
     // Final synchronization to ensure all operations complete
     cudaStreamSynchronize(stream);
+    auto output_copy_end = std::chrono::high_resolution_clock::now();
+    auto output_copy_ms = std::chrono::duration_cast<std::chrono::milliseconds>(output_copy_end - output_copy_start).count();
+    std::cout << "[TIMING] Output copy (D2H): " << output_copy_ms << " ms" << std::endl;
     
     // Save generated mesh periodically for debugging
     if (frame_count % 5 == 0 && output.vertices.size() > 0) {  // Match point cloud saving frequency
@@ -1061,6 +1090,17 @@ bool NvidiaMarchingCubes::reconstruct(
                       << " (" << num_verts << " vertices, " << num_faces << " faces)" << std::endl;
         }
     }
+    
+    auto mc_end = std::chrono::high_resolution_clock::now();
+    auto mc_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(mc_end - mc_start).count();
+    std::cout << "\n[TIMING] Marching Cubes Total: " << mc_total_ms << " ms" << std::endl;
+    std::cout << "[TIMING] MC Breakdown:" << std::endl;
+    std::cout << "  - TSDF integration: " << tsdf_integrate_ms << " ms" << std::endl;
+    std::cout << "  - TSDF check: " << tsdf_check_ms << " ms" << std::endl;
+    std::cout << "  - Find active: " << find_active_ms << " ms" << std::endl;
+    std::cout << "  - Classify: " << classify_ms << " ms" << std::endl;
+    std::cout << "  - Triangle gen: " << triangle_gen_ms << " ms" << std::endl;
+    std::cout << "  - Output copy: " << output_copy_ms << " ms" << std::endl;
     
     return true;
 }

@@ -40,3 +40,4 @@ Drone_Calibration/mav0/imu0.csv
 Drone_Calibration/mav0/trajectory.txt
 **/__MACOSX/
 *.mp4
+mesh_service/debug_output/*.txt

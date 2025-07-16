@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+You are an expert programmer. Make sure to make clean, maintainable code.
+
+Do not leave placeholders, TODOs, without specifically asking for permission.
+
+Do not use magic numbers where possible. Minimize their use.
+
 ## Project Overview
 
 WorldSystem is a real-time 3D reconstruction and visualization system for drone-based room mapping. It combines SLAM, neural reconstruction, and real-time visualization to create 3D models of indoor spaces with the goal of overlaying fantasy elements in augmented reality.
@@ -11,16 +17,19 @@ WorldSystem is a real-time 3D reconstruction and visualization system for drone-
 The system uses a microservices architecture with the following data flow:
 1. **Android App** → **Server** (WebSocket): Streams video (30fps) and IMU data
 2. **Server** → **RabbitMQ** → **Frame Processor/SLAM/Storage**: Distributes data
-3. **SLAM** → **Reconstruction**: Provides camera poses for 3D model generation
-4. **Reconstruction/Server** → **Website** (WebSocket): Real-time visualization
+3. **SLAM/SLAM3R/MAST3R** → **Shared Memory** → **Mesh Service**: Camera poses via zero-copy IPC
+4. **Mesh Service** → **Rerun**: Real-time 3D visualization (TSDF + Marching Cubes)
+5. **Server** → **Website** (WebSocket): Real-time updates and mesh display
 
 Key services:
 - **Server**: Central hub for data routing (FastAPI, Python)
 - **SLAM/SLAM3R/MAST3R**: Camera pose estimation (C++/Python bindings)
+- **Mesh Service**: GPU-accelerated real-time mesh generation (CUDA C++)
 - **Reconstruction**: Neural 3D reconstruction (PyTorch)
 - **Website**: Real-time 3D visualization (React/Three.js)
 - **Frame Processor**: Video processing with YOLO detection
 - **Fantasy Builder**: Adds game-like elements to 3D models (WIP)
+- **Storage**: Persistent storage for images and IMU data
 
 ## Build and Development Commands
 
@@ -46,12 +55,15 @@ Key services:
 ### Testing Commands
 - Reconstruction: `cd reconstruction && ./test.sh`
 - Website: `cd website && npm run lint`
+- Mesh Service: `cd mesh_service && python3 test_mesh_service.py`
+- Integration tests: `cd tests && python test_*.py`
 
 ### Monitoring URLs (when running)
 - RabbitMQ: http://localhost:15672
 - Grafana: http://localhost:3000 (admin/admin)
 - Prometheus: http://localhost:9090
 - Jaeger: http://localhost:16686
+- Rerun: http://localhost:9876
 
 ## Code Guidelines
 
@@ -81,18 +93,21 @@ Only modify code in:
 - Messages use JSON format with type field for routing
 
 ### SLAM Integration
-- SLAM services load trajectory into shared memory
-- Reconstruction reads trajectory at ~15fps
+- SLAM services write keyframes to shared memory (/dev/shm/slam3r_keyframes)
+- Mesh Service reads from shared memory for zero-copy performance
 - Camera poses must be synchronized with image timestamps
+- Shared memory uses POD structs for C++/Python compatibility
 
 ### 3D Reconstruction Pipeline
 1. Images saved to disk by storage service
-2. SLAM processes images → camera poses
-3. Reconstruction uses poses + images → 3D mesh (.ply files)
-4. Website loads and displays meshes in real-time
+2. SLAM processes images → camera poses → shared memory
+3. Mesh Service reads poses + images → TSDF volume → Marching Cubes → mesh
+4. Real-time visualization via Rerun (9876) and website
+5. Optional: Neural reconstruction for high-quality offline processing
 
 ### Service Dependencies
-- Frame Processor, SLAM, Reconstruction require GPU access
+- GPU-required services: frame_processor, slam3r, mast3r, reconstruction, mesh_service
 - All services communicate through RabbitMQ
 - Services use environment variables for configuration
 - Docker networks: backend_network (internal), monitoring
+- Mesh Service configuration: All env vars prefixed with MESH_ (see mesh_service/CONFIG.md)

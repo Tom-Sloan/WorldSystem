@@ -173,23 +173,14 @@ __global__ void integrateTSDFKernel(
                         if (cam_to_voxel_dist < cam_to_point_dist - voxel_size) {
                             // Voxel is between camera and point: EMPTY space
                             sign = 1.0f;
-                            if (idx < 5 && voxel_idx < 1000) {
-                                printf("[TSDF CARVING] Point %d: Voxel %d EMPTY (between camera and surface)\n", idx, voxel_idx);
-                            }
                         } else if (cam_to_voxel_dist > cam_to_point_dist + voxel_size) {
                             // Voxel is beyond the point: OCCUPIED space
                             sign = -1.0f;
-                            if (idx < 5 && voxel_idx < 1000) {
-                                printf("[TSDF CARVING] Point %d: Voxel %d OCCUPIED (beyond surface)\n", idx, voxel_idx);
-                            }
                         } else {
                             // Voxel is near the surface: use normal-based method
                             float3 direction = make_float3(diff.x / distance, diff.y / distance, diff.z / distance);
                             float dot = direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
                             sign = (dot > 0.0f) ? 1.0f : -1.0f;
-                            if (idx < 5 && voxel_idx < 1000) {
-                                printf("[TSDF CARVING] Point %d: Voxel %d SURFACE (using normal, sign=%.0f)\n", idx, voxel_idx, sign);
-                            }
                         }
                     } else {
                         // Voxel is not on the ray: use normal-based method
@@ -217,6 +208,33 @@ __global__ void integrateTSDFKernel(
                 
                 // Update TSDF using weighted average
                 int voxel_idx = x + y * volume_dims.x + z * volume_dims.x * volume_dims.y;
+                
+                // Debug output for carving visualization
+                if (idx < 5 && voxel_idx < 1000) {
+                    const char* space_type = "UNKNOWN";
+                    if (cam_to_point_dist > 0.001f && cam_to_voxel_dist > 0.001f) {
+                        float3 ray_dir = make_float3(cam_to_point.x / cam_to_point_dist,
+                                                      cam_to_point.y / cam_to_point_dist,
+                                                      cam_to_point.z / cam_to_point_dist);
+                        float3 voxel_dir = make_float3(cam_to_voxel.x / cam_to_voxel_dist,
+                                                        cam_to_voxel.y / cam_to_voxel_dist,
+                                                        cam_to_voxel.z / cam_to_voxel_dist);
+                        float alignment = ray_dir.x * voxel_dir.x + ray_dir.y * voxel_dir.y + ray_dir.z * voxel_dir.z;
+                        
+                        if (alignment > 0.95f) {
+                            if (cam_to_voxel_dist < cam_to_point_dist - voxel_size) {
+                                space_type = "EMPTY";
+                            } else if (cam_to_voxel_dist > cam_to_point_dist + voxel_size) {
+                                space_type = "OCCUPIED";
+                            } else {
+                                space_type = "SURFACE";
+                            }
+                        }
+                    }
+                    printf("[TSDF CARVING] Point %d: Voxel %d is %s (sign=%.0f, dist=%.3f)\n", 
+                           idx, voxel_idx, space_type, sign, distance);
+                }
+                
                 float old_tsdf = tsdf_volume[voxel_idx];
                 float old_weight = weight_volume[voxel_idx];
                 float new_weight = 1.0f;

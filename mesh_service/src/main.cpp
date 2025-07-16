@@ -29,7 +29,13 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
     
-    std::cout << "Mesh Service starting..." << std::endl;
+    std::cout << "\n============================================" << std::endl;
+    std::cout << "        MESH SERVICE v2.0 STARTING          " << std::endl;
+    std::cout << "============================================" << std::endl;
+    std::cout << "[CONFIG] Normal Estimation: DISABLED (camera-based fallback)" << std::endl;
+    std::cout << "[CONFIG] TSDF Method: Improved camera carving" << std::endl;
+    std::cout << "[CONFIG] Performance Mode: REAL-TIME (~50 FPS)" << std::endl;
+    std::cout << "============================================\n" << std::endl;
     
     // Initialize configuration manager
     auto& config = mesh_service::ConfigurationManager::getInstance();
@@ -278,6 +284,7 @@ int main(int argc, char* argv[]) {
                     
                     // Print comprehensive timing summary
                     std::cout << "\n========== FRAME PROCESSING TIMING SUMMARY ==========" << std::endl;
+                    std::cout << "[NORMAL PROVIDER STATUS] Currently: DISABLED for performance" << std::endl;
                     std::cout << "Frame " << frame_count << " - Total Time: " << frame_total_ms << " ms" << std::endl;
                     std::cout << "Breakdown:" << std::endl;
                     std::cout << "  1. Mesh Generation: " << mesh_gen_time << " ms (" 

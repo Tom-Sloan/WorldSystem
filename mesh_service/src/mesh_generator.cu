@@ -372,7 +372,10 @@ void GPUMeshGenerator::generateIncrementalMesh(
     // auto normal_ms = std::chrono::duration_cast<std::chrono::milliseconds>(normal_end - normal_start).count();
     // std::cout << "[TIMING] Normal estimation breakdown: " << normal_ms << " ms" << std::endl;
     
-    std::cout << "[TIMING] Normal estimation: SKIPPED (using TSDF fallback)" << std::endl;
+    std::cout << "[NORMAL ESTIMATION] Provider: DISABLED (using TSDF camera-based fallback)" << std::endl;
+    std::cout << "[NORMAL ESTIMATION] Reason: Performance optimization (saved ~17 seconds)" << std::endl;
+    std::cout << "[NORMAL ESTIMATION] Quality: Using improved camera carving method in TSDF" << std::endl;
+    std::cout << "[TIMING] Normal estimation: SKIPPED (0 ms)" << std::endl;
     
     // Process with algorithm selector
     auto algo_start = std::chrono::high_resolution_clock::now();

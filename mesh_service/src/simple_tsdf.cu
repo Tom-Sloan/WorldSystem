@@ -140,18 +140,64 @@ __global__ void integrateTSDFKernel(
                 // Skip if outside truncation
                 if (distance > truncation_distance) continue;
                 
-                // Compute signed distance using normal
-                // Positive: voxel is in front of surface (outside)
-                // Negative: voxel is behind surface (inside)
+                // IMPROVED: Camera carving method for better inside/outside detection
+                // Key insight: Space between camera and point should be EMPTY (positive TSDF)
+                // Space beyond the point should be UNKNOWN/OCCUPIED (negative TSDF)
+                
                 float sign = 1.0f;
-                if (distance > 0.0f) {
-                    // Normalize direction from point to voxel
-                    float3 direction = make_float3(diff.x / distance, diff.y / distance, diff.z / distance);
-                    // Dot product with normal gives us the sign
-                    float dot = direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
-                    // If dot < 0, voxel is behind the surface (inside)
-                    if (dot < 0.0f) {
-                        sign = -1.0f;
+                
+                // Calculate if voxel is between camera and point
+                float3 cam_to_point = make_float3(point.x - camera_position.x,
+                                                   point.y - camera_position.y,
+                                                   point.z - camera_position.z);
+                float3 cam_to_voxel = make_float3(voxel_center.x - camera_position.x,
+                                                   voxel_center.y - camera_position.y,
+                                                   voxel_center.z - camera_position.z);
+                
+                float cam_to_point_dist = length(cam_to_point);
+                float cam_to_voxel_dist = length(cam_to_voxel);
+                
+                // Check if voxel is along the ray from camera to point
+                if (cam_to_point_dist > 0.001f && cam_to_voxel_dist > 0.001f) {
+                    float3 ray_dir = make_float3(cam_to_point.x / cam_to_point_dist,
+                                                  cam_to_point.y / cam_to_point_dist,
+                                                  cam_to_point.z / cam_to_point_dist);
+                    float3 voxel_dir = make_float3(cam_to_voxel.x / cam_to_voxel_dist,
+                                                    cam_to_voxel.y / cam_to_voxel_dist,
+                                                    cam_to_voxel.z / cam_to_voxel_dist);
+                    
+                    // Check alignment (how close voxel is to the camera-point ray)
+                    float alignment = ray_dir.x * voxel_dir.x + ray_dir.y * voxel_dir.y + ray_dir.z * voxel_dir.z;
+                    
+                    if (alignment > 0.95f) { // Voxel is along the ray
+                        if (cam_to_voxel_dist < cam_to_point_dist - voxel_size) {
+                            // Voxel is between camera and point: EMPTY space
+                            sign = 1.0f;
+                            if (idx < 5 && voxel_idx < 1000) {
+                                printf("[TSDF CARVING] Point %d: Voxel %d EMPTY (between camera and surface)\n", idx, voxel_idx);
+                            }
+                        } else if (cam_to_voxel_dist > cam_to_point_dist + voxel_size) {
+                            // Voxel is beyond the point: OCCUPIED space
+                            sign = -1.0f;
+                            if (idx < 5 && voxel_idx < 1000) {
+                                printf("[TSDF CARVING] Point %d: Voxel %d OCCUPIED (beyond surface)\n", idx, voxel_idx);
+                            }
+                        } else {
+                            // Voxel is near the surface: use normal-based method
+                            float3 direction = make_float3(diff.x / distance, diff.y / distance, diff.z / distance);
+                            float dot = direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
+                            sign = (dot > 0.0f) ? 1.0f : -1.0f;
+                            if (idx < 5 && voxel_idx < 1000) {
+                                printf("[TSDF CARVING] Point %d: Voxel %d SURFACE (using normal, sign=%.0f)\n", idx, voxel_idx, sign);
+                            }
+                        }
+                    } else {
+                        // Voxel is not on the ray: use normal-based method
+                        if (distance > 0.0f) {
+                            float3 direction = make_float3(diff.x / distance, diff.y / distance, diff.z / distance);
+                            float dot = direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
+                            sign = (dot > 0.0f) ? 1.0f : -1.0f;
+                        }
                     }
                 }
                 
@@ -234,7 +280,7 @@ public:
     thrust::device_vector<float> d_world_to_volume_;
     
     Impl() : voxel_size_(CONFIG_FLOAT("MESH_VOXEL_SIZE", mesh_service::config::AlgorithmConfig::DEFAULT_VOXEL_SIZE)), 
-             truncation_distance_(CONFIG_FLOAT("MESH_TRUNCATION_DISTANCE", mesh_service::config::AlgorithmConfig::DEFAULT_TRUNCATION_DISTANCE)) {}
+             truncation_distance_(CONFIG_FLOAT("MESH_TRUNCATION_DISTANCE", 0.1f)) {} // Reduced from 0.15f
     
     void initialize(const float3& volume_min, const float3& volume_max, float voxel_size) {
         volume_min_ = volume_min;
@@ -338,6 +384,9 @@ void SimpleTSDF::integrate(
     }
     
     std::cout << "[TSDF DEBUG] integrate() called with " << num_points << " points" << std::endl;
+    std::cout << "[TSDF DEBUG] Normal provider: " << (d_normals ? "External normals provided" : "Camera-based fallback (improved carving)") << std::endl;
+    std::cout << "[TSDF DEBUG] Integration method: Camera carving with ray-based empty space detection" << std::endl;
+    std::cout << "[TSDF DEBUG] Truncation distance: " << pImpl->truncation_distance_ << " m" << std::endl;
     
     // Debug: Check first few points on host
     auto debug_copy_start = std::chrono::high_resolution_clock::now();

@@ -90,10 +90,23 @@ bool CameraBasedNormalProvider::estimateNormals(
         d_points, d_normals, num_points, camera_position_
     );
     
-    // Check for kernel errors
+    // Check for kernel launch errors
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         std::cerr << "[CAMERA NORMAL PROVIDER] Kernel launch failed: " 
+                  << cudaGetErrorString(err) << std::endl;
+        return false;
+    }
+    
+    // Synchronize stream to ensure kernel completion before checking for execution errors
+    if (stream != 0) {
+        err = cudaStreamSynchronize(stream);
+    } else {
+        err = cudaDeviceSynchronize();
+    }
+    
+    if (err != cudaSuccess) {
+        std::cerr << "[CAMERA NORMAL PROVIDER] Kernel execution failed: " 
                   << cudaGetErrorString(err) << std::endl;
         return false;
     }

@@ -80,10 +80,21 @@ bool Open3DNormalProvider::estimateNormals(
     
     // Step 1: Copy points from GPU to CPU
     std::vector<float3> h_points(num_points);
-    cudaMemcpyAsync(h_points.data(), d_points, 
-                    num_points * sizeof(float3), 
-                    cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
+    cudaError_t err = cudaMemcpyAsync(h_points.data(), d_points, 
+                                      num_points * sizeof(float3), 
+                                      cudaMemcpyDeviceToHost, stream);
+    if (err != cudaSuccess) {
+        std::cerr << "[OPEN3D PROVIDER] Failed to copy points from GPU: " 
+                  << cudaGetErrorString(err) << std::endl;
+        return false;
+    }
+    
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        std::cerr << "[OPEN3D PROVIDER] Stream synchronization failed: " 
+                  << cudaGetErrorString(err) << std::endl;
+        return false;
+    }
     
     auto copy_d2h_time = std::chrono::high_resolution_clock::now();
     
@@ -138,10 +149,21 @@ bool Open3DNormalProvider::estimateNormals(
         );
     }
     
-    cudaMemcpyAsync(d_normals, h_normals.data(),
-                    num_points * sizeof(float3),
-                    cudaMemcpyHostToDevice, stream);
-    cudaStreamSynchronize(stream);
+    err = cudaMemcpyAsync(d_normals, h_normals.data(),
+                          num_points * sizeof(float3),
+                          cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) {
+        std::cerr << "[OPEN3D PROVIDER] Failed to copy normals to GPU: " 
+                  << cudaGetErrorString(err) << std::endl;
+        return false;
+    }
+    
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        std::cerr << "[OPEN3D PROVIDER] Stream synchronization failed: " 
+                  << cudaGetErrorString(err) << std::endl;
+        return false;
+    }
     
     auto copy_h2d_time = std::chrono::high_resolution_clock::now();
     

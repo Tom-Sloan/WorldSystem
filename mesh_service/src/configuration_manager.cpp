@@ -1,8 +1,11 @@
 #include "config/configuration_manager.h"
 #include "config/mesh_service_config.h"
+#include "config/normal_provider_config.h"
 #include <cstdlib>
 #include <iostream>
 #include <iomanip>
+#include <algorithm>
+#include <cctype>
 
 namespace mesh_service {
 
@@ -14,6 +17,13 @@ void ConfigurationManager::loadFromEnvironment() {
     // Helper lambda to load environment variable
     auto loadEnv = [](const char* env_key) -> const char* {
         return std::getenv(env_key);
+    };
+    
+    // Helper lambda to parse boolean from string
+    auto parseBool = [](const std::string& str) -> bool {
+        std::string lower = str;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return (lower == "true" || lower == "1" || lower == "yes" || lower == "on");
     };
     
     // ========== MEMORY CONFIGURATION ==========
@@ -36,6 +46,20 @@ void ConfigurationManager::loadFromEnvironment() {
     // ========== ALGORITHM PARAMETERS ==========
     if (const char* val = loadEnv("MESH_NORMAL_K_NEIGHBORS")) {
         int_params_["MESH_NORMAL_K_NEIGHBORS"] = stringToNumber<int>(val, config::AlgorithmConfig::DEFAULT_NORMAL_K_NEIGHBORS);
+    }
+    if (const char* val = loadEnv("MESH_NORMAL_PROVIDER")) {
+        int_params_["MESH_NORMAL_PROVIDER"] = stringToNumber<int>(val, config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER);
+    }
+    
+    // Normal provider boolean parameters
+    if (const char* val = loadEnv("MESH_LOG_NORMAL_TIMING")) {
+        bool_params_["MESH_LOG_NORMAL_TIMING"] = val ? parseBool(val) : config::NormalProviderConfig::DEFAULT_LOG_NORMAL_TIMING;
+    }
+    if (const char* val = loadEnv("MESH_OPEN3D_FAST_NORMAL")) {
+        bool_params_["MESH_OPEN3D_FAST_NORMAL"] = val ? parseBool(val) : config::NormalProviderConfig::DEFAULT_OPEN3D_FAST_NORMAL_COMPUTATION;
+    }
+    if (const char* val = loadEnv("MESH_ORIENT_NORMALS_TO_CAMERA")) {
+        bool_params_["MESH_ORIENT_NORMALS_TO_CAMERA"] = val ? parseBool(val) : config::NormalProviderConfig::DEFAULT_ORIENT_NORMALS_TO_CAMERA;
     }
     if (const char* val = loadEnv("MESH_TRUNCATION_DISTANCE")) {
         float_params_["MESH_TRUNCATION_DISTANCE"] = stringToNumber<float>(val, config::AlgorithmConfig::DEFAULT_TRUNCATION_DISTANCE);

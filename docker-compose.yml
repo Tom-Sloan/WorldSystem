@@ -51,6 +51,7 @@ services:
     build: ./frame_processor
     image: frame_processor:latest
     runtime: nvidia
+    profiles: ["frame_processor"]
     network_mode: host
     environment:
       - RABBITMQ_URL=amqp://127.0.0.1:5672
@@ -59,7 +60,7 @@ services:
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
       - SCENE_SCALING_EXCHANGE=scene_scaling_exchange
-      - INITIAL_ANALYSIS_MODE=none #yolo
+      - INITIAL_ANALYSIS_MODE=yolo
 
       # Added Rerun configuration
       - RERUN_VIEWER_ADDRESS=0.0.0.0:9876
@@ -79,8 +80,16 @@ services:
       # Google Cloud and API configurations
       - GOOGLE_APPLICATION_CREDENTIALS=/app/worldsystem-23f7306a1a75.json
       - SERPAPI_API_KEY=${SERPAPI_API_KEY}
+      
+      # Logging configuration
+      - LOG_DIR=/app/logs
       - PPLX_API_KEY=${PPLX_API_KEY}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME:-worldsystem-frame-processor}
+      
+      # API usage control
+      - USE_SERPAPI=${USE_SERPAPI:-false}
+      - USE_PERPLEXITY=${USE_PERPLEXITY:-false}
+      - USE_GCS=${USE_GCS:-false}
       
       # Processing configuration
       - PROCESS_AFTER_SECONDS=${PROCESS_AFTER_SECONDS:-1.5}
@@ -104,6 +113,7 @@ services:
       - ${WORKSPACE}/frame_processor/modules:/app/modules
       - ${WORKSPACE}/frame_processor/yolov8n.pt:/app/yolov8n.pt
       - ${WORKSPACE}/frame_processor/worldsystem-23f7306a1a75.json:/app/worldsystem-23f7306a1a75.json:ro
+      - ${WORKSPACE}/frame_processor/logs:/app/logs
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
     deploy:

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <exception>
 
 #include "shared_memory.h"
 #include "mesh_generator.h"
@@ -67,6 +68,22 @@ int main(int argc, char* argv[]) {
         config.logConfiguration();
     }
     
+    // Set up terminate handler for better debugging
+    std::set_terminate([]() {
+        std::cerr << "Uncaught exception or termination!" << std::endl;
+        try {
+            auto ex = std::current_exception();
+            if (ex) {
+                std::rethrow_exception(ex);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Exception: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "Unknown exception" << std::endl;
+        }
+        std::abort();
+    });
+    
     try {
         // Get configuration from environment
         const char* rabbitmq_url_env = std::getenv("RABBITMQ_URL");
@@ -85,10 +102,21 @@ int main(int argc, char* argv[]) {
         bool unlink_shm = unlink_shm_env ? (std::string(unlink_shm_env) == "true") : false;
         
         // Initialize components
+        std::cout << "[DEBUG MAIN] Creating SharedMemoryManager..." << std::endl;
         auto shared_memory = std::make_shared<mesh_service::SharedMemoryManager>();
+        std::cout << "[DEBUG MAIN] SharedMemoryManager created" << std::endl;
+        
+        std::cout << "[DEBUG MAIN] Creating GPUMeshGenerator..." << std::endl;
         auto mesh_generator = std::make_shared<mesh_service::GPUMeshGenerator>();
+        std::cout << "[DEBUG MAIN] GPUMeshGenerator created" << std::endl;
+        
+        std::cout << "[DEBUG MAIN] Creating RabbitMQConsumer..." << std::endl;
         auto rabbitmq_consumer = std::make_shared<mesh_service::RabbitMQConsumer>(rabbitmq_url);
+        std::cout << "[DEBUG MAIN] RabbitMQConsumer created" << std::endl;
+        
+        std::cout << "[DEBUG MAIN] Creating RerunPublisher..." << std::endl;
         auto rerun_publisher = std::make_shared<mesh_service::RerunPublisher>("mesh_service", rerun_address, rerun_enabled);
+        std::cout << "[DEBUG MAIN] RerunPublisher created" << std::endl;
         
         // Configure mesh generator using configuration manager
         mesh_generator->setMethod(mesh_service::MeshMethod::TSDF_MARCHING_CUBES);
@@ -123,8 +151,19 @@ int main(int argc, char* argv[]) {
         
         // Connect to Rerun
         if (rerun_enabled) {
+            std::cout << "[DEBUG MAIN] About to connect to Rerun..." << std::endl;
+            std::cout << "[DEBUG MAIN] rerun_publisher pointer: " << rerun_publisher.get() << std::endl;
+            
+            // TEMPORARILY DISABLE RERUN to isolate crash
+            std::cout << "[DEBUG MAIN] TEMPORARILY DISABLING RERUN CONNECTION TO ISOLATE CRASH" << std::endl;
+            rerun_enabled = false;
+            rerun_publisher->setEnabled(false);
+            
+            /*
             if (rerun_publisher->connect()) {
                 std::cout << "Connected to Rerun viewer at " << rerun_address << std::endl;
+                std::cout << "[DEBUG MAIN] Rerun connection successful" << std::endl;
+                std::cout << "[DEBUG MAIN] About to test rerun functionality..." << std::endl;
                 
                 // Set up a pinhole camera view for better visualization
                 // This helps Rerun understand the 3D space better
@@ -136,23 +175,31 @@ int main(int argc, char* argv[]) {
                 // };
                 
                 // Log initial camera setup
+                std::cout << "[DEBUG MAIN] Creating initial camera pose array..." << std::endl;
                 float initial_pose[16] = {
                     1, 0, 0, 0,
                     0, 1, 0, 0,
                     0, 0, 1, -5,  // Position camera 5 units back
                     0, 0, 0, 1
                 };
+                std::cout << "[DEBUG MAIN] About to log camera pose to Rerun..." << std::endl;
                 rerun_publisher->logCameraPose(initial_pose, "/mesh_service/camera");
+                std::cout << "[DEBUG MAIN] Camera pose logged successfully" << std::endl;
+                std::cout << "[DEBUG MAIN] Exiting Rerun setup block successfully" << std::endl;
             } else {
                 std::cerr << "Failed to connect to Rerun viewer" << std::endl;
                 rerun_enabled = false;
                 rerun_publisher->setEnabled(false);
             }
+            */
         }
+        std::cout << "[DEBUG MAIN] After Rerun connection block" << std::endl;
         
         // Statistics
         int frame_count = 0;
         auto start_time = std::chrono::steady_clock::now();
+        
+        std::cout << "[DEBUG MAIN] About to set up RabbitMQ keyframe handler" << std::endl;
         
         // Set up RabbitMQ keyframe handler
         rabbitmq_consumer->setKeyframeHandler([&](const mesh_service::KeyframeMessage& msg) {
@@ -257,6 +304,8 @@ int main(int argc, char* argv[]) {
                         }
                         
                         // Also log camera pose if available
+                        // TODO: Fix camera pose logging - currently causing segfault
+                        /*
                         if (keyframe->pose_matrix[0] != 0.0f) {  // Check if pose is valid
                             std::cout << "[DEBUG] Logging camera pose" << std::endl;
                             auto pose_start = std::chrono::steady_clock::now();
@@ -267,6 +316,7 @@ int main(int argc, char* argv[]) {
                             std::cout << "[DEBUG] Camera pose logged" << std::endl;
                             std::cout << "[TIMING] Camera pose log: " << pose_us << " µs" << std::endl;
                         }
+                        */
                     }
                     
                     auto rerun_end = std::chrono::steady_clock::now();
@@ -341,15 +391,22 @@ int main(int argc, char* argv[]) {
             }
         });
         
+        std::cout << "[DEBUG MAIN] RabbitMQ handler set up successfully" << std::endl;
+        
         // Start metrics server
+        std::cout << "[DEBUG MAIN] Creating metrics server on port " << metrics_port << std::endl;
         mesh_service::MetricsServer metrics_server(metrics_port);
+        std::cout << "[DEBUG MAIN] Starting metrics server..." << std::endl;
         metrics_server.run();
         std::cout << "Metrics server started on port " << metrics_port << std::endl;
         
         // Connect to RabbitMQ
+        std::cout << "[DEBUG MAIN] About to connect to RabbitMQ at " << rabbitmq_url << std::endl;
         std::cout << "Connecting to RabbitMQ at " << rabbitmq_url << "..." << std::endl;
         rabbitmq_consumer->connect();
+        std::cout << "[DEBUG MAIN] RabbitMQ connected, starting consumer..." << std::endl;
         rabbitmq_consumer->start();
+        std::cout << "[DEBUG MAIN] RabbitMQ consumer started" << std::endl;
         
         std::cout << "Mesh Service running. Waiting for keyframes from SLAM3R..." << std::endl;
         

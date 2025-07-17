@@ -3,8 +3,8 @@
 # with algorithm selector for future Poisson/NKSR support
 FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 
-# Build argument for Open3D support
-ARG USE_OPEN3D=OFF
+# Build argument for Open3D support (ON by default for Poisson reconstruction)
+ARG USE_OPEN3D=ON
 
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive

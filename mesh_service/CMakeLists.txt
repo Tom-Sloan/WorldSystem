@@ -19,15 +19,15 @@ find_package(CGAL REQUIRED)
 find_package(OpenMP)
 # msgpack is header-only, no find_package needed
 
-# Optional Open3D support for normal estimation
-option(USE_OPEN3D "Enable Open3D for normal estimation" OFF)
+# Open3D support (required for Poisson reconstruction)
+option(USE_OPEN3D "Enable Open3D for Poisson reconstruction and normal estimation" ON)
 if(USE_OPEN3D)
     find_package(Open3D QUIET)
     if(Open3D_FOUND)
-        message(STATUS "Open3D found - enabling high-quality normal estimation")
+        message(STATUS "Open3D found - enabling Poisson reconstruction and high-quality normal estimation")
         add_definitions(-DHAS_OPEN3D)
     else()
-        message(WARNING "Open3D requested but not found")
+        message(WARNING "Open3D requested but not found - Poisson reconstruction will not be available")
     endif()
 endif()
 
@@ -68,17 +68,19 @@ set(SOURCES
     src/normal_provider_factory.cpp
     src/normal_providers/camera_based_normal_provider.cu
     
-    # FUTURE: Uncomment these to enable Poisson/NKSR algorithms
-    # src/algorithms/open3d_poisson.cpp
-    # src/algorithms/nksr_client.cpp
+    # Algorithm implementations
+    # src/algorithms/nksr_client.cpp  # Future: NKSR integration
     
     # Temporarily disabled for build
     # src/websocket_server.cpp
 )
 
-# Conditionally add Open3D normal provider
+# Conditionally add Open3D-dependent sources
 if(Open3D_FOUND)
-    list(APPEND SOURCES src/normal_providers/open3d_normal_provider.cpp)
+    list(APPEND SOURCES 
+        src/normal_providers/open3d_normal_provider.cpp
+        src/algorithms/open3d_poisson.cpp
+    )
 endif()
 
 # Create executable

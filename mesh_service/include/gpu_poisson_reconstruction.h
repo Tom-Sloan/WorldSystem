@@ -5,12 +5,14 @@
 #include <memory>
 #include "gpu_octree.h"
 #include "shared_memory.h"
+#include "config/mesh_service_config.h"
+#include "config/poisson_config.h"
 
 namespace mesh_service {
 
-// Block size for incremental processing
-constexpr int POISSON_BLOCK_SIZE = 256;
-constexpr int POISSON_BLOCK_OVERLAP = 32;  // Overlap for smooth boundaries
+// Use config constants instead of hardcoded values
+constexpr int POISSON_BLOCK_SIZE = config::AlgorithmConfig::DEFAULT_POISSON_BLOCK_SIZE;
+constexpr int POISSON_BLOCK_OVERLAP = config::AlgorithmConfig::DEFAULT_POISSON_BLOCK_OVERLAP;
 
 // Poisson octree node with function values
 struct PoissonNode {

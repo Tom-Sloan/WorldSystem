@@ -111,11 +111,32 @@ class SharedMemoryManager:
             elif is_zero:
                 logger.warning("[SHM SLAM3R WARNING] Pose matrix is all zeros - invalid!")
             
+            # CRITICAL FIX: Flatten pose in row-major order to match C++ struct layout
+            # The SharedKeyframe C++ struct expects row-major order where translation is at [12,13,14]
+            # The mesh service expects a transposed format where translation is in the bottom row
+            pose_row_major = pose.T.flatten()  # Transpose then flatten to get translation at [12,13,14]
+            
+            # Debug: Verify the translation is now at the correct indices
+            logger.info(f"[SHM SLAM3R FIX] Original pose translation at [0,3],[1,3],[2,3]: [{pose[0,3]:.4f}, {pose[1,3]:.4f}, {pose[2,3]:.4f}]")
+            logger.info(f"[SHM SLAM3R FIX] Row-major flattened translation at [12],[13],[14]: [{pose_row_major[12]:.4f}, {pose_row_major[13]:.4f}, {pose_row_major[14]:.4f}]")
+            
+            # Additional debug: Print full flattened array to verify layout
+            logger.debug("[SHM SLAM3R FIX] Full row-major flattened pose:")
+            for i in range(0, 16, 4):
+                logger.debug(f"  [{i:2d}-{i+3:2d}]: {pose_row_major[i]:.4f}, {pose_row_major[i+1]:.4f}, {pose_row_major[i+2]:.4f}, {pose_row_major[i+3]:.4f}")
+            
+            # Verify the matrix can be reconstructed correctly
+            pose_reconstructed = np.array(pose_row_major).reshape(4, 4)  # This creates row-major
+            logger.debug(f"[SHM SLAM3R FIX] Reconstructed pose (should match transposed original):")
+            logger.debug(f"{pose_reconstructed}")
+            logger.debug(f"[SHM SLAM3R FIX] Original pose transposed:")
+            logger.debug(f"{pose.T}")
+            
             header_data = struct.pack(header_format,
                 timestamp_ns,              # timestamp_ns
                 len(points),              # point_count
                 3,                        # color_channels (3=RGB)
-                *pose.flatten(),          # pose_matrix (16 floats)
+                *pose_row_major,          # pose_matrix (16 floats, row-major)
                 *bbox                     # bbox (6 floats)
             )
             

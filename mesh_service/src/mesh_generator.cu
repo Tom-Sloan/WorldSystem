@@ -14,6 +14,7 @@
 #include <cmath>
 #include <unordered_map>
 #include <cfloat>
+#include <iomanip>
 
 namespace mesh_service {
 
@@ -204,6 +205,43 @@ void GPUMeshGenerator::generateIncrementalMesh(
         update.vertices.clear();
         update.faces.clear();
         return;
+    }
+    
+    // Debug: Log the pose matrix we received
+    std::cout << "[MESH GEN DEBUG] Received pose matrix from keyframe:" << std::endl;
+    for (int row = 0; row < 4; row++) {
+        std::cout << "  [";
+        for (int col = 0; col < 4; col++) {
+            std::cout << std::setw(10) << std::fixed << std::setprecision(4) 
+                      << keyframe->pose_matrix[row * 4 + col];
+            if (col < 3) std::cout << ", ";
+        }
+        std::cout << "]" << std::endl;
+    }
+    
+    // Extract camera position for debugging
+    float cam_x = keyframe->pose_matrix[12];
+    float cam_y = keyframe->pose_matrix[13];
+    float cam_z = keyframe->pose_matrix[14];
+    std::cout << "[MESH GEN DEBUG] Camera position from pose: [" 
+              << cam_x << ", " << cam_y << ", " << cam_z << "]" << std::endl;
+    
+    // Check if camera is at origin
+    if (fabs(cam_x) < 0.001f && fabs(cam_y) < 0.001f && fabs(cam_z) < 0.001f) {
+        std::cout << "[MESH GEN ERROR] Camera is at origin! This will break TSDF carving." << std::endl;
+        std::cout << "[MESH GEN ERROR] Checking if pose matrix might be transposed..." << std::endl;
+        
+        // Check alternate locations where translation might be
+        float alt_x = keyframe->pose_matrix[3];
+        float alt_y = keyframe->pose_matrix[7];
+        float alt_z = keyframe->pose_matrix[11];
+        std::cout << "[MESH GEN ERROR] Translation at indices [3,7,11]: [" 
+                  << alt_x << ", " << alt_y << ", " << alt_z << "]" << std::endl;
+        
+        if (fabs(alt_x) > 0.001f || fabs(alt_y) > 0.001f || fabs(alt_z) > 0.001f) {
+            std::cout << "[MESH GEN ERROR] Found non-zero values at column-major indices!" << std::endl;
+            std::cout << "[MESH GEN ERROR] This suggests the pose matrix is in wrong format!" << std::endl;
+        }
     }
     
     // Update camera velocity

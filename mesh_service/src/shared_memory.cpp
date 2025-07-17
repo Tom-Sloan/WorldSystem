@@ -96,6 +96,22 @@ SharedKeyframe* SharedMemoryManager::open_keyframe(const std::string& shm_name) 
               << header->pose_matrix[13] << ", "
               << header->pose_matrix[14] << "]" << std::endl;
     
+    // Additional debug: Print indices 3,7,11 which would be translation in column-major
+    std::cout << "[SHM DEBUG] Checking alternate indices [3,7,11] (column-major): [" 
+              << header->pose_matrix[3] << ", " 
+              << header->pose_matrix[7] << ", "
+              << header->pose_matrix[11] << "]" << std::endl;
+    
+    // Debug: Print all 16 values to verify layout
+    std::cout << "[SHM DEBUG] Full pose matrix as linear array:" << std::endl;
+    for (int i = 0; i < 16; i += 4) {
+        std::cout << "  [" << i << "-" << (i+3) << "]: " 
+                  << header->pose_matrix[i] << ", " 
+                  << header->pose_matrix[i+1] << ", " 
+                  << header->pose_matrix[i+2] << ", " 
+                  << header->pose_matrix[i+3] << std::endl;
+    }
+    
     // Check if pose is identity or zero
     bool is_identity = true;
     bool is_zero = true;

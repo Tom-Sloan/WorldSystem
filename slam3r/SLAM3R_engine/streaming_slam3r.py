@@ -365,7 +365,7 @@ class StreamingSLAM3R:
                 # Now return the last frame with proper world coordinates
                 last_frame = self.initialization_frames[-1]
                 if last_frame.pts3d_world is not None and last_frame.conf_world is not None:
-                    return {
+                    result = {
                         'pose': self._extract_pose(last_frame),
                         'pts3d_world': last_frame.pts3d_world,
                         'conf_world': last_frame.conf_world,
@@ -373,6 +373,14 @@ class StreamingSLAM3R:
                         'timestamp': last_frame.timestamp,
                         'is_keyframe': True
                     }
+                    
+                    # Include camera-space data if available
+                    if last_frame.pts3d_cam is not None:
+                        result['pts3d_cam'] = last_frame.pts3d_cam
+                    if last_frame.conf_cam is not None:
+                        result['conf_cam'] = last_frame.conf_cam
+                        
+                    return result
             else:
                 # Reset and try again
                 logger.warning("Initialization failed, resetting")
@@ -527,7 +535,7 @@ class StreamingSLAM3R:
         
         # Prepare output
         if frame.pts3d_world is not None and frame.conf_world is not None:
-            return {
+            result = {
                 'pose': pose,
                 'pts3d_world': frame.pts3d_world,  # Keep as tensor for processor
                 'conf_world': frame.conf_world,    # Keep as tensor for processor
@@ -535,6 +543,14 @@ class StreamingSLAM3R:
                 'timestamp': frame.timestamp,
                 'is_keyframe': frame.is_keyframe
             }
+            
+            # Include camera-space data if available for pose estimation
+            if frame.pts3d_cam is not None:
+                result['pts3d_cam'] = frame.pts3d_cam
+            if frame.conf_cam is not None:
+                result['conf_cam'] = frame.conf_cam
+                
+            return result
         
         return None
     

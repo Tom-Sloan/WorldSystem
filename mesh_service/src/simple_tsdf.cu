@@ -224,14 +224,16 @@ __global__ void integrateTSDFKernel(
                 // Update TSDF using weighted average
                 int voxel_idx = x + y * volume_dims.x + z * volume_dims.x * volume_dims.y;
                 
-                // Debug output for carving visualization
+                // Enhanced debug output for carving visualization
                 if (idx < 5 && voxel_idx < 1000) {
                     const char* space_type = "UNKNOWN";
+                    const char* carving_method = "NONE";
                     bool camera_valid_debug = (fabsf(camera_position.x) > 0.01f || 
                                              fabsf(camera_position.y) > 0.01f || 
                                              fabsf(camera_position.z) > 0.01f);
                     
                     if (camera_valid_debug) {
+                        carving_method = "CAMERA_RAY";
                         float3 cam_to_point_debug = make_float3(point.x - camera_position.x,
                                                                point.y - camera_position.y,
                                                                point.z - camera_position.z);
@@ -259,11 +261,20 @@ __global__ void integrateTSDFKernel(
                                 } else {
                                     space_type = "SURFACE";
                                 }
+                            } else {
+                                space_type = "OFF_RAY";
                             }
                         }
+                    } else {
+                        carving_method = "NORMAL_BASED";
+                        if (sign > 0) space_type = "EMPTY_SIDE";
+                        else space_type = "OCCUPIED_SIDE";
                     }
-                    printf("[TSDF CARVING] Point %d: Voxel %d is %s (sign=%.0f, dist=%.3f)\n", 
-                           idx, voxel_idx, space_type, sign, distance);
+                    
+                    printf("[TSDF CARVING] Point %d: Camera@[%.2f,%.2f,%.2f] Voxel %d@[%.2f,%.2f,%.2f] is %s (sign=%.0f, dist=%.3f, method=%s)\n", 
+                           idx, camera_position.x, camera_position.y, camera_position.z,
+                           voxel_idx, voxel_center.x, voxel_center.y, voxel_center.z,
+                           space_type, sign, distance, carving_method);
                 }
                 
                 float old_tsdf = tsdf_volume[voxel_idx];
@@ -415,34 +426,52 @@ void SimpleTSDF::integrate(
     // Extract camera position from 4x4 pose matrix (translation part)
     float3 camera_position = make_float3(0.0f, 0.0f, 0.0f);
     if (camera_pose) {
-        // Camera pose is 4x4 matrix in column-major format
-        // Translation is in elements 12, 13, 14
+        // CRITICAL FIX: The pose matrix from SharedKeyframe is in ROW-MAJOR format
+        // For row-major 4x4 matrix, translation is at indices 12, 13, 14
+        // This matches the C++ SharedKeyframe struct layout
         camera_position = make_float3(
-            camera_pose[12],  // X translation
-            camera_pose[13],  // Y translation 
-            camera_pose[14]   // Z translation
+            camera_pose[12],  // X translation (row-major)
+            camera_pose[13],  // Y translation (row-major)
+            camera_pose[14]   // Z translation (row-major)
         );
         
         // DEBUG: Print full pose matrix to understand the issue
-        std::cout << "[TSDF DEBUG] Full camera pose matrix (column-major):" << std::endl;
+        std::cout << "[TSDF DEBUG] Received camera pose pointer: " << (void*)camera_pose << std::endl;
+        std::cout << "[TSDF DEBUG] Interpreting pose matrix as ROW-MAJOR:" << std::endl;
         for (int row = 0; row < 4; row++) {
             std::cout << "  [";
             for (int col = 0; col < 4; col++) {
                 std::cout << std::setw(10) << std::fixed << std::setprecision(4) 
-                          << camera_pose[col * 4 + row];
+                          << camera_pose[row * 4 + col];  // Row-major indexing
                 if (col < 3) std::cout << ", ";
             }
             std::cout << "]" << std::endl;
         }
-        std::cout << "[TSDF DEBUG] Camera position extracted: [" 
+        
+        // Debug: Try both possible translation locations
+        float3 trans_option1 = make_float3(camera_pose[3], camera_pose[7], camera_pose[11]);  // Column-major
+        float3 trans_option2 = make_float3(camera_pose[12], camera_pose[13], camera_pose[14]); // Row-major
+        
+        std::cout << "[TSDF DEBUG] Translation option 1 (indices 3,7,11): [" 
+                  << trans_option1.x << ", " << trans_option1.y << ", " << trans_option1.z << "]" << std::endl;
+        std::cout << "[TSDF DEBUG] Translation option 2 (indices 12,13,14): [" 
+                  << trans_option2.x << ", " << trans_option2.y << ", " << trans_option2.z << "]" << std::endl;
+        std::cout << "[TSDF DEBUG] Using option 2 (row-major) as camera position: [" 
                   << camera_position.x << ", " 
                   << camera_position.y << ", " 
                   << camera_position.z << "]" << std::endl;
         
+        // Additional validation: Check if rotation part looks reasonable
+        float det = camera_pose[0] * (camera_pose[5] * camera_pose[10] - camera_pose[6] * camera_pose[9]) -
+                    camera_pose[1] * (camera_pose[4] * camera_pose[10] - camera_pose[6] * camera_pose[8]) +
+                    camera_pose[2] * (camera_pose[4] * camera_pose[9] - camera_pose[5] * camera_pose[8]);
+        std::cout << "[TSDF DEBUG] Rotation matrix determinant (should be ~1): " << det << std::endl;
+        
         // Check if camera pose seems invalid
         if (fabsf(camera_position.x) < 0.01f && fabsf(camera_position.y) < 0.01f && fabsf(camera_position.z) < 0.01f) {
-            std::cout << "[TSDF WARNING] Camera position is at origin [0,0,0] - this is likely invalid!" << std::endl;
-            std::cout << "[TSDF WARNING] This will cause incorrect TSDF carving. Check SLAM3R pose output." << std::endl;
+            std::cout << "[TSDF ERROR] Camera position is at origin [0,0,0] - this is invalid!" << std::endl;
+            std::cout << "[TSDF ERROR] This will cause incorrect TSDF carving. The mesh will be solid." << std::endl;
+            std::cout << "[TSDF ERROR] Check SLAM3R pose matrix format - should be row-major with translation at [12,13,14]" << std::endl;
         }
     } else {
         std::cout << "[TSDF WARNING] No camera pose provided (nullptr)" << std::endl;

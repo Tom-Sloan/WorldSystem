@@ -99,10 +99,13 @@ services:
       - DIMENSION_CACHE_EXPIRY_DAYS=${DIMENSION_CACHE_EXPIRY_DAYS:-30}
       
     volumes:
-      - ${WORKSPACE}/frame_processor:/app
+      - ${WORKSPACE}/frame_processor/frame_processor.py:/app/frame_processor.py
+      - ${WORKSPACE}/frame_processor/frame_processor_original.py:/app/frame_processor_original.py
+      - ${WORKSPACE}/frame_processor/modules:/app/modules
+      - ${WORKSPACE}/frame_processor/yolov8n.pt:/app/yolov8n.pt
+      - ${WORKSPACE}/frame_processor/worldsystem-23f7306a1a75.json:/app/worldsystem-23f7306a1a75.json:ro
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
-      - ${WORKSPACE}/frame_processor/worldsystem-23f7306a1a75.json:/app/worldsystem-23f7306a1a75.json:ro
     deploy:
       resources:
         reservations:
@@ -430,8 +433,9 @@ services:
       
       # ========== TSDF VOLUME CONFIGURATION ==========
       # Adjust these based on your scene - current values for hallway scene
-      - TSDF_VOLUME_MIN=-5,-5,0
-      - TSDF_VOLUME_MAX=30,5,5
+      # Updated to match actual point cloud bounds (points are at ~[20-27, 0-7, 20-28])
+      - TSDF_VOLUME_MIN=15,-2,15
+      - TSDF_VOLUME_MAX=32,10,32
       - TSDF_VOXEL_SIZE=0.05
       - TSDF_TRUNCATION_DISTANCE=0.10
       
@@ -453,8 +457,7 @@ services:
       
       # Volume bounds optimized for actual point cloud data
       # Format: "x_min,y_min,z_min" and "x_max,y_max,z_max"
-      - TSDF_VOLUME_MIN=${TSDF_VOLUME_MIN:--2,-3,0}    # Encompasses min [-0.716, -2.072, 0.707]
-      - TSDF_VOLUME_MAX=${TSDF_VOLUME_MAX:-2,2,10}     # Encompasses max [0.575, 1.014, 7.722]
+      # Note: These are now set above in lines 434-435 to match actual scene bounds
       
       # Performance tuning
       - TSDF_BLOCK_SIZE=${TSDF_BLOCK_SIZE:-8}                 # Voxel blocks for cache efficiency

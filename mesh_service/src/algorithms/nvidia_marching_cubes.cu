@@ -731,7 +731,7 @@ bool NvidiaMarchingCubes::reconstruct(
     float* d_tsdf = tsdf_->getTSDFVolume();
     int3 dims = tsdf_->getVolumeDims();
     float3 origin = tsdf_->getVolumeOrigin();
-    float voxel_size = tsdf_->getVoxelSize();
+    voxel_size = tsdf_->getVoxelSize();  // Already declared above
     
     std::cout << "[MC DEBUG] TSDF volume info:" << std::endl;
     std::cout << "  Dims: " << dims.x << "x" << dims.y << "x" << dims.z << std::endl;

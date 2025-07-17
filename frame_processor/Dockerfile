@@ -17,11 +17,17 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 
-# Install dependencies including rerun-sdk version 0.23.2
+# Install dependencies including rerun-sdk version 0.23.4+
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY frame_processor.py /app/frame_processor.py
-COPY *.py /app/
+COPY frame_processor_original.py /app/frame_processor_original.py
+COPY modules /app/modules/
+RUN touch /app/modules/__init__.py
+
+# Copy YOLO model and credentials (these must exist at build time)
+COPY yolov8n.pt /app/yolov8n.pt
+COPY worldsystem-23f7306a1a75.json /app/worldsystem-23f7306a1a75.json
 
 CMD ["python3", "/app/frame_processor.py"]

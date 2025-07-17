@@ -6,6 +6,7 @@
 #include <thrust/fill.h>
 #include <iostream>
 #include <chrono>
+#include <iomanip>
 
 namespace mesh_service {
 
@@ -226,22 +227,38 @@ __global__ void integrateTSDFKernel(
                 // Debug output for carving visualization
                 if (idx < 5 && voxel_idx < 1000) {
                     const char* space_type = "UNKNOWN";
-                    if (cam_to_point_dist > 0.001f && cam_to_voxel_dist > 0.001f) {
-                        float3 ray_dir = make_float3(cam_to_point.x / cam_to_point_dist,
-                                                      cam_to_point.y / cam_to_point_dist,
-                                                      cam_to_point.z / cam_to_point_dist);
-                        float3 voxel_dir = make_float3(cam_to_voxel.x / cam_to_voxel_dist,
-                                                        cam_to_voxel.y / cam_to_voxel_dist,
-                                                        cam_to_voxel.z / cam_to_voxel_dist);
-                        float alignment = ray_dir.x * voxel_dir.x + ray_dir.y * voxel_dir.y + ray_dir.z * voxel_dir.z;
+                    bool camera_valid_debug = (fabsf(camera_position.x) > 0.01f || 
+                                             fabsf(camera_position.y) > 0.01f || 
+                                             fabsf(camera_position.z) > 0.01f);
+                    
+                    if (camera_valid_debug) {
+                        float3 cam_to_point_debug = make_float3(point.x - camera_position.x,
+                                                               point.y - camera_position.y,
+                                                               point.z - camera_position.z);
+                        float3 cam_to_voxel_debug = make_float3(voxel_center.x - camera_position.x,
+                                                               voxel_center.y - camera_position.y,
+                                                               voxel_center.z - camera_position.z);
                         
-                        if (alignment > 0.95f) {
-                            if (cam_to_voxel_dist < cam_to_point_dist - voxel_size) {
-                                space_type = "EMPTY";
-                            } else if (cam_to_voxel_dist > cam_to_point_dist + voxel_size) {
-                                space_type = "OCCUPIED";
-                            } else {
-                                space_type = "SURFACE";
+                        float cam_to_point_dist_debug = length(cam_to_point_debug);
+                        float cam_to_voxel_dist_debug = length(cam_to_voxel_debug);
+                        
+                        if (cam_to_point_dist_debug > 0.001f && cam_to_voxel_dist_debug > 0.001f) {
+                            float3 ray_dir = make_float3(cam_to_point_debug.x / cam_to_point_dist_debug,
+                                                          cam_to_point_debug.y / cam_to_point_dist_debug,
+                                                          cam_to_point_debug.z / cam_to_point_dist_debug);
+                            float3 voxel_dir = make_float3(cam_to_voxel_debug.x / cam_to_voxel_dist_debug,
+                                                            cam_to_voxel_debug.y / cam_to_voxel_dist_debug,
+                                                            cam_to_voxel_debug.z / cam_to_voxel_dist_debug);
+                            float alignment = ray_dir.x * voxel_dir.x + ray_dir.y * voxel_dir.y + ray_dir.z * voxel_dir.z;
+                            
+                            if (alignment > 0.95f) {
+                                if (cam_to_voxel_dist_debug < cam_to_point_dist_debug - voxel_size) {
+                                    space_type = "EMPTY";
+                                } else if (cam_to_voxel_dist_debug > cam_to_point_dist_debug + voxel_size) {
+                                    space_type = "OCCUPIED";
+                                } else {
+                                    space_type = "SURFACE";
+                                }
                             }
                         }
                     }
@@ -405,10 +422,30 @@ void SimpleTSDF::integrate(
             camera_pose[13],  // Y translation 
             camera_pose[14]   // Z translation
         );
-        std::cout << "[TSDF DEBUG] Camera position: [" 
+        
+        // DEBUG: Print full pose matrix to understand the issue
+        std::cout << "[TSDF DEBUG] Full camera pose matrix (column-major):" << std::endl;
+        for (int row = 0; row < 4; row++) {
+            std::cout << "  [";
+            for (int col = 0; col < 4; col++) {
+                std::cout << std::setw(10) << std::fixed << std::setprecision(4) 
+                          << camera_pose[col * 4 + row];
+                if (col < 3) std::cout << ", ";
+            }
+            std::cout << "]" << std::endl;
+        }
+        std::cout << "[TSDF DEBUG] Camera position extracted: [" 
                   << camera_position.x << ", " 
                   << camera_position.y << ", " 
                   << camera_position.z << "]" << std::endl;
+        
+        // Check if camera pose seems invalid
+        if (fabsf(camera_position.x) < 0.01f && fabsf(camera_position.y) < 0.01f && fabsf(camera_position.z) < 0.01f) {
+            std::cout << "[TSDF WARNING] Camera position is at origin [0,0,0] - this is likely invalid!" << std::endl;
+            std::cout << "[TSDF WARNING] This will cause incorrect TSDF carving. Check SLAM3R pose output." << std::endl;
+        }
+    } else {
+        std::cout << "[TSDF WARNING] No camera pose provided (nullptr)" << std::endl;
     }
     if (num_points == 0) {
         std::cout << "[TSDF DEBUG] integrate() called with 0 points, returning" << std::endl;

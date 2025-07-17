@@ -247,13 +247,30 @@ class SLAM3RProcessor:
             
             if self.keyframe_publisher and STREAMING_AVAILABLE:
                 # Prepare keyframe data for mesh_service
+                pose = keyframe_data.get('pose', np.eye(4))
+                
+                # DEBUG: Log what pose data we have
+                logger.info(f"[SLAM3R POSE DEBUG] Keyframe data keys: {list(keyframe_data.keys())}")
+                logger.info(f"[SLAM3R POSE DEBUG] Pose in keyframe_data: {'pose' in keyframe_data}")
+                if 'pose' in keyframe_data:
+                    logger.info(f"[SLAM3R POSE DEBUG] Pose type: {type(keyframe_data['pose'])}")
+                    pose_val = keyframe_data['pose']
+                    if isinstance(pose_val, np.ndarray):
+                        logger.info(f"[SLAM3R POSE DEBUG] Pose shape: {pose_val.shape}")
+                        logger.info(f"[SLAM3R POSE DEBUG] Pose translation: [{pose_val[0,3]:.3f}, {pose_val[1,3]:.3f}, {pose_val[2,3]:.3f}]")
+                        is_identity = np.allclose(pose_val, np.eye(4), atol=1e-6)
+                        logger.info(f"[SLAM3R POSE DEBUG] Is identity matrix: {is_identity}")
+                    logger.info(f"[SLAM3R POSE DEBUG] Pose value:\n{keyframe_data['pose']}")
+                else:
+                    logger.warning("[SLAM3R POSE DEBUG] No pose in keyframe_data - using identity matrix!")
+                
                 keyframe = {
                     'timestamp': timestamp,
                     'frame_id': keyframe_data['frame_id'],
                     'keyframe_id': self.keyframe_count,
                     'pts3d_world': pts3d_world.cpu().numpy(),
                     'conf_world': conf_world.cpu().numpy(),
-                    'pose': keyframe_data.get('pose', np.eye(4)),
+                    'pose': pose,
                 }
                 
                 # Extract points and colors from pts3d_world

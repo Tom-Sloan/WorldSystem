@@ -45,8 +45,8 @@ __global__ void computeCameraBasedNormalsKernel(
     
     // Debug output for first few normals
     if (idx < debug_normal_count) {
-        printf("[CAMERA NORMAL] Point %d: pos=[%.3f,%.3f,%.3f], normal=[%.3f,%.3f,%.3f], dist=%.3f\n",
-               idx, point.x, point.y, point.z, 
+        printf("[CAMERA NORMAL] Point %lu: pos=[%.3f,%.3f,%.3f], normal=[%.3f,%.3f,%.3f], dist=%.3f\n",
+               (unsigned long)idx, point.x, point.y, point.z, 
                normals[idx].x, normals[idx].y, normals[idx].z, dist);
     }
 }

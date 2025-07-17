@@ -354,6 +354,15 @@ class StreamingSLAM3R:
                 self.is_initialized = True
                 # Return the last keyframe from initialization
                 # All init frames are marked as keyframes in _initialize_slam
+                # Need to process non-reference frames through L2W first
+                for frame in self.initialization_frames:
+                    if frame.pts3d_world is None and frame.pts3d_cam is not None:
+                        # This frame needs L2W processing
+                        ref_frames = [f for f in self.initialization_frames if f.pts3d_world is not None]
+                        if ref_frames:
+                            self._run_l2w_inference(frame, ref_frames)
+                
+                # Now return the last frame with proper world coordinates
                 last_frame = self.initialization_frames[-1]
                 if last_frame.pts3d_world is not None and last_frame.conf_world is not None:
                     return {
@@ -443,17 +452,22 @@ class StreamingSLAM3R:
                 for i, (frame, pc, conf) in enumerate(zip(self.initialization_frames, pcs, confs)):
                     if i == ref_id:
                         # Reference frame: points are already in world coordinates
+                        # For the reference frame, camera IS the world origin
                         frame.pts3d_world = pc
                         frame.conf_world = conf
-                    else:
-                        # Non-reference frames: points are in camera coordinates relative to ref
-                        # For now, we'll use them as world coordinates (this is a simplification)
-                        # In a full implementation, you'd transform them properly
-                        frame.pts3d_world = pc
-                        frame.conf_world = conf
-                        # Also store as camera points for L2W processing
-                        frame.pts3d_cam = pc
+                        # Camera points for reference frame would be at origin (identity transform)
+                        # But we need the actual points for pose computation
+                        frame.pts3d_cam = pc  # These will be transformed to world=cam for ref frame
                         frame.conf_cam = conf
+                    else:
+                        # Other frames: points returned by initialize_scene are in THEIR camera coordinates
+                        # Not in world coordinates yet - they need L2W transformation
+                        frame.pts3d_cam = pc  # These are in this frame's camera space
+                        frame.conf_cam = conf
+                        # World points will be set by L2W inference later
+                        # For now, initialize to None to ensure L2W processes them
+                        frame.pts3d_world = None
+                        frame.conf_world = None
                     
                     frame.is_keyframe = True
                     
@@ -678,16 +692,121 @@ class StreamingSLAM3R:
             logger.error(f"L2W output invalid: got {len(output) if output else 0} outputs, expected > {len(selected_refs)}")
     
     def _extract_pose(self, frame: FrameData) -> Optional[np.ndarray]:
-        """Extract camera pose from frame data"""
-        # This is a simplified version - you'd implement proper pose extraction
-        # based on the point cloud alignment between camera and world coordinates
+        """Extract camera pose from frame data by computing transformation between camera and world coordinates"""
         
-        if frame.pts3d_cam is not None and frame.pts3d_world is not None:
-            # For now, return identity matrix
-            # In practice, you'd compute the transformation
+        if frame.pts3d_cam is None or frame.pts3d_world is None:
+            logger.warning(f"Cannot extract pose for frame {frame.frame_id}: missing point clouds")
             return np.eye(4, dtype=np.float32)
         
-        return None
+        try:
+            # Convert tensors to numpy arrays
+            pts_cam = frame.pts3d_cam.cpu().numpy()
+            pts_world = frame.pts3d_world.cpu().numpy()
+            
+            # Get confidence values if available
+            conf_world = frame.conf_world.cpu().numpy() if frame.conf_world is not None else None
+            
+            # Reshape to (N, 3) format
+            if pts_cam.ndim == 4:  # (B, H, W, 3)
+                if pts_cam.shape[0] != 1:
+                    logger.error(f"Expected batch size 1, got {pts_cam.shape[0]}")
+                    return np.eye(4, dtype=np.float32)
+                pts_cam = pts_cam[0].reshape(-1, 3)  # Use indexing instead of squeeze
+                pts_world = pts_world[0].reshape(-1, 3)
+                if conf_world is not None and conf_world.ndim == 3:  # (B, H, W)
+                    conf_world = conf_world[0].reshape(-1)
+            elif pts_cam.ndim == 3:  # (H, W, 3)
+                pts_cam = pts_cam.reshape(-1, 3)
+                pts_world = pts_world.reshape(-1, 3)
+                if conf_world is not None and conf_world.ndim == 2:  # (H, W)
+                    conf_world = conf_world.reshape(-1)
+            else:
+                logger.error(f"Unexpected point cloud dimensions: pts_cam {pts_cam.shape}, pts_world {pts_world.shape}")
+                return np.eye(4, dtype=np.float32)
+            
+            # Validate point counts match
+            if pts_cam.shape[0] != pts_world.shape[0]:
+                logger.error(f"Point count mismatch: camera {pts_cam.shape[0]} vs world {pts_world.shape[0]}")
+                return np.eye(4, dtype=np.float32)
+            
+            # Filter valid points based on confidence threshold
+            if conf_world is not None:
+                conf_thresh = self.config.get('recon_pipeline', {}).get('conf_thres_l2w', 12.0)
+                valid_mask = conf_world > conf_thresh
+            else:
+                # Use non-zero points as valid
+                valid_mask = np.any(pts_cam != 0, axis=1) & np.any(pts_world != 0, axis=1)
+            
+            # Need sufficient points for robust pose estimation
+            valid_count = valid_mask.sum()
+            if valid_count < 100:
+                logger.warning(f"Insufficient valid points for pose estimation ({valid_count}), using identity")
+                return np.eye(4, dtype=np.float32)
+            
+            # Get valid point correspondences
+            pts_cam_valid = pts_cam[valid_mask]
+            pts_world_valid = pts_world[valid_mask]
+            
+            # Compute transformation using SVD-based rigid alignment
+            # This finds the transformation T such that: pts_world = T @ [pts_cam; 1]
+            
+            # 1. Compute centroids
+            centroid_cam = np.mean(pts_cam_valid, axis=0)
+            centroid_world = np.mean(pts_world_valid, axis=0)
+            
+            # 2. Center the points
+            pts_cam_centered = pts_cam_valid - centroid_cam
+            pts_world_centered = pts_world_valid - centroid_world
+            
+            # 3. Compute covariance matrix
+            H = pts_cam_centered.T @ pts_world_centered
+            
+            # 4. SVD
+            try:
+                U, S, Vt = np.linalg.svd(H)
+            except np.linalg.LinAlgError as e:
+                logger.error(f"SVD failed for pose extraction: {e}")
+                return np.eye(4, dtype=np.float32)
+            
+            # Check for degenerate case (very small singular values)
+            if S.min() < 1e-6:
+                logger.warning(f"Near-degenerate SVD solution (min singular value: {S.min():.3e})")
+            
+            R = Vt.T @ U.T
+            
+            # 5. Ensure proper rotation (det(R) = 1)
+            if np.linalg.det(R) < 0:
+                Vt[-1, :] *= -1
+                R = Vt.T @ U.T
+            
+            # 6. Compute translation
+            t = centroid_world - R @ centroid_cam
+            
+            # 7. Construct 4x4 transformation matrix
+            pose = np.eye(4, dtype=np.float32)
+            pose[:3, :3] = R
+            pose[:3, 3] = t
+            
+            # Validate the pose
+            # Check if rotation is reasonable (not too different from identity)
+            rotation_diff = np.linalg.norm(R - np.eye(3))
+            if rotation_diff > 2.0:  # Arbitrary threshold
+                logger.warning(f"Large rotation detected (diff={rotation_diff:.3f}), may be unreliable")
+            
+            # Check if translation is reasonable
+            translation_norm = np.linalg.norm(t)
+            if translation_norm > 50.0:  # 50 meters - arbitrary threshold
+                logger.warning(f"Large translation detected (norm={translation_norm:.3f}), may be unreliable")
+            
+            logger.debug(f"Extracted pose for frame {frame.frame_id}: "
+                        f"translation=[{t[0]:.3f}, {t[1]:.3f}, {t[2]:.3f}], "
+                        f"rotation_diff={rotation_diff:.3f}")
+            
+            return pose
+            
+        except Exception as e:
+            logger.error(f"Failed to extract pose for frame {frame.frame_id}: {e}")
+            return np.eye(4, dtype=np.float32)
     
     def reset(self):
         """Reset the SLAM3R state for a new sequence."""

@@ -34,11 +34,13 @@ class ObjectTracker:
                  iou_threshold=0.3,
                  max_lost_frames=10,
                  process_after_seconds=1.5,
-                 reprocess_interval_seconds=3.0):
+                 reprocess_interval_seconds=3.0,
+                 max_frame_history=50):
         self.iou_threshold = iou_threshold
         self.max_lost_frames = max_lost_frames
         self.process_after_seconds = process_after_seconds
         self.reprocess_interval_seconds = reprocess_interval_seconds
+        self.max_frame_history = max_frame_history  # Limit frame history to prevent memory issues
         self.tracked_objects: Dict[int, TrackedObject] = {}
         self.next_id = 0
         
@@ -99,6 +101,9 @@ class ObjectTracker:
                     'confidence': confidence,
                     'timestamp': current_time
                 })
+                # Limit frame history to prevent memory issues
+                if len(track.frame_history) > self.max_frame_history:
+                    track.frame_history.pop(0)  # Remove oldest frame
                 matched_detection_indices.add(detection_idx)
             else:
                 # Create new track

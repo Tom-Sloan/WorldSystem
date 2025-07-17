@@ -3,6 +3,9 @@
 # with algorithm selector for future Poisson/NKSR support
 FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 
+# Build argument for Open3D support
+ARG USE_OPEN3D=OFF
+
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -84,6 +87,37 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y libarrow-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Conditionally install Open3D for high-quality normal estimation
+RUN if [ "$USE_OPEN3D" = "ON" ]; then \
+        echo "Installing Open3D for normal estimation..." && \
+        apt-get update && apt-get install -y \
+            xorg-dev \
+            libglu1-mesa-dev \
+            python3-dev \
+            && cd /tmp && \
+        git clone --depth 1 --branch v0.17.0 https://github.com/isl-org/Open3D && \
+        cd Open3D && \
+        mkdir build && cd build && \
+        cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DBUILD_CUDA_MODULE=ON \
+            -DBUILD_GUI=OFF \
+            -DBUILD_WEBRTC=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_UNIT_TESTS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
+            -DBUILD_PYTHON_MODULE=OFF \
+            -DUSE_SYSTEM_EIGEN3=ON && \
+        make -j$(nproc) && \
+        make install && \
+        ldconfig && \
+        cd / && rm -rf /tmp/Open3D && \
+        rm -rf /var/lib/apt/lists/*; \
+    else \
+        echo "Skipping Open3D installation (USE_OPEN3D=OFF)"; \
+    fi
+
 # Set up user (matches WorldSystem pattern)
 ARG USERNAME=developer
 ARG UID=1000
@@ -102,7 +136,7 @@ RUN chown -R ${USERNAME}:${USERNAME} /app
 # Create build directory and compile
 USER ${USERNAME}
 RUN mkdir -p build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DUSE_OPEN3D=${USE_OPEN3D} .. && \
     make -j$(nproc) && \
     # Verify the binary was created
     test -f mesh_service || (echo "Build failed: mesh_service binary not found" && exit 1) && \

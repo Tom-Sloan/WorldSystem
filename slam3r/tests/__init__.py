@@ -1,1 +1,0 @@
-# SLAM3R tests package

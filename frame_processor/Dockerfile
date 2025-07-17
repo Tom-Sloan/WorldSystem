@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 
-# Install dependencies including rerun-sdk version 0.23.4+
+# Install dependencies including rerun-sdk version 0.23.2
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy application files
@@ -30,4 +30,4 @@ RUN touch /app/modules/__init__.py
 COPY yolov8n.pt /app/yolov8n.pt
 COPY worldsystem-23f7306a1a75.json /app/worldsystem-23f7306a1a75.json
 
-CMD ["python3", "/app/frame_processor.py"]
+CMD ["python3", "-u", "/app/frame_processor.py"]

@@ -3,7 +3,7 @@ numpy
 opencv-python-headless
 pika
 ntplib
-rerun-sdk>=0.23.4
+rerun-sdk==0.23.2
 prometheus_client
 torch
 torchvision

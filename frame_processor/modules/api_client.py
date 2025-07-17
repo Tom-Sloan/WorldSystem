@@ -1,3 +1,7 @@
+print("[DEBUG api_client] Starting api_client imports...")
+import sys
+sys.stdout.flush()
+
 import os
 import cv2
 import uuid
@@ -7,20 +11,39 @@ import hashlib
 import requests
 from typing import Dict, List, Optional, Tuple
 from datetime import timedelta
-from google.cloud import storage
+print("[DEBUG api_client] Basic imports done, importing google.cloud.storage...")
+sys.stdout.flush()
+
+try:
+    from google.cloud import storage
+    print("[DEBUG api_client] google.cloud.storage imported successfully")
+except Exception as e:
+    print(f"[DEBUG api_client] ERROR importing google.cloud.storage: {e}")
+    storage = None
+sys.stdout.flush()
+
+print("[DEBUG api_client] Importing serpapi...")
 from serpapi import GoogleSearch
 import numpy as np
+print("[DEBUG api_client] All imports completed")
+sys.stdout.flush()
 
 
 class APIClient:
     """Handles all external API interactions."""
     
     def __init__(self, cache_dir="api_cache"):
+        print("[DEBUG api_client] APIClient.__init__ called")
+        sys.stdout.flush()
+        
         # Try to use provided cache_dir, fallback to /tmp if needed
         self.cache_dir = cache_dir
         self.lens_cache_dir = os.path.join(cache_dir, "lens")
         self.perplexity_cache_dir = os.path.join(cache_dir, "perplexity")
         self.dimensions_cache_dir = os.path.join(cache_dir, "dimensions")
+        
+        print("[DEBUG api_client] Creating cache directories...")
+        sys.stdout.flush()
         
         # Create cache directories with fallback
         cache_dirs = [self.lens_cache_dir, self.perplexity_cache_dir, self.dimensions_cache_dir]
@@ -29,7 +52,7 @@ class APIClient:
                 os.makedirs(dir, exist_ok=True)
         except (OSError, PermissionError) as e:
             # Fallback to /tmp if main directory is read-only
-            print(f"Warning: Cannot create cache in {cache_dir}, using /tmp: {e}")
+            print(f"[DEBUG api_client] Warning: Cannot create cache in {cache_dir}, using /tmp: {e}")
             self.cache_dir = "/tmp/api_cache"
             self.lens_cache_dir = os.path.join(self.cache_dir, "lens")
             self.perplexity_cache_dir = os.path.join(self.cache_dir, "perplexity")
@@ -37,23 +60,46 @@ class APIClient:
             for dir in [self.lens_cache_dir, self.perplexity_cache_dir, self.dimensions_cache_dir]:
                 os.makedirs(dir, exist_ok=True)
         
+        print("[DEBUG api_client] Cache directories created")
+        sys.stdout.flush()
+        
         # Initialize Google Cloud Storage client with error handling
-        try:
-            self.storage_client = storage.Client()
-            self.bucket_name = os.getenv("GCS_BUCKET_NAME", "worldsystem-frame-processor")
-        except Exception as e:
-            print(f"Warning: Could not initialize Google Cloud Storage client: {e}")
+        print("[DEBUG api_client] Initializing Google Cloud Storage client...")
+        sys.stdout.flush()
+        
+        if storage is None:
+            print("[DEBUG api_client] Google Cloud Storage module not available, skipping initialization")
             self.storage_client = None
             self.bucket_name = None
+        else:
+            try:
+                print("[DEBUG api_client] Creating storage.Client()...")
+                sys.stdout.flush()
+                self.storage_client = storage.Client()
+                self.bucket_name = os.getenv("GCS_BUCKET_NAME", "worldsystem-frame-processor")
+                print(f"[DEBUG api_client] Google Cloud Storage client initialized successfully, bucket: {self.bucket_name}")
+            except Exception as e:
+                print(f"[DEBUG api_client] Warning: Could not initialize Google Cloud Storage client: {e}")
+                self.storage_client = None
+                self.bucket_name = None
+        sys.stdout.flush()
         
-        # API keys
+        # API keys and usage flags
         self.serpapi_key = os.getenv("SERPAPI_API_KEY")
         self.pplx_api_key = os.getenv("PPLX_API_KEY")
         
-        if not self.serpapi_key:
-            print("Warning: SERPAPI_API_KEY not set")
-        if not self.pplx_api_key:
-            print("Warning: PPLX_API_KEY not set")
+        # Check if APIs should be used
+        self.use_serpapi = os.getenv("USE_SERPAPI", "false").lower() == "true"
+        self.use_perplexity = os.getenv("USE_PERPLEXITY", "false").lower() == "true"
+        self.use_gcs = os.getenv("USE_GCS", "false").lower() == "true"
+        
+        print(f"[DEBUG api_client] API usage: SERPAPI={self.use_serpapi}, Perplexity={self.use_perplexity}, GCS={self.use_gcs}")
+        sys.stdout.flush()
+        
+        if self.use_serpapi and not self.serpapi_key:
+            print("Warning: USE_SERPAPI=true but SERPAPI_API_KEY not set")
+        if self.use_perplexity and not self.pplx_api_key:
+            print("Warning: USE_PERPLEXITY=true but PPLX_API_KEY not set")
         
     def get_image_hash(self, image: np.ndarray) -> str:
         """Generate hash for an image array."""
@@ -63,6 +109,10 @@ class APIClient:
     
     def upload_to_gcs(self, image: np.ndarray, object_id: int) -> Optional[Dict]:
         """Upload image to Google Cloud Storage."""
+        if not self.use_gcs:
+            print("[DEBUG api_client] GCS upload skipped - USE_GCS=false")
+            return None
+            
         if not self.storage_client or not self.bucket_name:
             print("Warning: Google Cloud Storage not configured, skipping upload")
             return None
@@ -110,6 +160,16 @@ class APIClient:
     
     def identify_with_google_lens(self, image_url: str, cache_key: str) -> Optional[Dict]:
         """Use Google Lens API to identify objects."""
+        # Skip if not enabled
+        if not self.use_serpapi:
+            print("[DEBUG api_client] Skipping Google Lens search - USE_SERPAPI=false")
+            return None
+            
+        # Skip if API key not configured
+        if not self.serpapi_key:
+            print("[DEBUG api_client] Skipping Google Lens search - SERPAPI_API_KEY not set")
+            return None
+            
         # Check cache first
         cache_file = os.path.join(self.lens_cache_dir, f"{cache_key}.json")
         if os.path.exists(cache_file):
@@ -168,6 +228,16 @@ class APIClient:
     
     def get_dimensions_with_perplexity(self, product_name: str) -> Optional[Dict]:
         """Get product dimensions using Perplexity AI."""
+        # Skip if not enabled
+        if not self.use_perplexity:
+            print("[DEBUG api_client] Skipping Perplexity search - USE_PERPLEXITY=false")
+            return None
+            
+        # Skip if API key not configured
+        if not self.pplx_api_key:
+            print("[DEBUG api_client] Skipping Perplexity search - PPLX_API_KEY not set")
+            return None
+            
         # Check cache first
         cache_key = hashlib.md5(product_name.encode()).hexdigest()
         cache_file = os.path.join(self.dimensions_cache_dir, f"{cache_key}.json")

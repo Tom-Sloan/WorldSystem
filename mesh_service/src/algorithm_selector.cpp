@@ -1,8 +1,12 @@
 #include "algorithm_selector.h"
 #include "algorithms/nvidia_marching_cubes.h"
+#include "algorithms/open3d_poisson.h"
 #include "config/configuration_manager.h"
 #include "config/mesh_service_config.h"
+#include "config/poisson_config.h"
 #include <iostream>
+#include <string>
+#include <cstdlib>
 
 namespace mesh_service {
 
@@ -13,8 +17,12 @@ AlgorithmSelector::AlgorithmSelector()
 AlgorithmSelector::~AlgorithmSelector() = default;
 
 bool AlgorithmSelector::initialize() {
+    std::cout << "[DEBUG ALGORITHM_SELECTOR] Initialize started" << std::endl;
+    
     // Initialize NVIDIA Marching Cubes
+    std::cout << "[DEBUG ALGORITHM_SELECTOR] Creating NvidiaMarchingCubes..." << std::endl;
     auto nvidia_mc = std::make_shared<NvidiaMarchingCubes>();
+    std::cout << "[DEBUG ALGORITHM_SELECTOR] NvidiaMarchingCubes created" << std::endl;
     AlgorithmParams mc_params;
     mc_params.marching_cubes.iso_value = CONFIG_FLOAT("MESH_ISO_VALUE", mesh_service::config::AlgorithmConfig::DEFAULT_ISO_VALUE);
     mc_params.marching_cubes.truncation_distance = CONFIG_FLOAT("MESH_TRUNCATION_DISTANCE", mesh_service::config::AlgorithmConfig::DEFAULT_TRUNCATION_DISTANCE);
@@ -102,15 +110,31 @@ bool AlgorithmSelector::initialize() {
     }
     algorithms_[ReconstructionMethod::NVIDIA_MARCHING_CUBES] = nvidia_mc;
     
-    // TODO: Initialize Open3D Poisson when implemented
-    // auto open3d_poisson = std::make_shared<Open3DPoisson>();
-    // AlgorithmParams poisson_params;
-    // poisson_params.poisson.octree_depth = 8;
-    // poisson_params.poisson.point_weight = 4.0f;
-    // if (!open3d_poisson->initialize(poisson_params)) {
-    //     return false;
-    // }
-    // algorithms_[ReconstructionMethod::OPEN3D_POISSON] = open3d_poisson;
+    // Initialize Open3D Poisson as primary reconstruction method
+    // TEMPORARILY DISABLED to isolate crash issue
+    std::cout << "[DEBUG] Temporarily skipping Open3D Poisson initialization to isolate crash" << std::endl;
+    /*
+    auto open3d_poisson = std::make_shared<Open3DPoisson>();
+    AlgorithmParams poisson_params;
+    poisson_params.poisson.octree_depth = CONFIG_INT("MESH_POISSON_OCTREE_DEPTH", 
+        config::AlgorithmConfig::DEFAULT_POISSON_OCTREE_DEPTH);
+    poisson_params.poisson.point_weight = CONFIG_FLOAT("MESH_POISSON_POINT_WEIGHT",
+        config::AlgorithmConfig::DEFAULT_POISSON_POINT_WEIGHT);
+    poisson_params.poisson.solver_iterations = CONFIG_INT("MESH_POISSON_SOLVER_ITERATIONS",
+        config::AlgorithmConfig::DEFAULT_POISSON_SOLVER_ITERATIONS);
+    
+    if (!open3d_poisson->initialize(poisson_params)) {
+        std::cerr << "WARNING: Failed to initialize Open3D Poisson - falling back to Marching Cubes" << std::endl;
+        // Don't fail completely, just don't add it to available algorithms
+    } else {
+        algorithms_[ReconstructionMethod::OPEN3D_POISSON] = open3d_poisson;
+        
+        std::cout << "Initialized Open3D Poisson with:" << std::endl;
+        std::cout << "  Octree depth: " << poisson_params.poisson.octree_depth << std::endl;
+        std::cout << "  Point weight: " << poisson_params.poisson.point_weight << std::endl;
+        std::cout << "  Solver iterations: " << poisson_params.poisson.solver_iterations << std::endl;
+    }
+    */
     
     // TODO: Initialize NKSR Client when implemented
     // auto nksr = std::make_shared<NKSRClient>("localhost:50051");
@@ -130,45 +154,30 @@ ReconstructionMethod AlgorithmSelector::selectAlgorithm(
     size_t point_count [[maybe_unused]],
     float scene_complexity [[maybe_unused]]
 ) {
-    ReconstructionMethod desired_method = current_method_;
-    
-    // High velocity: Always use fast marching cubes
-    float velocity_high = CONFIG_FLOAT("MESH_VELOCITY_THRESHOLD_HIGH", mesh_service::config::PerformanceConfig::DEFAULT_VELOCITY_THRESHOLD_HIGH);
-    float velocity_low = CONFIG_FLOAT("MESH_VELOCITY_THRESHOLD_LOW", mesh_service::config::PerformanceConfig::DEFAULT_VELOCITY_THRESHOLD_LOW);
-    
-    if (camera_velocity > velocity_high) {
-        desired_method = ReconstructionMethod::NVIDIA_MARCHING_CUBES;
-    }
-    // Low velocity: Can use higher quality (when available)
-    else if (camera_velocity < velocity_low) {
-        // For now, always use NVIDIA MC until other algorithms are implemented
-        desired_method = ReconstructionMethod::NVIDIA_MARCHING_CUBES;
-        
-        // Future logic:
-        // Large point clouds: Use NKSR
-        // if (point_count > thresholds_.point_count_threshold * 2) {
-        //     desired_method = ReconstructionMethod::NKSR;
-        // }
-        // Medium complexity: Use Poisson
-        // else if (scene_complexity > thresholds_.complexity_threshold) {
-        //     desired_method = ReconstructionMethod::OPEN3D_POISSON;
-        // }
-    }
-    
-    // Implement hysteresis to prevent rapid switching
-    if (desired_method != current_method_) {
-        method_stable_frames_++;
-        if (method_stable_frames_ >= CONFIG_INT("MESH_SWITCH_STABILITY_FRAMES", mesh_service::config::PerformanceConfig::DEFAULT_SWITCH_STABILITY_FRAMES)) {
-            current_method_ = desired_method;
-            method_stable_frames_ = 0;
-            std::cout << "Switched to algorithm: " 
-                      << static_cast<int>(current_method_) << std::endl;
+    // For SLAM3R: Prefer Open3D Poisson (doesn't need camera poses)
+    // This can be overridden by environment variable MESH_ALGORITHM
+    const char* force_algorithm = std::getenv("MESH_ALGORITHM");
+    if (force_algorithm) {
+        std::string algo_str(force_algorithm);
+        if (algo_str == "OPEN3D_POISSON") {
+            // Check if it's available
+            if (algorithms_.find(ReconstructionMethod::OPEN3D_POISSON) != algorithms_.end()) {
+                return ReconstructionMethod::OPEN3D_POISSON;
+            } else {
+                std::cerr << "WARNING: Open3D Poisson requested but not available, falling back to Marching Cubes" << std::endl;
+                return ReconstructionMethod::NVIDIA_MARCHING_CUBES;
+            }
+        } else if (algo_str == "NVIDIA_MARCHING_CUBES") {
+            return ReconstructionMethod::NVIDIA_MARCHING_CUBES;
         }
-    } else {
-        method_stable_frames_ = 0;
     }
     
-    return current_method_;
+    // Default to Open3D Poisson if available, otherwise fall back to Marching Cubes
+    if (algorithms_.find(ReconstructionMethod::OPEN3D_POISSON) != algorithms_.end()) {
+        return ReconstructionMethod::OPEN3D_POISSON;
+    } else {
+        return ReconstructionMethod::NVIDIA_MARCHING_CUBES;
+    }
 }
 
 std::shared_ptr<ReconstructionAlgorithm> AlgorithmSelector::getAlgorithm(
@@ -200,7 +209,7 @@ bool AlgorithmSelector::processWithAutoSelect(
     );
     
     std::cout << "[ALGORITHM SELECTOR] Selected method: " << static_cast<int>(method)
-              << " (0=PoissonRecon, 1=MarchingCubes)" << std::endl;
+              << " (0=NVIDIA_MARCHING_CUBES, 1=OPEN3D_POISSON, 2=NKSR)" << std::endl;
     std::cout << "[ALGORITHM SELECTOR] Camera velocity: " << camera_velocity << " m/s" << std::endl;
     std::cout << "[ALGORITHM SELECTOR] Points: " << num_points << ", Complexity: " << scene_complexity << std::endl;
     

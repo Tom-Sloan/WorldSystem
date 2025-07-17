@@ -9,7 +9,6 @@
 #include <rerun/components/color.hpp>
 // #include <rerun/components/material.hpp> // Not available in this version
 #include <rerun/datatypes/mat4x4.hpp>
-#include <rerun/demo_utils.hpp>
 #include <iostream>
 #include <chrono>
 
@@ -52,14 +51,6 @@ public:
             
             // Log initial setup with the new API
             stream->set_time_timestamp("time", std::chrono::steady_clock::now());
-            
-            // Send test grid points to verify connection
-            using namespace rerun::demo;
-            std::vector<rerun::Position3D> points = grid3d<rerun::Position3D, float>(-10.f, 10.f, 10);
-            std::vector<rerun::Color> colors = grid3d<rerun::Color, uint8_t>(0, 255, 10);
-            
-            stream->log("test_grid", rerun::archetypes::Points3D(points).with_colors(colors).with_radii({0.5f}));
-            std::cout << "Sent test grid points to Rerun viewer" << std::endl;
             
             return true;
             
@@ -203,7 +194,14 @@ public:
         if (!enabled || !connected || !stream) return;
         
         try {
-            // Extract translation and rotation from 4x4 pose matrix
+            // Create a 3D transform from the pose matrix
+            // The pose matrix is in row-major order:
+            // [R00 R01 R02 Tx]
+            // [R10 R11 R12 Ty]
+            // [R20 R21 R22 Tz]
+            // [  0   0   0  1]
+            
+            // Extract translation
             rerun::components::Translation3D translation{
                 pose[12], pose[13], pose[14]  // Last column is translation
             };

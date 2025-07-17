@@ -64,33 +64,50 @@ public:
     std::vector<MemoryBlock> memory_blocks;
     
     Impl() {
+        std::cout << "[DEBUG GPU_MESH_GEN] Impl constructor started" << std::endl;
+        
         // Create CUDA stream
+        std::cout << "[DEBUG GPU_MESH_GEN] Creating CUDA stream..." << std::endl;
         cudaStreamCreate(&stream);
+        std::cout << "[DEBUG GPU_MESH_GEN] CUDA stream created" << std::endl;
         
         // Allocate memory pool from configuration
         memory_pool_size = CONFIG_SIZE("MESH_MEMORY_POOL_SIZE", 
                                        mesh_service::config::MemoryConfig::DEFAULT_MEMORY_POOL_SIZE);
+        std::cout << "[DEBUG GPU_MESH_GEN] Allocating memory pool: " << memory_pool_size << " bytes" << std::endl;
         cudaMalloc(&d_memory_pool, memory_pool_size);
+        std::cout << "[DEBUG GPU_MESH_GEN] Memory pool allocated" << std::endl;
         
         // Initialize components
+        std::cout << "[DEBUG GPU_MESH_GEN] Creating AlgorithmSelector..." << std::endl;
         algorithm_selector = std::make_unique<AlgorithmSelector>();
+        std::cout << "[DEBUG GPU_MESH_GEN] AlgorithmSelector created" << std::endl;
+        
+        std::cout << "[DEBUG GPU_MESH_GEN] Creating NormalEstimation..." << std::endl;
         normal_estimator = std::make_unique<NormalEstimation>();
+        std::cout << "[DEBUG GPU_MESH_GEN] NormalEstimation created" << std::endl;
+        std::cout << "[DEBUG GPU_MESH_GEN] Creating GPUOctree..." << std::endl;
         gpu_octree = std::make_unique<GPUOctree>(
             CONFIG_FLOAT("MESH_OCTREE_SCENE_SIZE", mesh_service::config::SceneConfig::DEFAULT_OCTREE_SCENE_SIZE),
             CONFIG_INT("MESH_OCTREE_MAX_DEPTH", mesh_service::config::SceneConfig::DEFAULT_OCTREE_MAX_DEPTH),
             CONFIG_INT("MESH_OCTREE_LEAF_SIZE", mesh_service::config::SceneConfig::DEFAULT_OCTREE_LEAF_SIZE)
         );
+        std::cout << "[DEBUG GPU_MESH_GEN] GPUOctree created" << std::endl;
         
         // Create normal provider from configuration
+        std::cout << "[DEBUG GPU_MESH_GEN] Creating normal provider from factory..." << std::endl;
         normal_provider = NormalProviderFactory::createFromEnv();
         if (!normal_provider) {
             std::cerr << "[MESH GENERATOR] Failed to create normal provider, using camera-based fallback" << std::endl;
             normal_provider = std::make_unique<CameraBasedNormalProvider>();
         }
+        std::cout << "[DEBUG GPU_MESH_GEN] Normal provider created" << std::endl;
         
+        std::cout << "[DEBUG GPU_MESH_GEN] Initializing algorithm selector..." << std::endl;
         if (!algorithm_selector->initialize()) {
             throw std::runtime_error("Failed to initialize algorithm selector");
         }
+        std::cout << "[DEBUG GPU_MESH_GEN] Algorithm selector initialized" << std::endl;
         
         // Configure normal estimation
         NormalEstimation::Parameters normal_params;

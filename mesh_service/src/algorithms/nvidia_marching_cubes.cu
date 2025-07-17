@@ -573,6 +573,22 @@ bool NvidiaMarchingCubes::reconstruct(
     auto mc_start = std::chrono::high_resolution_clock::now();
     std::cout << "[MC DEBUG] reconstruct() called with " << num_points << " points" << std::endl;
     
+    // Debug: Log camera pose received
+    if (camera_pose) {
+        std::cout << "[MC DEBUG] Camera pose received (expecting row-major):" << std::endl;
+        for (int i = 0; i < 16; i += 4) {
+            std::cout << "  [" << i << "-" << (i+3) << "]: " 
+                      << camera_pose[i] << ", " 
+                      << camera_pose[i+1] << ", " 
+                      << camera_pose[i+2] << ", " 
+                      << camera_pose[i+3] << std::endl;
+        }
+        std::cout << "[MC DEBUG] Camera position should be at [12,13,14]: [" 
+                  << camera_pose[12] << ", " << camera_pose[13] << ", " << camera_pose[14] << "]" << std::endl;
+    } else {
+        std::cout << "[MC WARNING] No camera pose provided!" << std::endl;
+    }
+    
     // NEW: Calculate actual bounds from point cloud
     std::vector<float3> h_points_sample(std::min(size_t(10000), num_points));
     cudaMemcpy(h_points_sample.data(), d_points, h_points_sample.size() * sizeof(float3), cudaMemcpyDeviceToHost);
@@ -726,6 +742,34 @@ bool NvidiaMarchingCubes::reconstruct(
     std::cout << "  Total voxels: " << total_voxels << std::endl;
     std::cout << "  Modified voxels: " << count_modified << std::endl;
     std::cout << "  Weighted voxels: " << count_weighted << std::endl;
+    
+    // Additional debug: Sample some TSDF values to check sign distribution
+    if (count_weighted > 0) {
+        std::vector<float> sample_tsdf(std::min(size_t(100), total_voxels));
+        std::vector<float> sample_weights(std::min(size_t(100), total_voxels));
+        cudaMemcpy(sample_tsdf.data(), d_tsdf_debug, sample_tsdf.size() * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(sample_weights.data(), d_weight_debug, sample_weights.size() * sizeof(float), cudaMemcpyDeviceToHost);
+        
+        int positive_count = 0, negative_count = 0, zero_count = 0;
+        for (size_t i = 0; i < sample_tsdf.size(); i++) {
+            if (sample_weights[i] > 0) {
+                if (sample_tsdf[i] > 0.001f) positive_count++;
+                else if (sample_tsdf[i] < -0.001f) negative_count++;
+                else zero_count++;
+            }
+        }
+        
+        std::cout << "[MC DEBUG] TSDF sign distribution (weighted voxels only):" << std::endl;
+        std::cout << "  Positive (empty): " << positive_count << std::endl;
+        std::cout << "  Negative (occupied): " << negative_count << std::endl;
+        std::cout << "  Near zero: " << zero_count << std::endl;
+        
+        // If all values are positive, we have a problem
+        if (negative_count == 0 && positive_count > 0) {
+            std::cout << "[MC ERROR] No negative TSDF values found! This will create no mesh." << std::endl;
+            std::cout << "[MC ERROR] Camera carving is likely not working correctly." << std::endl;
+        }
+    }
     
     // Get TSDF data
     float* d_tsdf = tsdf_->getTSDFVolume();

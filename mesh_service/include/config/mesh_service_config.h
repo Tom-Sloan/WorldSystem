@@ -48,6 +48,24 @@ struct AlgorithmConfig {
     static constexpr float DEFAULT_POISSON_POINT_WEIGHT = 4.0f;
     static constexpr float DEFAULT_POISSON_SAMPLES_PER_NODE = 1.5f;
     
+    // Poisson reconstruction - GPU specific
+    static constexpr int DEFAULT_POISSON_BLOCK_SIZE = 256;
+    static constexpr int DEFAULT_POISSON_BLOCK_OVERLAP = 32;
+    static constexpr int DEFAULT_POISSON_SOLVER_ITERATIONS = 8;
+    static constexpr float DEFAULT_POISSON_SOLVER_TOLERANCE = 1e-6f;
+    
+    // Poisson density filtering
+    static constexpr float DEFAULT_POISSON_DENSITY_PERCENTILE = 0.1f;  // Remove bottom 10%
+    static constexpr float DEFAULT_POISSON_MIN_DENSITY = 0.01f;
+    
+    // Poisson confidence integration  
+    static constexpr float DEFAULT_POISSON_CONFIDENCE_WEIGHT_SCALE = 0.01f;  // Scale confidence to 0-1
+    static constexpr float DEFAULT_POISSON_MIN_CONFIDENCE_WEIGHT = 0.1f;
+    
+    // Incremental Poisson
+    static constexpr int DEFAULT_POISSON_INCREMENTAL_BLOCK_SIZE = 10000;  // Points per block
+    static constexpr float DEFAULT_POISSON_INCREMENTAL_OVERLAP_RATIO = 0.1f;
+    
     // NKSR parameters
     static constexpr float DEFAULT_NKSR_DETAIL_LEVEL = 0.5f;
     static constexpr int DEFAULT_NKSR_CHUNK_SIZE = 500000;

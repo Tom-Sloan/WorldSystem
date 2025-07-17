@@ -9,14 +9,9 @@ import ntplib
 import socket
 import threading
 import queue
+from typing import Dict, List, Optional, Tuple
 from ultralytics import YOLO
 import rerun as rr
-try:
-    import rerun.blueprint as bp
-    BLUEPRINT_AVAILABLE = True
-except ImportError:
-    print("Warning: Rerun blueprint API not available, using default layout")
-    BLUEPRINT_AVAILABLE = False
 from prometheus_client import start_http_server, Counter, Gauge, Histogram, Summary
 from collections import deque
 from datetime import datetime
@@ -102,70 +97,13 @@ class EnhancedFrameProcessor:
         self.enhancement_thread.daemon = True
         self.enhancement_thread.start()
         
-        # Setup Rerun with custom layout
-        self.setup_rerun_visualization()
+        # Rerun is already initialized globally, no need for setup here
         
         # Metrics
         self.frame_count = 0
         self.objects_processed = 0
         self.start_time = time.time()
         
-    def setup_rerun_visualization(self):
-        """Setup Rerun with custom blueprint for enhanced visualization."""
-        if not RERUN_ENABLED:
-            return
-            
-        if not BLUEPRINT_AVAILABLE:
-            print("Rerun blueprint API not available, using default layout")
-            return
-            
-        # Create blueprint with enhanced layout
-        blueprint = bp.Blueprint(
-            bp.Grid(
-                bp.Horizontal(
-                    bp.Vertical(
-                        bp.SpaceView(
-                            name="Camera Feed",
-                            origin="/camera",
-                            contents=["/camera/**"]
-                        ),
-                        bp.TextDocumentView(
-                            name="Active Tracking",
-                            origin="/tracking/active",
-                            contents=["/tracking/active/**"]
-                        ),
-                        row_shares=[3, 1]
-                    ),
-                    bp.Vertical(
-                        bp.SpaceView(
-                            name="Enhanced Objects",
-                            origin="/enhancement",
-                            contents=["/enhancement/**"]
-                        ),
-                        bp.TextDocumentView(
-                            name="Object Dimensions",
-                            origin="/dimensions",
-                            contents=["/dimensions/**"]
-                        ),
-                        bp.TextDocumentView(
-                            name="Scene Scale",
-                            origin="/scale",
-                            contents=["/scale/**"]
-                        ),
-                        row_shares=[2, 1, 1]
-                    ),
-                    column_shares=[1, 1]
-                ),
-                bp.TextLogView(
-                    name="Processing Logs",
-                    origin="/logs",
-                    contents=["/logs/**"]
-                ),
-                row_shares=[4, 1]
-            )
-        )
-        
-        rr.send_blueprint(blueprint)
         
     def process_frame(self, frame: np.ndarray, properties, frame_number: int):
         """Process a frame with enhanced tracking and quality scoring."""
@@ -493,20 +431,24 @@ sync_ntp_time()
 RERUN_ENABLED = os.getenv("RERUN_ENABLED", "true").lower() == "true"
 if RERUN_ENABLED:
     print("[Rerun] Initializing...")
+    # Get environment variables for Rerun configuration
     viewer_address = os.environ.get("RERUN_VIEWER_ADDRESS", "0.0.0.0:9090")
     print(f"[Rerun] Viewer address: {viewer_address}")
     
-    rr.init("frame_processor_enhanced", spawn=False)
+    # Initialize Rerun with application name - don't automatically spawn a viewer
+    rr.init("frame_processor", spawn=False)
     
+    print(f"[Rerun] Initialized with viewer address: {viewer_address}")
+    
+    # Connect to the viewer using gRPC
     rerun_connect_url = os.getenv(
         "RERUN_CONNECT_URL",
-        "rerun+http://localhost:9876/proxy"
+        "rerun+http://localhost:9876/proxy"  # sensible fallback
     )
     try:
-        print(f"[Rerun] Connecting to viewer at {rerun_connect_url}")
-        # Use the new connect method instead of connect_grpc
-        rr.connect(rerun_connect_url)
-        print(f"[Rerun] Connected to viewer successfully")
+        print(f"[Rerun] Connecting to viewer via gRPC at {rerun_connect_url}")
+        rr.connect_grpc(rerun_connect_url)
+        print(f"[Rerun] Connected to viewer via gRPC")
         
         # Send test data to verify connection
         print("[Rerun] Sending test data...")
@@ -523,6 +465,7 @@ if RERUN_ENABLED:
         print("[Rerun] Test data sent successfully")
     except Exception as e:
         print(f"[Rerun] Error connecting to viewer via gRPC: {e}")
+        print("[Rerun] Will continue sending data regardless of connection status")
 
 # RabbitMQ setup
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq")

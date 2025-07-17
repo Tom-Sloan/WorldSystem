@@ -13,7 +13,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Dict
+from typing import Dict, Tuple
 
 import aio_pika
 import cv2
@@ -39,6 +39,57 @@ try:
 except ImportError:
     STREAMING_AVAILABLE = False
     logger.warning("Shared memory streaming not available")
+
+
+def estimate_rigid_transform_svd(P: np.ndarray, Q: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Estimate rigid transform (R, t) that aligns P to Q using SVD.
+    P: source points (N x 3)
+    Q: target points (N x 3)
+    Returns: R (3x3 rotation), t (3x1 translation)
+    """
+    # Validate inputs
+    if P.shape[0] < 3 or Q.shape[0] < 3:
+        logger.warning(f"Insufficient points for SVD: P={P.shape[0]}, Q={Q.shape[0]}")
+        return np.eye(3), np.zeros((3, 1))
+    
+    if P.shape[0] != Q.shape[0]:
+        logger.error(f"Point cloud size mismatch: P={P.shape}, Q={Q.shape}")
+        return np.eye(3), np.zeros((3, 1))
+    
+    try:
+        # Center the point clouds
+        P_mean = P.mean(axis=0)
+        Q_mean = Q.mean(axis=0)
+        Pc = P - P_mean
+        Qc = Q - Q_mean
+        
+        # Compute cross-covariance matrix
+        H = Pc.T @ Qc
+        
+        # SVD decomposition
+        U, S, Vt = np.linalg.svd(H)
+        R = Vt.T @ U.T
+        
+        # Ensure proper rotation (det(R) = 1)
+        if np.linalg.det(R) < 0:
+            Vt[2, :] *= -1
+            R = Vt.T @ U.T
+        
+        # Compute translation
+        t = Q_mean.reshape(3, 1) - R @ P_mean.reshape(3, 1)
+        
+        # Validate the result
+        det_R = np.linalg.det(R)
+        if abs(det_R - 1.0) > 1e-6:
+            logger.warning(f"Invalid rotation matrix determinant: {det_R}")
+            return np.eye(3), np.zeros((3, 1))
+        
+        return R, t
+        
+    except Exception as e:
+        logger.error(f"SVD failed: {e}")
+        return np.eye(3), np.zeros((3, 1))
 
 # Configure PyTorch CUDA allocation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = os.getenv(
@@ -234,6 +285,8 @@ class SLAM3RProcessor:
             # Debug the incoming keyframe data
             pts3d_world = keyframe_data.get('pts3d_world')
             conf_world = keyframe_data.get('conf_world')
+            pts3d_cam = keyframe_data.get('pts3d_cam')
+            conf_cam = keyframe_data.get('conf_cam')
             
             if pts3d_world is None:
                 logger.error("pts3d_world is None in keyframe data!")
@@ -246,23 +299,17 @@ class SLAM3RProcessor:
             logger.info(f"conf_world shape: {conf_world.shape}, dtype: {conf_world.dtype}")
             
             if self.keyframe_publisher and STREAMING_AVAILABLE:
-                # Prepare keyframe data for mesh_service
-                pose = keyframe_data.get('pose', np.eye(4))
+                # Estimate camera pose using SVD alignment between camera and world points
+                pose = self._estimate_camera_pose(keyframe_data)
                 
-                # DEBUG: Log what pose data we have
+                # DEBUG: Log the estimated pose
                 logger.info(f"[SLAM3R POSE DEBUG] Keyframe data keys: {list(keyframe_data.keys())}")
-                logger.info(f"[SLAM3R POSE DEBUG] Pose in keyframe_data: {'pose' in keyframe_data}")
-                if 'pose' in keyframe_data:
-                    logger.info(f"[SLAM3R POSE DEBUG] Pose type: {type(keyframe_data['pose'])}")
-                    pose_val = keyframe_data['pose']
-                    if isinstance(pose_val, np.ndarray):
-                        logger.info(f"[SLAM3R POSE DEBUG] Pose shape: {pose_val.shape}")
-                        logger.info(f"[SLAM3R POSE DEBUG] Pose translation: [{pose_val[0,3]:.3f}, {pose_val[1,3]:.3f}, {pose_val[2,3]:.3f}]")
-                        is_identity = np.allclose(pose_val, np.eye(4), atol=1e-6)
-                        logger.info(f"[SLAM3R POSE DEBUG] Is identity matrix: {is_identity}")
-                    logger.info(f"[SLAM3R POSE DEBUG] Pose value:\n{keyframe_data['pose']}")
-                else:
-                    logger.warning("[SLAM3R POSE DEBUG] No pose in keyframe_data - using identity matrix!")
+                logger.info(f"[SLAM3R POSE DEBUG] Using SVD-estimated pose")
+                logger.info(f"[SLAM3R POSE DEBUG] Pose shape: {pose.shape}")
+                logger.info(f"[SLAM3R POSE DEBUG] Pose translation: [{pose[0,3]:.3f}, {pose[1,3]:.3f}, {pose[2,3]:.3f}]")
+                is_identity = np.allclose(pose, np.eye(4), atol=1e-6)
+                logger.info(f"[SLAM3R POSE DEBUG] Is identity matrix: {is_identity}")
+                logger.info(f"[SLAM3R POSE DEBUG] Pose value:\n{pose}")
                 
                 keyframe = {
                     'timestamp': timestamp,
@@ -444,6 +491,90 @@ class SLAM3RProcessor:
             
         except Exception as e:
             logger.error(f"Failed to save debug point cloud: {e}", exc_info=True)
+    
+    def _estimate_camera_pose(self, keyframe_data: Dict) -> np.ndarray:
+        """Estimate camera pose using SVD alignment between camera and world points."""
+        pts3d_cam = keyframe_data.get('pts3d_cam')
+        pts3d_world = keyframe_data.get('pts3d_world')
+        conf_cam = keyframe_data.get('conf_cam')
+        conf_world = keyframe_data.get('conf_world')
+        
+        if pts3d_cam is None or pts3d_world is None:
+            logger.warning("Missing pts3d_cam or pts3d_world, returning identity pose")
+            return np.eye(4)
+        
+        # Convert tensors to numpy and handle dimensions
+        if torch.is_tensor(pts3d_cam):
+            P_cam = pts3d_cam.squeeze(0).cpu().numpy()
+        else:
+            P_cam = np.asarray(pts3d_cam)
+            if P_cam.ndim > 3:
+                P_cam = P_cam.squeeze(0)
+                
+        if torch.is_tensor(pts3d_world):
+            P_world = pts3d_world.squeeze(0).cpu().numpy()
+        else:
+            P_world = np.asarray(pts3d_world)
+            if P_world.ndim > 3:
+                P_world = P_world.squeeze(0)
+        
+        # Ensure proper shape (-1, 3)
+        P_cam = P_cam.reshape(-1, 3)
+        P_world = P_world.reshape(-1, 3)
+        
+        # Get confidence masks
+        if conf_cam is not None and torch.is_tensor(conf_cam):
+            conf_cam_flat = conf_cam.squeeze().cpu().numpy().reshape(-1)
+        else:
+            conf_cam_flat = np.ones(len(P_cam))
+            
+        if conf_world is not None and torch.is_tensor(conf_world):
+            conf_world_flat = conf_world.squeeze().cpu().numpy().reshape(-1)
+        else:
+            conf_world_flat = np.ones(len(P_world))
+        
+        # Use confidence thresholds from config
+        conf_thres_i2p = self.config.get('recon_pipeline', {}).get('conf_thres_i2p', 10.0)
+        conf_thres_l2w = self.config.get('recon_pipeline', {}).get('conf_thres_l2w', 12.0)
+        
+        # Create mask for valid points
+        mask = ((conf_cam_flat > conf_thres_i2p) & 
+                (conf_world_flat > conf_thres_l2w))
+        
+        # Fallback to lower threshold if too few points
+        if mask.sum() < 3:
+            mask = ((conf_cam_flat > conf_thres_i2p) & 
+                    (conf_world_flat > 0.5 * conf_thres_l2w))
+        
+        # Estimate rigid transform using SVD
+        if mask.sum() >= 3:
+            R, t = estimate_rigid_transform_svd(P_cam[mask], P_world[mask])
+        else:
+            logger.warning(f"Too few valid points for SVD ({mask.sum()}), using identity")
+            R, t = np.eye(3), np.zeros((3, 1))
+        
+        # Build 4x4 transformation matrix
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = t.squeeze()
+        
+        # Additional debug information
+        logger.info(f"[SLAM3R POSE DEBUG] Estimated camera pose (translation): [{T[0,3]:.4f}, {T[1,3]:.4f}, {T[2,3]:.4f}]")
+        logger.info(f"[SLAM3R POSE DEBUG] Valid points for SVD: {mask.sum()} out of {len(P_cam)}")
+        
+        # Log point cloud statistics for debugging
+        if mask.sum() > 0:
+            cam_center = P_cam[mask].mean(axis=0)
+            world_center = P_world[mask].mean(axis=0)
+            logger.info(f"[SLAM3R POSE DEBUG] Camera space center: [{cam_center[0]:.3f}, {cam_center[1]:.3f}, {cam_center[2]:.3f}]")
+            logger.info(f"[SLAM3R POSE DEBUG] World space center: [{world_center[0]:.3f}, {world_center[1]:.3f}, {world_center[2]:.3f}]")
+            
+            # Check if the transformation makes sense
+            transformed_center = (R @ cam_center.reshape(3, 1) + t).flatten()
+            error = np.linalg.norm(transformed_center - world_center)
+            logger.info(f"[SLAM3R POSE DEBUG] Transform validation error: {error:.4f}")
+        
+        return T
     
     async def run(self):
         """Main processing loop."""

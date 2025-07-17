@@ -52,25 +52,5 @@ public:
     static std::unique_ptr<INormalProvider> createFromEnv(); // Create from MESH_NORMAL_PROVIDER env var
 };
 
-// Simple camera-based provider (current fallback)
-class CameraBasedNormalProvider : public INormalProvider {
-private:
-    float3 camera_position_;
-    
-public:
-    explicit CameraBasedNormalProvider(const float3& camera_pos = make_float3(0,0,0));
-    
-    bool estimateNormals(
-        const float3* d_points,
-        size_t num_points,
-        float3* d_normals,
-        cudaStream_t stream = 0
-    ) override;
-    
-    const char* getName() const override { return "CameraBasedNormals"; }
-    bool isAvailable() const override { return true; }
-    
-    void setCameraPosition(const float3& pos) { camera_position_ = pos; }
-};
 
 } // namespace mesh_service

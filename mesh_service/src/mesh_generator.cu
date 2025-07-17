@@ -2,6 +2,7 @@
 #include "algorithm_selector.h"
 #include "normal_estimation.h"
 #include "normal_provider.h"
+#include "normal_providers/camera_based_normal_provider.h"
 #include "gpu_octree.h"
 #include "config/configuration_manager.h"
 #include "config/mesh_service_config.h"
@@ -31,6 +32,7 @@ public:
     std::unique_ptr<AlgorithmSelector> algorithm_selector;
     std::unique_ptr<NormalEstimation> normal_estimator;
     std::unique_ptr<GPUOctree> gpu_octree;
+    std::unique_ptr<INormalProvider> normal_provider;
     
     // Camera tracking
     float3 prev_camera_pos = make_float3(0, 0, 0);
@@ -77,6 +79,13 @@ public:
             CONFIG_INT("MESH_OCTREE_MAX_DEPTH", mesh_service::config::SceneConfig::DEFAULT_OCTREE_MAX_DEPTH),
             CONFIG_INT("MESH_OCTREE_LEAF_SIZE", mesh_service::config::SceneConfig::DEFAULT_OCTREE_LEAF_SIZE)
         );
+        
+        // Create normal provider from configuration
+        normal_provider = NormalProviderFactory::createFromEnv();
+        if (!normal_provider) {
+            std::cerr << "[MESH GENERATOR] Failed to create normal provider, using camera-based fallback" << std::endl;
+            normal_provider = std::make_unique<CameraBasedNormalProvider>();
+        }
         
         if (!algorithm_selector->initialize()) {
             throw std::runtime_error("Failed to initialize algorithm selector");
@@ -361,19 +370,18 @@ void GPUMeshGenerator::generateIncrementalMesh(
     auto octree_ms = std::chrono::duration_cast<std::chrono::milliseconds>(octree_end - octree_start).count();
     std::cout << "[TIMING] Octree update: " << octree_ms << " ms" << std::endl;
     
-    // Get normal provider from configuration
+    // Use pre-created normal provider
     int provider_id = CONFIG_INT("MESH_NORMAL_PROVIDER", 
                                  config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER);
-    auto normal_provider = NormalProviderFactory::create(provider_id);
     
     float3* d_normals_ptr = nullptr;
     
-    if (normal_provider && provider_id != PROVIDER_CAMERA_BASED) {
+    if (pImpl->normal_provider && provider_id != PROVIDER_CAMERA_BASED) {
         // Use selected provider for normal estimation
         auto normal_start = std::chrono::high_resolution_clock::now();
         
         // Set camera position for camera-based provider if needed
-        if (auto* camera_provider = dynamic_cast<CameraBasedNormalProvider*>(normal_provider.get())) {
+        if (auto* camera_provider = dynamic_cast<CameraBasedNormalProvider*>(pImpl->normal_provider.get())) {
             float3 camera_pos = make_float3(
                 keyframe->pose_matrix[12],
                 keyframe->pose_matrix[13], 
@@ -382,7 +390,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
             camera_provider->setCameraPosition(camera_pos);
         }
         
-        bool success = normal_provider->estimateNormals(
+        bool success = pImpl->normal_provider->estimateNormals(
             d_points, 
             valid_point_count,
             pImpl->d_normals.data().get(),
@@ -397,7 +405,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
         if (success) {
             d_normals_ptr = pImpl->d_normals.data().get();
             std::cout << "[NORMAL ESTIMATION] Provider: " << provider_id 
-                      << " (" << normal_provider->getName() << ")" << std::endl;
+                      << " (" << pImpl->normal_provider->getName() << ")" << std::endl;
             std::cout << "[NORMAL ESTIMATION] Time: " << normal_ms << " ms" << std::endl;
             std::cout << "[NORMAL ESTIMATION] Points: " << valid_point_count << std::endl;
         } else {
@@ -578,19 +586,18 @@ void GPUMeshGenerator::generateMesh(
 ) {
     // Simplified version for direct point cloud input
     
-    // Get normal provider from configuration
+    // Use pre-created normal provider
     int provider_id = CONFIG_INT("MESH_NORMAL_PROVIDER", 
                                  config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER);
-    auto normal_provider = NormalProviderFactory::create(provider_id);
     
     float3* d_normals_ptr = nullptr;
     
-    if (normal_provider && provider_id != PROVIDER_CAMERA_BASED && num_points > 0) {
+    if (pImpl->normal_provider && provider_id != PROVIDER_CAMERA_BASED && num_points > 0) {
         // Allocate normals if needed
         pImpl->d_normals.resize(num_points);
         
         // Set camera position for camera-based provider if needed
-        if (auto* camera_provider = dynamic_cast<CameraBasedNormalProvider*>(normal_provider.get())) {
+        if (auto* camera_provider = dynamic_cast<CameraBasedNormalProvider*>(pImpl->normal_provider.get())) {
             if (camera_pose) {
                 float3 camera_pos = make_float3(
                     camera_pose[12],
@@ -602,7 +609,7 @@ void GPUMeshGenerator::generateMesh(
         }
         
         // Estimate normals
-        bool success = normal_provider->estimateNormals(
+        bool success = pImpl->normal_provider->estimateNormals(
             d_points, 
             num_points,
             pImpl->d_normals.data().get(),

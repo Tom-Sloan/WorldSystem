@@ -6,7 +6,7 @@ namespace config {
 // ========== NORMAL PROVIDER CONFIGURATION ==========
 struct NormalProviderConfig {
     // Default provider selection (0 = camera-based, 1 = open3d, etc.)
-    static constexpr int DEFAULT_NORMAL_PROVIDER = 0;
+    static constexpr int DEFAULT_NORMAL_PROVIDER = 1;  // Changed to Open3D for quality
     
     // Camera-based provider settings
     static constexpr float DEFAULT_CAMERA_FALLBACK_DISTANCE = 0.001f;

@@ -24,6 +24,7 @@ private:
     std::unordered_map<std::string, int> int_params_;
     std::unordered_map<std::string, size_t> size_params_;
     std::unordered_map<std::string, std::string> string_params_;
+    std::unordered_map<std::string, bool> bool_params_;
     
     // Private constructor
     ConfigurationManager() {
@@ -110,6 +111,17 @@ public:
     }
     
     /**
+     * Get boolean parameter
+     */
+    bool getBool(const std::string& key, bool default_val) const {
+        auto it = bool_params_.find(key);
+        if (it != bool_params_.end()) {
+            return it->second;
+        }
+        return default_val;
+    }
+    
+    /**
      * Parse float3 from comma-separated string (e.g., "1.0,2.0,3.0")
      */
     bool parseFloat3(const std::string& str, float& x, float& y, float& z) const {
@@ -139,6 +151,7 @@ public:
         int_params_.clear();
         size_params_.clear();
         string_params_.clear();
+        bool_params_.clear();
         loadFromEnvironment();
     }
 };
@@ -149,5 +162,6 @@ public:
 #define CONFIG_INT(key, default_val) CONFIG().getInt(key, default_val)
 #define CONFIG_SIZE(key, default_val) CONFIG().getSize(key, default_val)
 #define CONFIG_STRING(key, default_val) CONFIG().getString(key, default_val)
+#define CONFIG_BOOL(key, default_val) CONFIG().getBool(key, default_val)
 
 } // namespace mesh_service

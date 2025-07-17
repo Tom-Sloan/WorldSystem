@@ -88,6 +88,29 @@ class SharedMemoryManager:
             
             # Write header
             timestamp_ns = int(pose[3, 3] * 1e9) if pose.shape[0] > 3 else 0  # Use pose timestamp if available
+            
+            # DEBUG: Log the pose matrix being written
+            logger.info(f"[SHM SLAM3R DEBUG] Writing pose matrix to shared memory:")
+            logger.info(f"[SHM SLAM3R DEBUG] Pose shape: {pose.shape}")
+            logger.info("[SHM SLAM3R DEBUG] Pose matrix:")
+            for row in range(min(4, pose.shape[0])):
+                row_str = "  ["
+                for col in range(min(4, pose.shape[1])):
+                    row_str += f"{pose[row, col]:10.4f}"
+                    if col < 3:
+                        row_str += ", "
+                row_str += "]"
+                logger.info(f"[SHM SLAM3R DEBUG] {row_str}")
+            logger.info(f"[SHM SLAM3R DEBUG] Camera position (translation): [{pose[0,3]:.4f}, {pose[1,3]:.4f}, {pose[2,3]:.4f}]")
+            
+            # Check if pose is identity or invalid
+            is_identity = np.allclose(pose, np.eye(4), atol=1e-6)
+            is_zero = np.allclose(pose, 0, atol=1e-6)
+            if is_identity:
+                logger.warning("[SHM SLAM3R WARNING] Pose matrix is identity - no camera transform!")
+            elif is_zero:
+                logger.warning("[SHM SLAM3R WARNING] Pose matrix is all zeros - invalid!")
+            
             header_data = struct.pack(header_format,
                 timestamp_ns,              # timestamp_ns
                 len(points),              # point_count

@@ -9,6 +9,8 @@
 #include <iostream>
 #include <cstddef>
 #include <chrono>
+#include <iomanip>
+#include <cmath>
 
 namespace mesh_service {
 
@@ -77,9 +79,41 @@ SharedKeyframe* SharedMemoryManager::open_keyframe(const std::string& shm_name) 
     std::cout << "[SHM DEBUG] Header mapped, point_count: " << header->point_count 
               << ", color_channels: " << header->color_channels << std::endl;
     std::cout << "[SHM DEBUG] Header timestamp: " << header->timestamp_ns << std::endl;
-    std::cout << "[SHM DEBUG] Header pose_matrix - camera position: [" 
-              << header->pose_matrix[12] << ", " << header->pose_matrix[13] << ", " 
+    
+    // DEBUG: Print full pose matrix to trace the issue
+    std::cout << "[SHM DEBUG] Full pose matrix from shared memory (row-major):" << std::endl;
+    for (int row = 0; row < 4; row++) {
+        std::cout << "  [";
+        for (int col = 0; col < 4; col++) {
+            std::cout << std::setw(10) << std::fixed << std::setprecision(4) 
+                      << header->pose_matrix[row * 4 + col];
+            if (col < 3) std::cout << ", ";
+        }
+        std::cout << "]" << std::endl;
+    }
+    std::cout << "[SHM DEBUG] Camera position (translation) from pose: [" 
+              << header->pose_matrix[12] << ", " 
+              << header->pose_matrix[13] << ", "
               << header->pose_matrix[14] << "]" << std::endl;
+    
+    // Check if pose is identity or zero
+    bool is_identity = true;
+    bool is_zero = true;
+    for (int i = 0; i < 16; i++) {
+        if (i == 0 || i == 5 || i == 10 || i == 15) {
+            if (std::abs(header->pose_matrix[i] - 1.0f) > 1e-6) is_identity = false;
+        } else {
+            if (std::abs(header->pose_matrix[i]) > 1e-6) is_identity = false;
+        }
+        if (std::abs(header->pose_matrix[i]) > 1e-6) is_zero = false;
+    }
+    
+    if (is_identity) {
+        std::cout << "[SHM WARNING] Pose matrix is identity - no camera transform!" << std::endl;
+    } else if (is_zero) {
+        std::cout << "[SHM WARNING] Pose matrix is all zeros - invalid!" << std::endl;
+    }
+    
     std::cout << "[SHM DEBUG] Header bbox: [" 
               << header->bbox[0] << ", " << header->bbox[1] << ", " << header->bbox[2] << "] to ["
               << header->bbox[3] << ", " << header->bbox[4] << ", " << header->bbox[5] << "]" << std::endl;

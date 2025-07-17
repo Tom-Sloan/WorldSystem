@@ -1,14 +1,26 @@
-# Drone Pipeline with Rerun.io Visualization
+# Enhanced Frame Processor with Real-World Scale Estimation
 
 ## Overview
 
-This design integrates Rerun.io (v0.23.4) for real-time visualization of your drone's object detection, tracking, and enhancement pipeline. Since the 3D scene visualization is handled by a separate Docker service, this implementation focuses exclusively on 2D visualization and tracking metrics.
+This enhanced frame processor integrates object detection, tracking, and real-world dimension estimation to provide accurate scaling for 3D scene reconstruction. By identifying objects in the scene and retrieving their real-world dimensions, the system can automatically determine the correct scale for the entire 3D reconstruction.
 
-### Key Changes from Original Design:
-- **No 3D visualization** - The 3D scene is managed by another service
-- **Simplified entity paths** - No `/world` hierarchy needed
-- **Focused layout** - Optimized for 2D tracking and enhancement workflow
-- **Timed processing** - Objects are processed after 1-2 seconds, with optional reprocessing
+### Key Features:
+- **Object Detection & Tracking** - YOLO-based detection with IOU tracking
+- **Dimension Estimation** - Google Lens + Perplexity API for real-world object sizes
+- **Weighted Scale Calculation** - Confidence-based averaging of multiple object dimensions
+- **Real-time Visualization** - Rerun.io integration for monitoring and debugging
+- **Automatic Scene Scaling** - Publishes scale factor to mesh service for proper 3D reconstruction
+
+### Why Real-World Scaling Matters:
+
+Without real-world scale information, 3D reconstructions are dimensionless - a room could be 1 unit or 1000 units wide. By identifying common objects (phones, monitors, keyboards, etc.) and knowing their real dimensions, we can:
+
+1. **Accurate Room Measurements** - Determine actual room dimensions in meters
+2. **Proper Object Placement** - Place virtual objects at correct real-world scales
+3. **Distance Measurements** - Calculate real distances between points in the scene
+4. **AR/VR Applications** - Ensure virtual content matches real-world scale
+5. **Architectural Planning** - Generate floor plans with accurate dimensions
+6. **Navigation & Path Planning** - Calculate real-world distances for drone navigation
 
 ## Rerun Visualization Layout
 
@@ -840,20 +852,113 @@ if __name__ == "__main__":
 5. **Recording Capability**: Save entire sessions for later analysis
 6. **Web-based Viewing**: Share recordings with team members
 
-## Architecture Notes
+## How Scene Scaling Works
 
-Since the 3D visualization is handled by a separate Docker service:
-- This pipeline focuses purely on 2D object detection and enhancement
-- No 3D coordinate transforms or drone position logging
-- Simplified entity paths (no `/world` prefix needed)
-- Can communicate with 3D service via shared database or message queue if needed
-- Rerun recordings can be saved and loaded in the 3D service if coordination is required
+### 1. **Object Detection & Tracking**
+The system continuously detects objects using YOLO and tracks them across frames. Common household objects are ideal references:
+- Monitors (typically 21-27 inches diagonal)
+- Keyboards (standard ~45cm width)
+- Smartphones (5-7 inches)
+- Laptops (13-17 inches)
+- Books, furniture, appliances
 
-## Next Steps
+### 2. **Dimension Lookup Pipeline**
+```
+Frame → YOLO Detection → Track for 1.5s → Select Best Frame → Enhance
+  ↓
+Google Lens API (Object Identification)
+  ↓
+Perplexity API (Dimension Lookup)
+  ↓
+Weighted Average Scale Calculation → Publish to Mesh Service
+```
 
-1. **Install Rerun**: `pip install rerun-sdk==0.23.4`
-2. **Test with sample video**: Verify visualization layout
-3. **Tune parameters**: Adjust processing timers based on your drone speed
-4. **Implement caching**: Use the caching strategy from your API guide
-5. **Add Perplexity specs**: Integrate specification lookup for identified products
-6. **Consider inter-service communication**: If the 3D service needs object data, implement shared storage or messaging
+### 3. **Scale Calculation Example**
+If the system detects:
+- iPhone 13 (146.7mm × 71.5mm) with 85% confidence
+- Dell 24" Monitor (539.5mm × 323.5mm) with 92% confidence
+- Logitech Keyboard (430mm × 137mm) with 78% confidence
+
+The weighted average considers both API confidence and YOLO detection confidence to determine the most reliable scale factor.
+
+### 4. **Integration with Mesh Service**
+The calculated scale is published to the `scene_scaling_exchange` with:
+```json
+{
+  "scale_factor": 0.0254,        // Example: 1 unit = 0.0254 meters
+  "units_per_meter": 39.37,      // Inverse for convenience
+  "confidence": 0.87,            // Combined confidence score
+  "num_estimates": 3,            // Number of objects used
+  "timestamp_ns": 1234567890
+}
+```
+
+## Real-World Applications
+
+### 1. **Accurate Room Dimensions**
+- Measure room width, height, and depth in meters
+- Calculate floor area and volume
+- Verify against building specifications
+
+### 2. **Virtual Object Placement**
+- Place furniture at correct scale before purchasing
+- Visualize renovations with accurate dimensions
+- Design room layouts with proper spacing
+
+### 3. **Safety & Navigation**
+- Calculate safe drone flight paths
+- Maintain proper distance from obstacles
+- Plan emergency exit routes with real distances
+
+### 4. **Professional Applications**
+- **Real Estate**: Generate accurate floor plans
+- **Architecture**: Verify as-built vs. design dimensions
+- **Insurance**: Document room sizes for claims
+- **Gaming/AR**: Place virtual content at realistic scales
+
+### 5. **Measurement Without Rulers**
+Once calibrated, the system becomes a 3D measuring tool:
+- Measure furniture dimensions
+- Check ceiling height
+- Calculate distances between objects
+- Verify doorway widths
+
+## Configuration & Tuning
+
+### Scale Confidence Thresholds
+```env
+MIN_CONFIDENCE_FOR_SCALING=0.7  # Minimum combined confidence
+DIMENSION_CACHE_EXPIRY_DAYS=30  # Cache known object dimensions
+```
+
+### Processing Parameters
+```env
+PROCESS_AFTER_SECONDS=1.5       # Time to track before processing
+REPROCESS_INTERVAL_SECONDS=3.0  # Re-check if object remains
+IOU_THRESHOLD=0.3              # Object matching threshold
+```
+
+## Troubleshooting Scale Estimation
+
+1. **Low Confidence Scores**
+   - Ensure good lighting for clear object detection
+   - Position camera to capture objects fully
+   - Include multiple known objects in scene
+
+2. **Inconsistent Scales**
+   - Check if detected objects are standard sizes
+   - Verify API responses for dimension accuracy
+   - Review confidence thresholds
+
+3. **No Scale Updates**
+   - Confirm API keys are set correctly
+   - Check network connectivity
+   - Verify objects are being tracked long enough
+
+## Future Enhancements
+
+1. **Custom Object Database**: Add organization-specific objects
+2. **Multiple Scale Validation**: Cross-check using multiple methods
+3. **Temporal Smoothing**: Average scales over time for stability
+4. **Scene-Specific Calibration**: Save scale profiles per location
+5. **Manual Override**: Allow user to specify known object dimensions

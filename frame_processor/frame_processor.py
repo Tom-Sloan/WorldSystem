@@ -8,12 +8,29 @@ import torch
 import ntplib
 import socket
 import threading
+import queue
 from ultralytics import YOLO
-import rerun as rr  # Import Rerun SDK
+import rerun as rr
+try:
+    import rerun.blueprint as bp
+    BLUEPRINT_AVAILABLE = True
+except ImportError:
+    print("Warning: Rerun blueprint API not available, using default layout")
+    BLUEPRINT_AVAILABLE = False
 from prometheus_client import start_http_server, Counter, Gauge, Histogram, Summary
-import threading
 from collections import deque
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Import our modules
+from modules.tracker import ObjectTracker, TrackedObject
+from modules.frame_scorer import FrameQualityScorer
+from modules.enhancement import ImageEnhancer
+from modules.api_client import APIClient
+from modules.scene_scaler import SceneScaler
+
+# Load environment variables
+load_dotenv()
 
 # Prometheus metrics
 PROCESSED_FRAMES = Counter('frame_processor_frames_processed_total', 'Total number of frames processed')
@@ -23,35 +40,431 @@ PROCESSING_TIME = Histogram('frame_processor_processing_time_ms', 'Processing ti
 FRAME_SIZE = Gauge('frame_processor_frame_size_bytes', 'Size of the processed frame in bytes')
 CONNECTION_STATUS = Gauge('frame_processor_connection_status', 'Connection status (1=connected, 0=disconnected)')
 NTP_TIME_OFFSET = Gauge('frame_processor_ntp_time_offset_seconds', 'NTP time offset in seconds')
+OBJECTS_TRACKED = Gauge('frame_processor_objects_tracked', 'Number of objects currently being tracked')
+OBJECTS_PROCESSED = Counter('frame_processor_objects_processed_total', 'Total objects processed for dimensions')
+SCENE_SCALE_CONFIDENCE = Gauge('frame_processor_scene_scale_confidence', 'Confidence of scene scale estimation')
 
-# Additional image statistics metrics
+# Additional metrics
 FRAME_WIDTH = Gauge('frame_processor_frame_width_pixels', 'Width of the processed frame in pixels')
 FRAME_HEIGHT = Gauge('frame_processor_frame_height_pixels', 'Height of the processed frame in pixels')
 FRAME_TIMESTAMP = Gauge('frame_processor_latest_timestamp_ms', 'Latest frame timestamp in milliseconds')
 
-# Add NTP client and time offset tracking
+# NTP client and time offset tracking
 ntp_client = ntplib.NTPClient()
-ntp_time_offset = 0.0  # Offset between system time and NTP time in seconds
+ntp_time_offset = 0.0
 last_ntp_sync = 0
-NTP_SYNC_INTERVAL = 60  # Sync NTP every 60 seconds
+NTP_SYNC_INTERVAL = 60
 NTP_SERVER = os.getenv("NTP_SERVER", "pool.ntp.org")
 
 # Image statistics tracking
-MAX_STATS_ENTRIES = 20  # Keep last 20 entries like the React component
+MAX_STATS_ENTRIES = 20
 image_stats = deque(maxlen=MAX_STATS_ENTRIES)
 stats_lock = threading.Lock()
 
+
+class EnhancedFrameProcessor:
+    """Enhanced frame processor with tracking, quality scoring, and dimension estimation."""
+    
+    def __init__(self):
+        # Configuration
+        self.process_after_seconds = float(os.getenv("PROCESS_AFTER_SECONDS", "1.5"))
+        self.reprocess_interval_seconds = float(os.getenv("REPROCESS_INTERVAL_SECONDS", "3.0"))
+        self.iou_threshold = float(os.getenv("IOU_THRESHOLD", "0.3"))
+        self.max_lost_frames = int(os.getenv("MAX_LOST_FRAMES", "10"))
+        self.enhancement_enabled = os.getenv("ENHANCEMENT_ENABLED", "true").lower() == "true"
+        
+        # Initialize components
+        self.tracker = ObjectTracker(
+            iou_threshold=self.iou_threshold,
+            max_lost_frames=self.max_lost_frames,
+            process_after_seconds=self.process_after_seconds,
+            reprocess_interval_seconds=self.reprocess_interval_seconds
+        )
+        
+        self.frame_scorer = FrameQualityScorer()
+        self.enhancer = ImageEnhancer(
+            gamma=float(os.getenv("ENHANCEMENT_GAMMA", "1.2")),
+            alpha=float(os.getenv("ENHANCEMENT_ALPHA", "1.3")),
+            beta=int(os.getenv("ENHANCEMENT_BETA", "20"))
+        )
+        
+        self.api_client = APIClient()
+        self.scene_scaler = SceneScaler(
+            min_confidence=float(os.getenv("MIN_CONFIDENCE_FOR_SCALING", "0.7"))
+        )
+        
+        # Processing queue
+        self.enhancement_queue = queue.Queue()
+        self.results_storage = {}
+        
+        # Start enhancement thread
+        self.enhancement_thread = threading.Thread(target=self.enhancement_worker)
+        self.enhancement_thread.daemon = True
+        self.enhancement_thread.start()
+        
+        # Setup Rerun with custom layout
+        self.setup_rerun_visualization()
+        
+        # Metrics
+        self.frame_count = 0
+        self.objects_processed = 0
+        self.start_time = time.time()
+        
+    def setup_rerun_visualization(self):
+        """Setup Rerun with custom blueprint for enhanced visualization."""
+        if not RERUN_ENABLED:
+            return
+            
+        if not BLUEPRINT_AVAILABLE:
+            print("Rerun blueprint API not available, using default layout")
+            return
+            
+        # Create blueprint with enhanced layout
+        blueprint = bp.Blueprint(
+            bp.Grid(
+                bp.Horizontal(
+                    bp.Vertical(
+                        bp.SpaceView(
+                            name="Camera Feed",
+                            origin="/camera",
+                            contents=["/camera/**"]
+                        ),
+                        bp.TextDocumentView(
+                            name="Active Tracking",
+                            origin="/tracking/active",
+                            contents=["/tracking/active/**"]
+                        ),
+                        row_shares=[3, 1]
+                    ),
+                    bp.Vertical(
+                        bp.SpaceView(
+                            name="Enhanced Objects",
+                            origin="/enhancement",
+                            contents=["/enhancement/**"]
+                        ),
+                        bp.TextDocumentView(
+                            name="Object Dimensions",
+                            origin="/dimensions",
+                            contents=["/dimensions/**"]
+                        ),
+                        bp.TextDocumentView(
+                            name="Scene Scale",
+                            origin="/scale",
+                            contents=["/scale/**"]
+                        ),
+                        row_shares=[2, 1, 1]
+                    ),
+                    column_shares=[1, 1]
+                ),
+                bp.TextLogView(
+                    name="Processing Logs",
+                    origin="/logs",
+                    contents=["/logs/**"]
+                ),
+                row_shares=[4, 1]
+            )
+        )
+        
+        rr.send_blueprint(blueprint)
+        
+    def process_frame(self, frame: np.ndarray, properties, frame_number: int):
+        """Process a frame with enhanced tracking and quality scoring."""
+        start_time_ns = get_ntp_time_ns()
+        
+        # Get timestamps from headers
+        timestamp_ns = properties.headers.get("timestamp_ns") if properties.headers else None
+        
+        # Log camera frame
+        if RERUN_ENABLED:
+            try:
+                rr.log("/camera", rr.Image(frame).compress(jpeg_quality=80))
+            except AttributeError:
+                # Fallback for older versions without compress method
+                rr.log("/camera", rr.Image(frame))
+        
+        # Run YOLO detection
+        results = model(frame, conf=0.5)
+        detections = []
+        detection_count = 0
+        
+        for result in results:
+            boxes = result.boxes
+            detection_count += len(boxes)
+            for box in boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                class_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                class_name = result.names[class_id]
+                bbox = (x1, y1, x2, y2)
+                detections.append((bbox, class_name, conf))
+        
+        # Update YOLO detection counter
+        YOLO_DETECTIONS.inc(detection_count)
+        
+        # Update tracker
+        objects_to_process = self.tracker.update(detections, frame, frame_number)
+        
+        # Update tracking metrics
+        OBJECTS_TRACKED.set(len(self.tracker.tracked_objects))
+        
+        # Update quality scores for active tracks
+        for track in self.tracker.get_active_tracks():
+            if track.last_seen_frame == frame_number:
+                self.update_track_quality(track, frame)
+        
+        # Queue objects for enhancement and API processing
+        for obj in objects_to_process:
+            if obj.best_frame is not None:
+                self.enhancement_queue.put(obj)
+                self.objects_processed += 1
+                OBJECTS_PROCESSED.inc()
+        
+        # Log tracking information
+        self.log_tracking_status()
+        
+        # Return processed frame for standard pipeline
+        return self.annotate_frame(frame, detections)
+    
+    def update_track_quality(self, track: TrackedObject, frame: np.ndarray):
+        """Update quality score for a tracked object."""
+        score, components = self.frame_scorer.score_frame(
+            frame, track.bbox, frame.shape[:2]
+        )
+        
+        # Update best frame if needed
+        if score > track.best_score:
+            track.best_score = score
+            track.best_frame = frame.copy()
+            track.best_bbox = track.bbox
+            track.best_frame_number = self.frame_count
+            track.score_components = components
+            
+            if RERUN_ENABLED:
+                rr.log(
+                    "/logs",
+                    rr.TextLog(
+                        f"New best frame for object {track.id} (score: {score:.3f})",
+                        level="DEBUG"
+                    )
+                )
+    
+    def enhancement_worker(self):
+        """Worker thread for enhancement and API processing."""
+        while True:
+            try:
+                track = self.enhancement_queue.get(timeout=1)
+                
+                # Log processing start
+                if RERUN_ENABLED:
+                    rr.log(
+                        "/logs",
+                        rr.TextLog(
+                            f"Processing object {track.id} ({track.class_name})",
+                            level="INFO"
+                        )
+                    )
+                
+                # Extract best frame region
+                x1, y1, x2, y2 = track.best_bbox
+                roi = track.best_frame[y1:y2, x1:x2]
+                
+                # Enhance if enabled
+                if self.enhancement_enabled:
+                    enhanced_roi = self.enhancer.enhance_frame(roi)
+                else:
+                    enhanced_roi = roi
+                
+                # Log enhanced image
+                if RERUN_ENABLED:
+                    try:
+                        rr.log(
+                            f"/enhancement/object_{track.id}",
+                            rr.Image(enhanced_roi).compress(jpeg_quality=90)
+                        )
+                    except AttributeError:
+                        # Fallback for older versions without compress method
+                        rr.log(
+                            f"/enhancement/object_{track.id}",
+                            rr.Image(enhanced_roi)
+                        )
+                
+                # Process with API for dimensions
+                dimension_result = self.api_client.process_object_for_dimensions(
+                    enhanced_roi, track.id, track.class_name
+                )
+                
+                if dimension_result:
+                    # Update track with dimension info
+                    track.identified_products = dimension_result.get('all_products', [])
+                    track.estimated_dimensions = dimension_result.get('dimensions')
+                    
+                    # Add to scene scaler
+                    self.scene_scaler.add_dimension_estimate(
+                        track.id, track.class_name, dimension_result, track.confidence
+                    )
+                    
+                    # Log dimension results
+                    self.log_dimension_results(track, dimension_result)
+                    
+                    # Update scene scale and publish
+                    self.update_and_publish_scene_scale()
+                
+                # Mark processing complete
+                track.is_being_processed = False
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Enhancement worker error: {e}")
+                if RERUN_ENABLED:
+                    rr.log("/logs", rr.TextLog(f"Processing error: {e}", level="ERROR"))
+    
+    def log_dimension_results(self, track: TrackedObject, result: Dict):
+        """Log dimension results to Rerun."""
+        if not RERUN_ENABLED:
+            return
+            
+        dims = result.get('dimensions', {})
+        text = f"""### Object #{track.id} - {track.class_name}
+
+**Product:** {result.get('product_name', 'Unknown')}
+**Confidence:** {result.get('confidence', 0):.2%}
+
+**Dimensions:**
+- Width: {dims.get('width', 0):.1f} {dims.get('unit', '')}
+- Height: {dims.get('height', 0):.1f} {dims.get('unit', '')}
+- Depth: {dims.get('depth', 0):.1f} {dims.get('unit', '')}
+
+**Metric:**
+- Width: {dims.get('width_m', 0):.3f} m
+- Height: {dims.get('height_m', 0):.3f} m
+- Depth: {dims.get('depth_m', 0):.3f} m
+"""
+        
+        rr.log(f"/dimensions", rr.TextDocument(text, media_type=rr.MediaType.MARKDOWN))
+        
+        rr.log(
+            "/logs",
+            rr.TextLog(
+                f"Identified object {track.id} as {result.get('product_name')} "
+                f"({dims.get('width_m', 0):.2f}m x {dims.get('height_m', 0):.2f}m x {dims.get('depth_m', 0):.2f}m)",
+                level="SUCCESS"
+            )
+        )
+    
+    def update_and_publish_scene_scale(self):
+        """Calculate and publish scene scale to RabbitMQ."""
+        scale_info = self.scene_scaler.calculate_weighted_scale()
+        
+        # Update metrics
+        SCENE_SCALE_CONFIDENCE.set(scale_info['confidence'])
+        
+        # Log to Rerun
+        if RERUN_ENABLED:
+            scale_text = f"""### Scene Scale Estimation
+
+**Scale Factor:** {scale_info['scale_factor']:.4f} m/unit
+**Confidence:** {scale_info['confidence']:.2%}
+**Based on:** {scale_info['num_estimates']} objects
+
+**Average Dimensions:**
+- Width: {scale_info['avg_dimensions_m']['width']:.3f} m
+- Height: {scale_info['avg_dimensions_m']['height']:.3f} m  
+- Depth: {scale_info['avg_dimensions_m']['depth']:.3f} m
+
+**Contributing Objects:**
+"""
+            for est in scale_info['estimates']:
+                scale_text += f"\n- {est['product']} (conf: {est['confidence']:.2%})"
+                
+            rr.log("/scale", rr.TextDocument(scale_text, media_type=rr.MediaType.MARKDOWN))
+        
+        # Publish to RabbitMQ
+        if scale_info['confidence'] > 0:
+            self.publish_scene_scale(scale_info)
+    
+    def publish_scene_scale(self, scale_info: Dict):
+        """Publish scene scale to RabbitMQ for mesh service."""
+        try:
+            message = {
+                'scale_factor': scale_info['scale_factor'],
+                'units_per_meter': 1.0 / scale_info['scale_factor'],
+                'confidence': scale_info['confidence'],
+                'num_estimates': scale_info['num_estimates'],
+                'timestamp_ns': get_ntp_time_ns()
+            }
+            
+            channel.basic_publish(
+                exchange=SCENE_SCALING_EXCHANGE,
+                routing_key='',
+                body=json.dumps(message),
+                properties=pika.BasicProperties(
+                    content_type="application/json"
+                )
+            )
+            
+        except Exception as e:
+            print(f"Error publishing scene scale: {e}")
+    
+    def log_tracking_status(self):
+        """Log current tracking status to Rerun."""
+        if not RERUN_ENABLED:
+            return
+            
+        active_tracks = self.tracker.get_active_tracks()
+        if not active_tracks:
+            return
+            
+        status_text = "### Active Objects\n\n"
+        for track in active_tracks:
+            status_text += f"""**Object #{track.id} - {track.class_name}**
+- Confidence: {track.confidence:.2%}
+- Frames: {len(track.frame_history)}
+- Best Score: {track.best_score:.3f}
+- Processing: {track.processing_count} times
+- Has Dimensions: {'Yes' if track.estimated_dimensions else 'No'}
+
+"""
+        
+        rr.log("/tracking/active", rr.TextDocument(status_text, media_type=rr.MediaType.MARKDOWN))
+    
+    def annotate_frame(self, frame: np.ndarray, detections: List) -> np.ndarray:
+        """Annotate frame with tracking information."""
+        annotated = frame.copy()
+        
+        for track in self.tracker.get_active_tracks():
+            x1, y1, x2, y2 = track.bbox
+            
+            # Color based on whether we have dimensions
+            if track.estimated_dimensions:
+                color = (0, 255, 0)  # Green for dimensioned objects
+            else:
+                color = (255, 255, 0)  # Yellow for tracking
+                
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+            
+            # Label with dimensions if available
+            label = f"{track.class_name} #{track.id}"
+            if track.estimated_dimensions:
+                dims = track.estimated_dimensions
+                label += f" ({dims.get('width_m', 0):.2f}m)"
+                
+            cv2.putText(annotated, label, (x1, y1 - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        
+        return annotated
+
+
+# Initialize NTP synchronization
 def sync_ntp_time():
     """Update the NTP time offset by querying an NTP server."""
     global ntp_time_offset, last_ntp_sync
     
     try:
         response = ntp_client.request(NTP_SERVER, timeout=5)
-        # Calculate offset: NTP time - local time
         ntp_time_offset = response.offset
         last_ntp_sync = time.time()
         print(f"[NTP] Synchronized time, offset: {ntp_time_offset:.6f} seconds")
-        # Update Prometheus metric
         NTP_TIME_OFFSET.set(ntp_time_offset)
         return True
     except (ntplib.NTPException, socket.gaierror, socket.timeout) as e:
@@ -61,16 +474,14 @@ def sync_ntp_time():
 def get_ntp_time_ns():
     """Get current time in nanoseconds, synchronized with NTP."""
     current_time = time.time() + ntp_time_offset
-    # Check if we need to resync
     if time.time() - last_ntp_sync > NTP_SYNC_INTERVAL:
-        # Start a thread to sync NTP time without blocking
         threading.Thread(target=sync_ntp_time, daemon=True).start()
-    return int(current_time * 1e9)  # Convert to nanoseconds
+    return int(current_time * 1e9)
 
-# Get metrics port from environment with default of 8003
+# Get metrics port from environment
 METRICS_PORT = int(os.getenv("METRICS_PORT", 8003))
 
-# Start Prometheus HTTP server on configured port
+# Start Prometheus HTTP server
 print(f"[Prometheus] Starting metrics server on port {METRICS_PORT}...")
 start_http_server(METRICS_PORT)
 
@@ -82,28 +493,38 @@ sync_ntp_time()
 RERUN_ENABLED = os.getenv("RERUN_ENABLED", "true").lower() == "true"
 if RERUN_ENABLED:
     print("[Rerun] Initializing...")
-    # Get environment variables for Rerun configuration
     viewer_address = os.environ.get("RERUN_VIEWER_ADDRESS", "0.0.0.0:9090")
     print(f"[Rerun] Viewer address: {viewer_address}")
     
-    # Initialize Rerun with application name - don't automatically spawn a viewer
-    rr.init("frame_processor", spawn=False)
+    rr.init("frame_processor_enhanced", spawn=False)
     
-    print(f"[Rerun] Initialized with viewer address: {viewer_address}")
-    
-    # Connect to the viewer using gRPC
     rerun_connect_url = os.getenv(
         "RERUN_CONNECT_URL",
-        "rerun+http://localhost:9876/proxy"  # sensible fallback
+        "rerun+http://localhost:9876/proxy"
     )
     try:
-        print(f"[Rerun] Connecting to viewer via gRPC at {rerun_connect_url}")
-        rr.connect_grpc(rerun_connect_url)
-        print(f"[Rerun] Connected to viewer via gRPC")
+        print(f"[Rerun] Connecting to viewer at {rerun_connect_url}")
+        # Use the new connect method instead of connect_grpc
+        rr.connect(rerun_connect_url)
+        print(f"[Rerun] Connected to viewer successfully")
+        
+        # Send test data to verify connection
+        print("[Rerun] Sending test data...")
+        positions = np.zeros((10, 3))
+        positions[:,0] = np.linspace(-10,10,10)
+        
+        colors = np.zeros((10,3), dtype=np.uint8)
+        colors[:,0] = np.linspace(0,255,10)
+        
+        rr.log(
+            "test/my_points",
+            rr.Points3D(positions, colors=colors, radii=0.5)
+        )
+        print("[Rerun] Test data sent successfully")
     except Exception as e:
         print(f"[Rerun] Error connecting to viewer via gRPC: {e}")
-        print("[Rerun] Will continue sending data regardless of connection status")
 
+# RabbitMQ setup
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rabbitmq")
 params = pika.URLParameters(RABBITMQ_URL)
 params.heartbeat = 3600
@@ -114,12 +535,10 @@ def connect_rabbitmq_with_retry(max_retries=10, delay=2):
         try:
             connection = pika.BlockingConnection(params)
             print("Successfully connected to RabbitMQ.")
-            # Update connection status in Prometheus
             CONNECTION_STATUS.set(1)
             return connection
         except pika.exceptions.AMQPConnectionError as e:
             print(f"Connection failed: {e}")
-            # Update connection status in Prometheus
             CONNECTION_STATUS.set(0)
             if attempt == max_retries:
                 raise RuntimeError("Could not connect to RabbitMQ after multiple retries.")
@@ -129,34 +548,52 @@ print("Connecting to RabbitMQ...")
 connection = connect_rabbitmq_with_retry()
 channel = connection.channel()
 
-# Read exchange names from environment variables (with defaults)
-VIDEO_FRAMES_EXCHANGE   = os.getenv("VIDEO_FRAMES_EXCHANGE", "video_frames_exchange")
+# Exchange names
+VIDEO_FRAMES_EXCHANGE = os.getenv("VIDEO_FRAMES_EXCHANGE", "video_frames_exchange")
 PROCESSED_FRAMES_EXCHANGE = os.getenv("PROCESSED_FRAMES_EXCHANGE", "processed_frames_exchange")
-ANALYSIS_MODE_EXCHANGE  = os.getenv("ANALYSIS_MODE_EXCHANGE", "analysis_mode_exchange")
-# We assume YOLO is installed
-model = YOLO("yolov8n.pt")
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model.to(device)
-print(f"Using device: {device}")
+ANALYSIS_MODE_EXCHANGE = os.getenv("ANALYSIS_MODE_EXCHANGE", "analysis_mode_exchange")
+SCENE_SCALING_EXCHANGE = os.getenv("SCENE_SCALING_EXCHANGE", "scene_scaling_exchange")
 
+# Initialize YOLO model with error handling
+try:
+    model = YOLO("yolov8n.pt")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+    print(f"Using device: {device}")
+except Exception as e:
+    print(f"Error loading YOLO model: {e}")
+    print("Attempting to download yolov8n.pt...")
+    try:
+        model = YOLO("yolov8n.pt")  # This will trigger download
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model.to(device)
+        print(f"Model downloaded successfully. Using device: {device}")
+    except Exception as e2:
+        print(f"Failed to download YOLO model: {e2}")
+        raise
+
+# Current analysis mode
 current_mode = os.getenv("INITIAL_ANALYSIS_MODE", "none").lower()
 
-# Declare exchanges using the variables
+# Declare exchanges
 channel.exchange_declare(exchange=VIDEO_FRAMES_EXCHANGE, exchange_type="fanout", durable=True)
 channel.exchange_declare(exchange=PROCESSED_FRAMES_EXCHANGE, exchange_type="fanout", durable=True)
 channel.exchange_declare(exchange=ANALYSIS_MODE_EXCHANGE, exchange_type="fanout", durable=True)
+channel.exchange_declare(exchange=SCENE_SCALING_EXCHANGE, exchange_type="fanout", durable=True)
 
-# Create queue for video frames with meaningful name
+# Create queues
 q = channel.queue_declare(queue='frame_processor_video_input', exclusive=True)
 queue_name = q.method.queue
 channel.queue_bind(exchange=VIDEO_FRAMES_EXCHANGE, queue=queue_name)
 
-# Create queue for analysis mode updates
 analysis_queue = channel.queue_declare(queue='frame_processor_analysis_mode', exclusive=True)
 analysis_queue_name = analysis_queue.method.queue
 channel.queue_bind(exchange=ANALYSIS_MODE_EXCHANGE, queue=analysis_queue_name)
 
-print("frame_processor: Listening for raw frames...")
+# Initialize enhanced processor
+processor = EnhancedFrameProcessor()
+
+print("Enhanced frame_processor: Ready to process frames...")
 
 def analysis_mode_callback(ch, method, properties, body):
     """Handle analysis mode changes."""
@@ -169,200 +606,53 @@ def analysis_mode_callback(ch, method, properties, body):
         print(f"Error processing analysis mode update: {e}")
 
 def frame_callback(ch, method, properties, body):
-    """Process a raw frame, run YOLO if requested, and publish the annotated frame."""
+    """Process a raw frame with enhanced tracking and dimension estimation."""
+    global processor
+    
     try:
-        # Record start time using NTP-synchronized clock
+        # Record start time
         start_time_ns = get_ntp_time_ns()
         
-        # Get timestamps from headers
-        timestamp_ns = properties.headers.get("timestamp_ns") if properties.headers else None
-        server_received = properties.headers.get("server_received") if properties.headers else None
-        ntp_time = properties.headers.get("ntp_time") if properties.headers else server_received
-        
-        # Ensure timestamp_ns is an integer if provided
-        if timestamp_ns is not None:
-            try:
-                timestamp_ns = int(timestamp_ns)
-            except (ValueError, TypeError):
-                timestamp_ns = None
-        
+        # Decode frame
         np_arr = np.frombuffer(body, np.uint8)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if frame is None:
             print("Invalid frame data.")
             return
         
-        processed_frame = frame.copy()
-        yolo_results = None
-        detection_count = 0
-        
+        # Process frame if mode is active
         if current_mode == "yolo":
-            yolo_results = model(frame, conf=0.5)
-            for result in yolo_results:
-                boxes = result.boxes
-                detection_count += len(boxes)
-                for box in boxes:
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    class_id = int(box.cls[0])
-                    conf = float(box.conf[0])
-                    class_name = result.names[class_id]
-                    cv2.rectangle(processed_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    label = f"{class_name} {conf:.2f}"
-                    cv2.putText(processed_frame, label, (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
-            # Update YOLO detection counter
-            YOLO_DETECTIONS.inc(detection_count)
+            processed_frame = processor.process_frame(frame, properties, processor.frame_count)
+        else:
+            processed_frame = frame
         
-        # Get image dimensions
+        processor.frame_count += 1
+        
+        # Get frame dimensions
         height, width = processed_frame.shape[:2]
         
-        # Calculate processing time using NTP-synchronized time
+        # Calculate processing time
         end_time_ns = get_ntp_time_ns()
-        processing_time_ms = (end_time_ns - start_time_ns) / 1_000_000  # Convert ns to ms
+        processing_time_ms = (end_time_ns - start_time_ns) / 1_000_000
         
         # Update Prometheus metrics
         PROCESSED_FRAMES.inc()
         PROCESSING_TIME.observe(processing_time_ms)
         FRAME_WIDTH.set(width)
         FRAME_HEIGHT.set(height)
-        # Ensure timestamp is int before division
-        ts_for_metric = timestamp_ns if isinstance(timestamp_ns, int) else (int(timestamp_ns) if timestamp_ns else start_time_ns)
-        FRAME_TIMESTAMP.set(ts_for_metric // 1_000_000)
         
-        # Log to Rerun if enabled
-        if RERUN_ENABLED:
-            timestamp = int(timestamp_ns) if timestamp_ns is not None else start_time_ns
-            
-            # Convert from BGR (OpenCV) to RGB (Rerun)
-            rgb_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-            
-            # Log the frame to Rerun
-            rr.set_time("sensor_time", timestamp=1e-9 * timestamp)
-            rr.log("processed_frame", rr.Image(rgb_frame).compress(jpeg_quality=85))
-            
-            # If we're using YOLO, also log the detections
-            if current_mode == "yolo" and yolo_results is not None:
-                for result in yolo_results:
-                    boxes = result.boxes
-                    for i, box in enumerate(boxes):
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        class_id = int(box.cls[0])
-                        conf = float(box.conf[0])
-                        class_name = result.names[class_id]
-                        
-                        # Calculate for Rerun's format
-                        center_x = (x1 + x2) / 2
-                        center_y = (y1 + y2) / 2
-                        box_width = x2 - x1
-                        box_height = y2 - y1
-                        
-                        # Log bounding box to Rerun
-                        rr.log(
-                            f"detections/{class_name}/{i}",
-                            rr.Boxes2D(
-                                array=[[center_x, center_y, box_width, box_height]],
-                                array_format=rr.Box2DFormat.XYWH,
-                                labels=[f"{class_name} {conf:.2f}"],
-                                colors=[[0, 255, 0, 255]]  # RGBA
-                            )
-                        )
-        
+        # Encode and publish
         _, encoded = cv2.imencode(".jpg", processed_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         annotated_bytes = encoded.tobytes()
         
-        # Update frame size metric
         FRAME_SIZE.set(len(annotated_bytes))
         
-        # Get original resolution if available
-        original_width = properties.headers.get("original_width") if properties.headers else width
-        original_height = properties.headers.get("original_height") if properties.headers else height
-        resolution = properties.headers.get("resolution") if properties.headers else "Unknown"
+        # Get original headers
+        timestamp_ns = properties.headers.get("timestamp_ns") if properties.headers else None
+        server_received = properties.headers.get("server_received") if properties.headers else None
+        ntp_time = properties.headers.get("ntp_time") if properties.headers else server_received
         
-        # Ensure original dimensions are integers
-        try:
-            original_width = int(original_width) if original_width is not None else width
-            original_height = int(original_height) if original_height is not None else height
-        except (ValueError, TypeError):
-            original_width = width
-            original_height = height
-        
-        # Ensure timestamp_ns is an integer for calculations
-        timestamp_ns_int = timestamp_ns if isinstance(timestamp_ns, int) else (int(timestamp_ns) if timestamp_ns else start_time_ns)
-        
-        # Collect image statistics
-        image_stat = {
-            "timestamp_ns": timestamp_ns_int,
-            "timestamp_ms": timestamp_ns_int // 1_000_000,  # Convert to ms
-            "size_bytes": len(annotated_bytes),
-            "width": width,
-            "height": height,
-            "original_width": original_width,
-            "original_height": original_height,
-            "processing_time_ms": processing_time_ms,
-            "detection_count": detection_count,
-            "resolution": resolution
-        }
-        
-        # Add to stats deque (thread-safe)
-        with stats_lock:
-            image_stats.append(image_stat)
-            
-        # Log statistics to Rerun
-        if RERUN_ENABLED:
-            # Create arrays for the table visualization
-            with stats_lock:
-                stats_list = list(image_stats)
-            
-            if stats_list:
-                # Extract data for visualization
-                timestamps_ms = [s["timestamp_ms"] for s in stats_list]
-                sizes_kb = [s["size_bytes"] / 1024 for s in stats_list]  # Convert to KB
-                processing_times = [s["processing_time_ms"] for s in stats_list]
-                detection_counts = [s["detection_count"] for s in stats_list]
-                
-                # Log as time series data
-                rr.set_time("sensor_time", timestamp=1e-9 * timestamp)
-                
-                # Log image size over time
-                rr.log("stats/image_size_kb", rr.Scalars(sizes_kb[-1]))
-                
-                # Log processing time
-                rr.log("stats/processing_time_ms", rr.Scalars(processing_times[-1]))
-                
-                # Log detection count if YOLO is active
-                if current_mode == "yolo":
-                    rr.log("stats/detection_count", rr.Scalars(float(detection_counts[-1])))
-                
-                # Log frame dimensions
-                rr.log("stats/frame_width", rr.Scalars(float(width)))
-                rr.log("stats/frame_height", rr.Scalars(float(height)))
-                
-                # Create a text log with the latest stats
-                latest_stat = stats_list[-1]
-                stats_text = f"""Frame Statistics:
-Timestamp: {latest_stat['timestamp_ms']} ms
-Size: {latest_stat['size_bytes'] / 1024:.1f} KB
-Dimensions: {latest_stat['width']}x{latest_stat['height']}
-Processing Time: {latest_stat['processing_time_ms']:.1f} ms
-Detections: {latest_stat['detection_count']}
-Resolution: {latest_stat['resolution']}"""
-                
-                rr.log("stats/latest_info", rr.TextLog(stats_text))
-                
-                # Log a table view of recent stats (similar to React component)
-                if len(stats_list) > 1:
-                    table_text = "Recent Frame Statistics:\n"
-                    table_text += "Timestamp (ms) | Size (KB) | Dimensions | Proc Time (ms) | Detections\n"
-                    table_text += "-" * 70 + "\n"
-                    for stat in stats_list[-10:]:  # Show last 10 entries
-                        table_text += f"{stat['timestamp_ms']:14} | {stat['size_bytes']/1024:9.1f} | "
-                        table_text += f"{stat['width']:4}x{stat['height']:<4} | {stat['processing_time_ms']:14.1f} | "
-                        table_text += f"{stat['detection_count']:10}\n"
-                    
-                    rr.log("stats/recent_table", rr.TextLog(table_text))
-        
-        # Include all metadata in the headers including NTP information
+        # Include all metadata in headers
         headers = {
             "timestamp_ns": timestamp_ns,
             "server_received": server_received,
@@ -370,10 +660,9 @@ Resolution: {latest_stat['resolution']}"""
             "processing_time_ms": str(processing_time_ms),
             "width": width,
             "height": height,
-            "resolution": resolution,
-            "original_width": original_width,
-            "original_height": original_height,
-            "ntp_offset": str(ntp_time_offset)
+            "ntp_offset": str(ntp_time_offset),
+            "objects_tracked": str(len(processor.tracker.tracked_objects)),
+            "scene_scale_confidence": str(processor.scene_scaler.calculate_weighted_scale()['confidence'])
         }
         
         channel.basic_publish(
@@ -385,12 +674,13 @@ Resolution: {latest_stat['resolution']}"""
                 headers=headers
             )
         )
+        
     except Exception as e:
-        print(f"Error in frame_processor callback: {e}")
+        print(f"Error in enhanced frame_processor callback: {e}")
 
-# Set up consumers using the new exchange names
+# Set up consumers
 channel.basic_consume(queue=analysis_queue_name, on_message_callback=analysis_mode_callback, auto_ack=True)
 channel.basic_consume(queue=queue_name, on_message_callback=frame_callback, auto_ack=True)
 
-print("frame_processor: Ready to process frames...")
+print("Enhanced frame_processor: Processing frames with tracking and dimension estimation...")
 channel.start_consuming()

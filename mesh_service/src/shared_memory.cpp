@@ -77,6 +77,9 @@ SharedKeyframe* SharedMemoryManager::open_keyframe(const std::string& shm_name) 
     std::cout << "[SHM DEBUG] Header mapped, point_count: " << header->point_count 
               << ", color_channels: " << header->color_channels << std::endl;
     std::cout << "[SHM DEBUG] Header timestamp: " << header->timestamp_ns << std::endl;
+    std::cout << "[SHM DEBUG] Header pose_matrix - camera position: [" 
+              << header->pose_matrix[12] << ", " << header->pose_matrix[13] << ", " 
+              << header->pose_matrix[14] << "]" << std::endl;
     std::cout << "[SHM DEBUG] Header bbox: [" 
               << header->bbox[0] << ", " << header->bbox[1] << ", " << header->bbox[2] << "] to ["
               << header->bbox[3] << ", " << header->bbox[4] << ", " << header->bbox[5] << "]" << std::endl;

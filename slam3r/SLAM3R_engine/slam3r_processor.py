@@ -20,7 +20,6 @@ import cv2
 import numpy as np
 import torch
 import yaml
-import msgpack
 import trimesh
 
 # Configure logging
@@ -359,28 +358,6 @@ class SLAM3RProcessor:
                 )
                 
                 logger.info(f"Successfully published keyframe {self.keyframe_count} with {len(filtered_pts)} points")
-            
-            # Also publish to RabbitMQ for compatibility
-            if self.keyframe_exchange:
-                # DEBUG: Log what we're sending
-                logger.info(f"[DEBUG] Publishing direct RabbitMQ message for keyframe {self.keyframe_count}")
-                logger.info(f"[DEBUG] Message fields: timestamp, keyframe_id, frame_id, pts3d_world, conf_world")
-                logger.info(f"[DEBUG] Note: NO 'type' field in message")
-                
-                message_body = msgpack.packb({
-                    'timestamp': timestamp,
-                    'keyframe_id': self.keyframe_count,
-                    'frame_id': keyframe_data['frame_id'],
-                    'pts3d_world': keyframe_data['pts3d_world'].cpu().numpy().tolist(),
-                    'conf_world': keyframe_data['conf_world'].cpu().numpy().tolist(),
-                })
-                
-                logger.info(f"[DEBUG] Message size: {len(message_body)} bytes")
-                
-                await self.keyframe_exchange.publish(
-                    aio_pika.Message(body=message_body),
-                    routing_key="keyframe.new"
-                )
                 
         except Exception as e:
             logger.error(f"Failed to publish keyframe: {e}")

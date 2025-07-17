@@ -68,12 +68,13 @@ struct SceneConfig {
     static constexpr float DEFAULT_OVERLAP_THRESHOLD = 0.9f;         // 90% overlap
     
     // Default TSDF volume (can be overridden by env vars)
+    // Updated to accommodate actual scene bounds from point cloud data
     static constexpr float DEFAULT_TSDF_MIN_X = -2.0f;
     static constexpr float DEFAULT_TSDF_MIN_Y = -10.0f;
-    static constexpr float DEFAULT_TSDF_MIN_Z = 0.0f;
+    static constexpr float DEFAULT_TSDF_MIN_Z = 0.0f;    // Floor level
     static constexpr float DEFAULT_TSDF_MAX_X = 28.0f;
     static constexpr float DEFAULT_TSDF_MAX_Y = 10.0f;
-    static constexpr float DEFAULT_TSDF_MAX_Z = 8.0f;
+    static constexpr float DEFAULT_TSDF_MAX_Z = 30.0f;  // Increased from 8.0 to 30.0 to include all points
 };
 
 // ========== PERFORMANCE THRESHOLDS ==========

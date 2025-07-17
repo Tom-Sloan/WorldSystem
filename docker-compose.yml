@@ -58,6 +58,7 @@ services:
       - IMU_DATA_EXCHANGE=imu_data_exchange
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
+      - SCENE_SCALING_EXCHANGE=scene_scaling_exchange
       - INITIAL_ANALYSIS_MODE=none #yolo
 
       # Added Rerun configuration
@@ -74,10 +75,34 @@ services:
       - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
       - DISPLAY=${DISPLAY}
       - HOME=${HOME}
+      
+      # Google Cloud and API configurations
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/worldsystem-23f7306a1a75.json
+      - SERPAPI_API_KEY=${SERPAPI_API_KEY}
+      - PPLX_API_KEY=${PPLX_API_KEY}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME:-worldsystem-frame-processor}
+      
+      # Processing configuration
+      - PROCESS_AFTER_SECONDS=${PROCESS_AFTER_SECONDS:-1.5}
+      - REPROCESS_INTERVAL_SECONDS=${REPROCESS_INTERVAL_SECONDS:-3.0}
+      - IOU_THRESHOLD=${IOU_THRESHOLD:-0.3}
+      - MAX_LOST_FRAMES=${MAX_LOST_FRAMES:-10}
+      
+      # Enhancement configuration
+      - ENHANCEMENT_ENABLED=${ENHANCEMENT_ENABLED:-true}
+      - ENHANCEMENT_GAMMA=${ENHANCEMENT_GAMMA:-1.2}
+      - ENHANCEMENT_ALPHA=${ENHANCEMENT_ALPHA:-1.3}
+      - ENHANCEMENT_BETA=${ENHANCEMENT_BETA:-20}
+      
+      # Scene scaling configuration
+      - MIN_CONFIDENCE_FOR_SCALING=${MIN_CONFIDENCE_FOR_SCALING:-0.7}
+      - DIMENSION_CACHE_EXPIRY_DAYS=${DIMENSION_CACHE_EXPIRY_DAYS:-30}
+      
     volumes:
       - ${WORKSPACE}/frame_processor:/app
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
+      - ${WORKSPACE}/frame_processor/worldsystem-23f7306a1a75.json:/app/worldsystem-23f7306a1a75.json:ro
     deploy:
       resources:
         reservations:
@@ -184,7 +209,6 @@ services:
     volumes:
       - ${WORKSPACE}/slam3r/SLAM3R_engine/slam3r_processor.py:/app/SLAM3R_engine/slam3r_processor.py
       - ${WORKSPACE}/slam3r/SLAM3R_engine/streaming_slam3r.py:/app/SLAM3R_engine/streaming_slam3r.py
-      - ${WORKSPACE}/slam3r/SLAM3R_engine/slam3r_processor_v2.py:/app/SLAM3R_engine/slam3r_processor_v2.py
       - ${WORKSPACE}/slam3r/SLAM3R_engine/configs:/app/SLAM3R_engine/configs
       - ${WORKSPACE}/slam3r/SLAM3R_engine/shared_memory.py:/app/SLAM3R_engine/shared_memory.py
       - ${WORKSPACE}/slam3r/checkpoints:/checkpoints_mount

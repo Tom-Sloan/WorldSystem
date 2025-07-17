@@ -43,3 +43,5 @@ Drone_Calibration/mav0/trajectory.txt
 mesh_service/debug_output/*.txt
 frame_processor/API_INTEGRATION_GUIDE.md
 frame_processor/worldsystem-23f7306a1a75.json
+.env
+.env

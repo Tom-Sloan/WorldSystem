@@ -573,6 +573,62 @@ bool NvidiaMarchingCubes::reconstruct(
     auto mc_start = std::chrono::high_resolution_clock::now();
     std::cout << "[MC DEBUG] reconstruct() called with " << num_points << " points" << std::endl;
     
+    // NEW: Calculate actual bounds from point cloud
+    std::vector<float3> h_points_sample(std::min(size_t(10000), num_points));
+    cudaMemcpy(h_points_sample.data(), d_points, h_points_sample.size() * sizeof(float3), cudaMemcpyDeviceToHost);
+    
+    float3 actual_min = make_float3(FLT_MAX, FLT_MAX, FLT_MAX);
+    float3 actual_max = make_float3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+    
+    for (const auto& p : h_points_sample) {
+        if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)) {
+            actual_min.x = fminf(actual_min.x, p.x);
+            actual_min.y = fminf(actual_min.y, p.y);
+            actual_min.z = fminf(actual_min.z, p.z);
+            actual_max.x = fmaxf(actual_max.x, p.x);
+            actual_max.y = fmaxf(actual_max.y, p.y);
+            actual_max.z = fmaxf(actual_max.z, p.z);
+        }
+    }
+    
+    // Add padding to bounds
+    float padding = params_.marching_cubes.truncation_distance * 2.0f;
+    actual_min.x -= padding;
+    actual_min.y -= padding;
+    actual_min.z -= padding;
+    actual_max.x += padding;
+    actual_max.y += padding;
+    actual_max.z += padding;
+    
+    // Check if bounds have changed significantly
+    float3 current_min = tsdf_->getVolumeOrigin();
+    int3 current_dims = tsdf_->getVolumeDims();
+    float voxel_size = tsdf_->getVoxelSize();
+    float3 current_max = make_float3(
+        current_min.x + current_dims.x * voxel_size,
+        current_min.y + current_dims.y * voxel_size,
+        current_min.z + current_dims.z * voxel_size
+    );
+    
+    bool bounds_changed = 
+        fabs(actual_min.x - current_min.x) > voxel_size ||
+        fabs(actual_min.y - current_min.y) > voxel_size ||
+        fabs(actual_min.z - current_min.z) > voxel_size ||
+        fabs(actual_max.x - current_max.x) > voxel_size ||
+        fabs(actual_max.y - current_max.y) > voxel_size ||
+        fabs(actual_max.z - current_max.z) > voxel_size;
+    
+    if (bounds_changed) {
+        std::cout << "[MC BOUNDS UPDATE] Point cloud bounds changed, re-initializing TSDF" << std::endl;
+        std::cout << "  Old bounds: [" << current_min.x << "," << current_min.y << "," << current_min.z 
+                  << "] to [" << current_max.x << "," << current_max.y << "," << current_max.z << "]" << std::endl;
+        std::cout << "  New bounds: [" << actual_min.x << "," << actual_min.y << "," << actual_min.z 
+                  << "] to [" << actual_max.x << "," << actual_max.y << "," << actual_max.z << "]" << std::endl;
+        
+        // Re-initialize TSDF with new bounds
+        tsdf_->initialize(actual_min, actual_max, params_.voxel_size);
+    }
+    
     // Step 1: Integrate points into TSDF
     std::cout << "[MC DEBUG] Integrating points into TSDF..." << std::endl;
     auto tsdf_integrate_start = std::chrono::high_resolution_clock::now();

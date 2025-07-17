@@ -140,55 +140,69 @@ __global__ void integrateTSDFKernel(
                 // Skip if outside truncation
                 if (distance > truncation_distance) continue;
                 
-                // IMPROVED: Camera carving method for better inside/outside detection
-                // Key insight: Space between camera and point should be EMPTY (positive TSDF)
-                // Space beyond the point should be UNKNOWN/OCCUPIED (negative TSDF)
-                
+                // IMPROVED: Better TSDF sign determination
                 float sign = 1.0f;
                 
-                // Calculate if voxel is between camera and point
-                float3 cam_to_point = make_float3(point.x - camera_position.x,
-                                                   point.y - camera_position.y,
-                                                   point.z - camera_position.z);
-                float3 cam_to_voxel = make_float3(voxel_center.x - camera_position.x,
-                                                   voxel_center.y - camera_position.y,
-                                                   voxel_center.z - camera_position.z);
+                // If camera position is valid (not at origin), use camera carving
+                bool camera_valid = (fabsf(camera_position.x) > 0.01f || 
+                                   fabsf(camera_position.y) > 0.01f || 
+                                   fabsf(camera_position.z) > 0.01f);
                 
-                float cam_to_point_dist = length(cam_to_point);
-                float cam_to_voxel_dist = length(cam_to_voxel);
-                
-                // Check if voxel is along the ray from camera to point
-                if (cam_to_point_dist > 0.001f && cam_to_voxel_dist > 0.001f) {
-                    float3 ray_dir = make_float3(cam_to_point.x / cam_to_point_dist,
-                                                  cam_to_point.y / cam_to_point_dist,
-                                                  cam_to_point.z / cam_to_point_dist);
-                    float3 voxel_dir = make_float3(cam_to_voxel.x / cam_to_voxel_dist,
-                                                    cam_to_voxel.y / cam_to_voxel_dist,
-                                                    cam_to_voxel.z / cam_to_voxel_dist);
+                if (camera_valid) {
+                    // Calculate if voxel is between camera and point
+                    float3 cam_to_point = make_float3(point.x - camera_position.x,
+                                                       point.y - camera_position.y,
+                                                       point.z - camera_position.z);
+                    float3 cam_to_voxel = make_float3(voxel_center.x - camera_position.x,
+                                                       voxel_center.y - camera_position.y,
+                                                       voxel_center.z - camera_position.z);
                     
-                    // Check alignment (how close voxel is to the camera-point ray)
-                    float alignment = ray_dir.x * voxel_dir.x + ray_dir.y * voxel_dir.y + ray_dir.z * voxel_dir.z;
+                    float cam_to_point_dist = length(cam_to_point);
+                    float cam_to_voxel_dist = length(cam_to_voxel);
                     
-                    if (alignment > 0.95f) { // Voxel is along the ray
-                        if (cam_to_voxel_dist < cam_to_point_dist - voxel_size) {
-                            // Voxel is between camera and point: EMPTY space
-                            sign = 1.0f;
-                        } else if (cam_to_voxel_dist > cam_to_point_dist + voxel_size) {
-                            // Voxel is beyond the point: OCCUPIED space
-                            sign = -1.0f;
+                    // Check if voxel is along the ray from camera to point
+                    if (cam_to_point_dist > 0.001f && cam_to_voxel_dist > 0.001f) {
+                        float3 ray_dir = make_float3(cam_to_point.x / cam_to_point_dist,
+                                                      cam_to_point.y / cam_to_point_dist,
+                                                      cam_to_point.z / cam_to_point_dist);
+                        float3 voxel_dir = make_float3(cam_to_voxel.x / cam_to_voxel_dist,
+                                                        cam_to_voxel.y / cam_to_voxel_dist,
+                                                        cam_to_voxel.z / cam_to_voxel_dist);
+                        
+                        // Check alignment (how close voxel is to the camera-point ray)
+                        float alignment = ray_dir.x * voxel_dir.x + ray_dir.y * voxel_dir.y + ray_dir.z * voxel_dir.z;
+                        
+                        // Improved logic for determining sign
+                        if (alignment > 0.98f) { // Voxel is closely aligned with ray
+                            float distance_along_ray = cam_to_voxel_dist * alignment;
+                            
+                            if (distance_along_ray < cam_to_point_dist - truncation_distance) {
+                                // Voxel is clearly between camera and point: EMPTY space
+                                sign = 1.0f;
+                            } else if (distance_along_ray > cam_to_point_dist + truncation_distance) {
+                                // Voxel is clearly beyond the point: OCCUPIED space
+                                sign = -1.0f;
+                            } else {
+                                // Voxel is within truncation distance of surface
+                                // Use signed distance based on position relative to surface
+                                float surface_distance = distance_along_ray - cam_to_point_dist;
+                                sign = surface_distance > 0 ? -1.0f : 1.0f;
+                            }
                         } else {
-                            // Voxel is near the surface: use normal-based method
-                            float3 direction = make_float3(diff.x / distance, diff.y / distance, diff.z / distance);
-                            float dot = direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
-                            sign = (dot > 0.0f) ? 1.0f : -1.0f;
+                            // Voxel is off the ray: use normal-based method
+                            if (distance > 0.0f) {
+                                float3 direction = make_float3(diff.x / distance, diff.y / distance, diff.z / distance);
+                                float dot = direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
+                                sign = (dot > 0.0f) ? 1.0f : -1.0f;
+                            }
                         }
-                    } else {
-                        // Voxel is not on the ray: use normal-based method
-                        if (distance > 0.0f) {
-                            float3 direction = make_float3(diff.x / distance, diff.y / distance, diff.z / distance);
-                            float dot = direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
-                            sign = (dot > 0.0f) ? 1.0f : -1.0f;
-                        }
+                    }
+                } else {
+                    // Camera at origin or invalid: use pure normal-based method
+                    if (distance > 0.0f) {
+                        float3 direction = make_float3(diff.x / distance, diff.y / distance, diff.z / distance);
+                        float dot = direction.x * normal.x + direction.y * normal.y + direction.z * normal.z;
+                        sign = (dot > 0.0f) ? 1.0f : -1.0f;
                     }
                 }
                 

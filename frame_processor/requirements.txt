@@ -1,0 +1,17 @@
+ultralytics
+numpy
+opencv-python-headless
+pika
+ntplib
+rerun-sdk==0.23.2
+prometheus_client
+torch
+torchvision
+torchaudio
+python-dotenv
+google-cloud-storage
+serpapi
+pillow
+requests
+scipy
+scikit-image

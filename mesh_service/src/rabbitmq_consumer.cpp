@@ -259,6 +259,38 @@ public:
                                 else if (key == "point_count" && kv.val.type == msgpack::type::POSITIVE_INTEGER) {
                                     msg.point_count = kv.val.via.u64;
                                 }
+                                else if (key == "pose_matrix" && kv.val.type == msgpack::type::ARRAY) {
+                                    if (kv.val.via.array.size == 16) {
+                                        for (uint32_t i = 0; i < 16; i++) {
+                                            auto& elem = kv.val.via.array.ptr[i];
+                                            if (elem.type == msgpack::type::FLOAT) {
+                                                msg.pose_matrix[i] = elem.via.f64;
+                                            } else if (elem.type == msgpack::type::POSITIVE_INTEGER) {
+                                                msg.pose_matrix[i] = static_cast<float>(elem.via.u64);
+                                            } else if (elem.type == msgpack::type::NEGATIVE_INTEGER) {
+                                                msg.pose_matrix[i] = static_cast<float>(elem.via.i64);
+                                            }
+                                        }
+                                        std::cout << "    Parsed pose_matrix, camera position: [" 
+                                                  << msg.pose_matrix[12] << ", " 
+                                                  << msg.pose_matrix[13] << ", "
+                                                  << msg.pose_matrix[14] << "]" << std::endl;
+                                    }
+                                }
+                                else if (key == "bbox" && kv.val.type == msgpack::type::ARRAY) {
+                                    if (kv.val.via.array.size == 6) {
+                                        for (uint32_t i = 0; i < 6; i++) {
+                                            auto& elem = kv.val.via.array.ptr[i];
+                                            if (elem.type == msgpack::type::FLOAT) {
+                                                msg.bbox[i] = elem.via.f64;
+                                            } else if (elem.type == msgpack::type::POSITIVE_INTEGER) {
+                                                msg.bbox[i] = static_cast<float>(elem.via.u64);
+                                            } else if (elem.type == msgpack::type::NEGATIVE_INTEGER) {
+                                                msg.bbox[i] = static_cast<float>(elem.via.i64);
+                                            }
+                                        }
+                                    }
+                                }
                             } else {
                                 std::cout << "  Key type: " << kv.key.type << " (not string)" << std::endl;
                             }
@@ -296,6 +328,16 @@ public:
                 // CRITICAL FIX: Accept both keyframe.new and keyframe_update messages
                 // Previously only processed keyframe.new, causing most messages to be ignored
                 if (keyframe_handler && (msg.type == "keyframe.new" || msg.type == "keyframe_update")) {
+                    // CRITICAL: Skip messages without shm_key - these are direct publishes without pose data
+                    if (msg.shm_key.empty()) {
+                        std::cout << "[MESSAGE VALIDATION] Skipping message without shm_key (no pose data)" << std::endl;
+                        // Acknowledge the message but don't process it
+                        channel->ack(deliveryTag);
+                        auto msg_end = std::chrono::high_resolution_clock::now();
+                        auto msg_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(msg_end - msg_start).count();
+                        std::cout << "[TIMING] Total message handling: " << msg_total_ms << " ms" << std::endl;
+                        return;
+                    }
                     std::cout << "[MESSAGE TYPE FIX] Processing message with type: " << msg.type << std::endl;
                     auto handler_start = std::chrono::high_resolution_clock::now();
                     keyframe_handler(msg);

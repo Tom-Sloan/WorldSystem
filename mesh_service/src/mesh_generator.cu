@@ -1,9 +1,11 @@
 #include "mesh_generator.h"
 #include "algorithm_selector.h"
 #include "normal_estimation.h"
+#include "normal_provider.h"
 #include "gpu_octree.h"
 #include "config/configuration_manager.h"
 #include "config/mesh_service_config.h"
+#include "config/normal_provider_config.h"
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <iostream>
@@ -359,29 +361,59 @@ void GPUMeshGenerator::generateIncrementalMesh(
     auto octree_ms = std::chrono::duration_cast<std::chrono::milliseconds>(octree_end - octree_start).count();
     std::cout << "[TIMING] Octree update: " << octree_ms << " ms" << std::endl;
     
-    // OPTIMIZATION: Skip expensive normal estimation - TSDF will use camera-to-point direction as fallback
-    // This reduces processing time from ~17 seconds to ~3ms!
-    // auto normal_start = std::chrono::high_resolution_clock::now();
-    // pImpl->normal_estimator->estimateNormals(
-    //     d_points, 
-    //     valid_point_count,
-    //     pImpl->d_normals.data().get(),
-    //     pImpl->stream
-    // );
-    // auto normal_end = std::chrono::high_resolution_clock::now();
-    // auto normal_ms = std::chrono::duration_cast<std::chrono::milliseconds>(normal_end - normal_start).count();
-    // std::cout << "[TIMING] Normal estimation breakdown: " << normal_ms << " ms" << std::endl;
+    // Get normal provider from configuration
+    int provider_id = CONFIG_INT("MESH_NORMAL_PROVIDER", 
+                                 config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER);
+    auto normal_provider = NormalProviderFactory::create(provider_id);
     
-    std::cout << "[NORMAL ESTIMATION] Provider: DISABLED (using TSDF camera-based fallback)" << std::endl;
-    std::cout << "[NORMAL ESTIMATION] Reason: Performance optimization (saved ~17 seconds)" << std::endl;
-    std::cout << "[NORMAL ESTIMATION] Quality: Using improved camera carving method in TSDF" << std::endl;
-    std::cout << "[TIMING] Normal estimation: SKIPPED (0 ms)" << std::endl;
+    float3* d_normals_ptr = nullptr;
+    
+    if (normal_provider && provider_id != PROVIDER_CAMERA_BASED) {
+        // Use selected provider for normal estimation
+        auto normal_start = std::chrono::high_resolution_clock::now();
+        
+        // Set camera position for camera-based provider if needed
+        if (auto* camera_provider = dynamic_cast<CameraBasedNormalProvider*>(normal_provider.get())) {
+            float3 camera_pos = make_float3(
+                keyframe->pose_matrix[12],
+                keyframe->pose_matrix[13], 
+                keyframe->pose_matrix[14]
+            );
+            camera_provider->setCameraPosition(camera_pos);
+        }
+        
+        bool success = normal_provider->estimateNormals(
+            d_points, 
+            valid_point_count,
+            pImpl->d_normals.data().get(),
+            pImpl->stream
+        );
+        
+        cudaStreamSynchronize(pImpl->stream);
+        auto normal_end = std::chrono::high_resolution_clock::now();
+        auto normal_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            normal_end - normal_start).count();
+        
+        if (success) {
+            d_normals_ptr = pImpl->d_normals.data().get();
+            std::cout << "[NORMAL ESTIMATION] Provider: " << provider_id 
+                      << " (" << normal_provider->getName() << ")" << std::endl;
+            std::cout << "[NORMAL ESTIMATION] Time: " << normal_ms << " ms" << std::endl;
+            std::cout << "[NORMAL ESTIMATION] Points: " << valid_point_count << std::endl;
+        } else {
+            std::cerr << "[NORMAL ESTIMATION] Failed, falling back to camera-based in TSDF" << std::endl;
+        }
+    } else {
+        // Use camera-based fallback in TSDF
+        std::cout << "[NORMAL ESTIMATION] Provider: 0 (Camera-based in TSDF)" << std::endl;
+        std::cout << "[NORMAL ESTIMATION] Time: 0 ms (integrated in TSDF)" << std::endl;
+    }
     
     // Process with algorithm selector
     auto algo_start = std::chrono::high_resolution_clock::now();
-    bool success = pImpl->algorithm_selector->processWithAutoSelect(
+    bool algo_success = pImpl->algorithm_selector->processWithAutoSelect(
         d_points,
-        nullptr,  // Pass nullptr for normals - TSDF will use camera-based fallback
+        d_normals_ptr,  // Pass normals if available, nullptr triggers TSDF camera-based fallback
         valid_point_count,
         keyframe->pose_matrix,
         pImpl->camera_velocity,
@@ -392,7 +424,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
     auto algo_ms = std::chrono::duration_cast<std::chrono::milliseconds>(algo_end - algo_start).count();
     std::cout << "[TIMING] Algorithm processing (TSDF + MC): " << algo_ms << " ms" << std::endl;
     
-    if (!success) {
+    if (!algo_success) {
         std::cerr << "Mesh generation failed" << std::endl;
         update.vertices.clear();
         update.faces.clear();
@@ -529,7 +561,7 @@ void GPUMeshGenerator::generateIncrementalMesh(
     std::cout << "  Total mesh generation: " << duration << " ms" << std::endl;
     std::cout << "  Major components:" << std::endl;
     std::cout << "    - Point filtering: ~" << filter_ms << " ms" << std::endl;
-    std::cout << "    - Normal estimation: SKIPPED (0 ms)" << std::endl;
+    std::cout << "    - Normal provider: " << NormalProviderFactory::getProviderTypeName(provider_id) << std::endl;
     std::cout << "    - TSDF + Marching Cubes: ~" << algo_ms << " ms" << std::endl;
     std::cout << "  Performance metrics:" << std::endl;
     std::cout << "    - Points processed: " << valid_point_count << std::endl;
@@ -546,21 +578,46 @@ void GPUMeshGenerator::generateMesh(
 ) {
     // Simplified version for direct point cloud input
     
-    // OPTIMIZATION: Skip normal estimation for performance
-    // pImpl->d_normals.resize(num_points);
+    // Get normal provider from configuration
+    int provider_id = CONFIG_INT("MESH_NORMAL_PROVIDER", 
+                                 config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER);
+    auto normal_provider = NormalProviderFactory::create(provider_id);
     
-    // Skip expensive normal estimation - TSDF will use camera-to-point direction as fallback
-    // pImpl->normal_estimator->estimateNormals(
-    //     d_points, 
-    //     num_points,
-    //     pImpl->d_normals.data().get(),
-    //     pImpl->stream
-    // );
+    float3* d_normals_ptr = nullptr;
+    
+    if (normal_provider && provider_id != PROVIDER_CAMERA_BASED && num_points > 0) {
+        // Allocate normals if needed
+        pImpl->d_normals.resize(num_points);
+        
+        // Set camera position for camera-based provider if needed
+        if (auto* camera_provider = dynamic_cast<CameraBasedNormalProvider*>(normal_provider.get())) {
+            if (camera_pose) {
+                float3 camera_pos = make_float3(
+                    camera_pose[12],
+                    camera_pose[13], 
+                    camera_pose[14]
+                );
+                camera_provider->setCameraPosition(camera_pos);
+            }
+        }
+        
+        // Estimate normals
+        bool success = normal_provider->estimateNormals(
+            d_points, 
+            num_points,
+            pImpl->d_normals.data().get(),
+            pImpl->stream
+        );
+        
+        if (success) {
+            d_normals_ptr = pImpl->d_normals.data().get();
+        }
+    }
     
     // Process with algorithm selector
-    bool success = pImpl->algorithm_selector->processWithAutoSelect(
+    bool algo_success = pImpl->algorithm_selector->processWithAutoSelect(
         d_points,
-        nullptr,  // Pass nullptr for normals - TSDF will use camera-based fallback
+        d_normals_ptr,  // Pass normals if available, nullptr triggers TSDF camera-based fallback
         num_points,
         camera_pose,
         0.0f,  // Unknown velocity
@@ -568,7 +625,7 @@ void GPUMeshGenerator::generateMesh(
         pImpl->stream
     );
     
-    if (!success) {
+    if (!algo_success) {
         std::cerr << "Mesh generation failed" << std::endl;
         update.vertices.clear();
         update.faces.clear();

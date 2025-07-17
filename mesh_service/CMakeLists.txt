@@ -19,6 +19,18 @@ find_package(CGAL REQUIRED)
 find_package(OpenMP)
 # msgpack is header-only, no find_package needed
 
+# Optional Open3D support for normal estimation
+option(USE_OPEN3D "Enable Open3D for normal estimation" OFF)
+if(USE_OPEN3D)
+    find_package(Open3D QUIET)
+    if(Open3D_FOUND)
+        message(STATUS "Open3D found - enabling high-quality normal estimation")
+        add_definitions(-DHAS_OPEN3D)
+    else()
+        message(WARNING "Open3D requested but not found")
+    endif()
+endif()
+
 # Find or fetch Rerun SDK
 include(FetchContent)
 FetchContent_Declare(rerun_sdk URL
@@ -52,6 +64,10 @@ set(SOURCES
     src/algorithms/nvidia_marching_cubes.cu
     src/algorithm_selector.cpp
     
+    # Normal providers
+    src/normal_provider_factory.cpp
+    src/normal_providers/camera_based_normal_provider.cu
+    
     # FUTURE: Uncomment these to enable Poisson/NKSR algorithms
     # src/algorithms/open3d_poisson.cpp
     # src/algorithms/nksr_client.cpp
@@ -59,6 +75,11 @@ set(SOURCES
     # Temporarily disabled for build
     # src/websocket_server.cpp
 )
+
+# Conditionally add Open3D normal provider
+if(Open3D_FOUND)
+    list(APPEND SOURCES src/normal_providers/open3d_normal_provider.cpp)
+endif()
 
 # Create executable
 add_executable(mesh_service ${SOURCES})
@@ -96,6 +117,12 @@ target_link_libraries(mesh_service PRIVATE
 # OpenMP support
 if(OpenMP_CXX_FOUND)
     target_link_libraries(mesh_service PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+# Open3D support
+if(Open3D_FOUND)
+    target_link_libraries(mesh_service PRIVATE ${Open3D_LIBRARIES})
+    target_include_directories(mesh_service PRIVATE ${Open3D_INCLUDE_DIRS})
 endif()
 
 # Install target

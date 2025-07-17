@@ -25,30 +25,31 @@ public:
     virtual bool isAvailable() const = 0;
 };
 
+// Numeric provider IDs for cleaner configuration
+enum NormalProviderType {
+    PROVIDER_CAMERA_BASED = 0,    // Fast, low quality (default)
+    PROVIDER_OPEN3D = 1,          // High quality, KD-tree based
+    PROVIDER_NANOFLANN = 2,       // CPU KD-tree (future)
+    PROVIDER_PCL_GPU = 3,         // PCL GPU (future)
+    PROVIDER_GPU_CUSTOM = 4       // Custom GPU kernel (future)
+};
+
 // Factory for creating normal providers
 class NormalProviderFactory {
 public:
-    enum ProviderType {
-        CAMERA_BASED,      // Fast but low quality
-        NANOFLANN_CPU,     // CPU-based KD-tree
-        GPU_OPTIMIZED,     // Custom GPU implementation
-        PCL_GPU,           // PCL GPU (if available)
-        OPEN3D             // Open3D (if available)
-    };
-    
-    static const char* getProviderTypeName(ProviderType type) {
+    static const char* getProviderTypeName(int type) {
         switch(type) {
-            case CAMERA_BASED: return "CAMERA_BASED";
-            case NANOFLANN_CPU: return "NANOFLANN_CPU";
-            case GPU_OPTIMIZED: return "GPU_OPTIMIZED";
-            case PCL_GPU: return "PCL_GPU";
-            case OPEN3D: return "OPEN3D";
-            default: return "UNKNOWN";
+            case PROVIDER_CAMERA_BASED: return "Camera-based (fast)";
+            case PROVIDER_OPEN3D: return "Open3D (quality)";
+            case PROVIDER_NANOFLANN: return "Nanoflann (CPU)";
+            case PROVIDER_PCL_GPU: return "PCL GPU";
+            case PROVIDER_GPU_CUSTOM: return "GPU Custom";
+            default: return "Unknown";
         }
     }
     
-    static std::unique_ptr<INormalProvider> create(ProviderType type);
-    static std::unique_ptr<INormalProvider> createBest(); // Auto-select best available
+    static std::unique_ptr<INormalProvider> create(int provider_id);
+    static std::unique_ptr<INormalProvider> createFromEnv(); // Create from MESH_NORMAL_PROVIDER env var
 };
 
 // Simple camera-based provider (current fallback)

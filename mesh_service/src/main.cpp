@@ -11,8 +11,10 @@
 #include "rabbitmq_consumer.h"
 #include "metrics.h"
 #include "rerun_publisher.h"
+#include "normal_provider.h"
 #include "config/configuration_manager.h"
 #include "config/mesh_service_config.h"
+#include "config/normal_provider_config.h"
 
 std::atomic<bool> g_running{true};
 
@@ -30,11 +32,25 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signal_handler);
     
     std::cout << "\n============================================" << std::endl;
-    std::cout << "        MESH SERVICE v2.0 STARTING          " << std::endl;
+    std::cout << "        MESH SERVICE v2.1 STARTING          " << std::endl;
     std::cout << "============================================" << std::endl;
-    std::cout << "[CONFIG] Normal Estimation: DISABLED (camera-based fallback)" << std::endl;
+    
+    // Get normal provider configuration
+    int normal_provider = CONFIG_INT("MESH_NORMAL_PROVIDER", 
+                                    mesh_service::config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER);
+    std::cout << "[CONFIG] Normal Provider: " << normal_provider 
+              << " (" << mesh_service::NormalProviderFactory::getProviderTypeName(normal_provider) << ")" << std::endl;
+    
+    // Check Open3D availability
+#ifdef HAS_OPEN3D
+    std::cout << "[CONFIG] Open3D Support: ENABLED" << std::endl;
+#else
+    std::cout << "[CONFIG] Open3D Support: DISABLED" << std::endl;
+#endif
+    
     std::cout << "[CONFIG] TSDF Method: Improved camera carving" << std::endl;
-    std::cout << "[CONFIG] Performance Mode: REAL-TIME (~50 FPS)" << std::endl;
+    std::cout << "[CONFIG] Performance Mode: " 
+              << (normal_provider == 0 ? "REAL-TIME (~50 FPS)" : "QUALITY") << std::endl;
     std::cout << "============================================\n" << std::endl;
     
     // Initialize configuration manager
@@ -284,12 +300,16 @@ int main(int argc, char* argv[]) {
                     
                     // Print comprehensive timing summary
                     std::cout << "\n========== FRAME PROCESSING TIMING SUMMARY ==========" << std::endl;
-                    std::cout << "[NORMAL PROVIDER STATUS] Currently: DISABLED for performance" << std::endl;
+                    std::cout << "[NORMAL PROVIDER STATUS] " << mesh_service::NormalProviderFactory::getProviderTypeName(
+                                  CONFIG_INT("MESH_NORMAL_PROVIDER", mesh_service::config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER))
+                             << std::endl;
                     std::cout << "Frame " << frame_count << " - Total Time: " << frame_total_ms << " ms" << std::endl;
                     std::cout << "Breakdown:" << std::endl;
                     std::cout << "  1. Mesh Generation: " << mesh_gen_time << " ms (" 
                              << (mesh_gen_time * 100.0 / frame_total_ms) << "%)" << std::endl;
-                    std::cout << "     - Normal estimation: SKIPPED (0 ms)" << std::endl;
+                    std::cout << "     - Normal provider: " << mesh_service::NormalProviderFactory::getProviderTypeName(
+                                  CONFIG_INT("MESH_NORMAL_PROVIDER", mesh_service::config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER))
+                             << std::endl;
                     std::cout << "     - TSDF + MC: ~" << (mesh_gen_time * 0.80) << " ms (estimate)" << std::endl;
                     std::cout << "     - Other: ~" << (mesh_gen_time * 0.20) << " ms (estimate)" << std::endl;
                     std::cout << "  2. Rerun Publishing: " << rerun_total_ms << " ms (" 

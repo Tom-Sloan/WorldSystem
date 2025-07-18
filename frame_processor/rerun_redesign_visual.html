@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rerun Blueprint Design</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            overflow-x: auto;
+        }
+        
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        h1 {
+            color: #4fc3f7;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+        
+        .subtitle {
+            color: #888;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .blueprint-container {
+            background: #1a1a1a;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+        
+        .layout-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .panel {
+            background: #252525;
+            border-radius: 8px;
+            padding: 15px;
+            border: 1px solid #333;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .panel-title {
+            color: #4fc3f7;
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .icon {
+            width: 16px;
+            height: 16px;
+            display: inline-block;
+        }
+        
+        .main-view {
+            min-height: 500px;
+            position: relative;
+            background: #1a1a1a;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .camera-feed {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            background-image: linear-gradient(45deg, #1a1a1a 25%, transparent 25%), 
+                              linear-gradient(-45deg, #1a1a1a 25%, transparent 25%), 
+                              linear-gradient(45deg, transparent 75%, #1a1a1a 75%), 
+                              linear-gradient(-45deg, transparent 75%, #1a1a1a 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+        }
+        
+        .hallway-img {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            height: 90%;
+            background: #0a0a0a;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #444;
+            font-size: 18px;
+            border-radius: 4px;
+        }
+        
+        .bbox {
+            position: absolute;
+            border: 2px solid #4fc3f7;
+            background: rgba(79, 195, 247, 0.1);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .bbox:hover {
+            background: rgba(79, 195, 247, 0.2);
+            border-color: #81d4fa;
+            box-shadow: 0 0 10px rgba(79, 195, 247, 0.5);
+        }
+        
+        .bbox-label {
+            position: absolute;
+            top: -25px;
+            left: 0;
+            background: #4fc3f7;
+            color: #0a0a0a;
+            padding: 2px 8px;
+            border-radius: 4px 4px 0 0;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        
+        .bbox-info {
+            position: absolute;
+            bottom: -20px;
+            left: 0;
+            background: rgba(0,0,0,0.8);
+            color: #e0e0e0;
+            padding: 2px 6px;
+            border-radius: 0 0 4px 4px;
+            font-size: 10px;
+            white-space: nowrap;
+        }
+        
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .info-card {
+            background: #1a1a1a;
+            padding: 12px;
+            border-radius: 4px;
+            border-left: 3px solid #4fc3f7;
+        }
+        
+        .info-card h3 {
+            color: #4fc3f7;
+            font-size: 12px;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        
+        .stat-item {
+            background: #2a2a2a;
+            padding: 8px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 20px;
+            font-weight: 600;
+            color: #4fc3f7;
+        }
+        
+        .stat-label {
+            font-size: 10px;
+            color: #888;
+            text-transform: uppercase;
+        }
+        
+        .timeline-view {
+            grid-column: 1 / -1;
+            height: 120px;
+            background: #1a1a1a;
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .timeline-track {
+            position: absolute;
+            height: 20px;
+            background: #333;
+            border-radius: 2px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            align-items: center;
+            padding: 0 4px;
+            font-size: 10px;
+        }
+        
+        .detection-marker {
+            width: 4px;
+            height: 16px;
+            background: #4fc3f7;
+            border-radius: 2px;
+            margin: 0 2px;
+        }
+        
+        .quality-bar {
+            height: 60px;
+            background: #1a1a1a;
+            border-radius: 4px;
+            padding: 8px;
+            position: relative;
+        }
+        
+        .quality-fill {
+            position: absolute;
+            bottom: 8px;
+            left: 8px;
+            right: 8px;
+            background: linear-gradient(to top, #f44336, #ff9800, #4caf50);
+            border-radius: 2px;
+            transition: height 0.3s ease;
+        }
+        
+        .code-block {
+            background: #0a0a0a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 30px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            overflow-x: auto;
+        }
+        
+        .code-block pre {
+            margin: 0;
+            color: #e0e0e0;
+        }
+        
+        .keyword { color: #ff79c6; }
+        .string { color: #50fa7b; }
+        .comment { color: #6272a4; }
+        .function { color: #f1fa8c; }
+        
+        .feature-list {
+            list-style: none;
+            margin-top: 10px;
+        }
+        
+        .feature-list li {
+            padding: 8px 0;
+            border-bottom: 1px solid #333;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .feature-list li:last-child {
+            border-bottom: none;
+        }
+        
+        .check {
+            color: #4caf50;
+            font-size: 16px;
+        }
+        
+        .dimension-display {
+            background: #2a2a2a;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-size: 12px;
+        }
+        
+        .dimension-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+        }
+        
+        .scene-scale {
+            background: linear-gradient(135deg, #1a237e, #3949ab);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            margin-top: 10px;
+        }
+        
+        .scale-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+            margin: 10px 0;
+        }
+        
+        .scale-confidence {
+            font-size: 12px;
+            color: #b3e5fc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Enhanced Rerun Blueprint Design</h1>
+        <p class="subtitle">Dual-view visualization for Frame Processor - Both views visible simultaneously</p>
+        
+        <div class="blueprint-container">
+            <div style="display: grid; grid-template-columns: 3fr 2fr; gap: 20px;">
+                <!-- Left Column: Live Monitoring -->
+                <div>
+                    <h3 style="color: #4fc3f7; margin-bottom: 15px;">Live Monitoring</h3>
+                    <div class="layout-grid" style="grid-template-columns: 1fr;">
+                        <!-- Main Camera View -->
+                        <div class="panel">
+                            <div class="panel-title">
+                                <span class="icon">📹</span>
+                                Live Camera View
+                            </div>
+                            <div class="main-view" style="min-height: 400px;">
+                                <div class="camera-feed">
+                                    <div class="hallway-img">Hallway Scene</div>
+                                    
+                                    <!-- Integrated Bounding Boxes -->
+                                    <div class="bbox" style="left: 20%; top: 30%; width: 80px; height: 100px;">
+                                        <div class="bbox-label">Camera #42</div>
+                                        <div class="bbox-info">0.13m • 94% conf</div>
+                                    </div>
+                                    
+                                    <div class="bbox" style="left: 45%; top: 25%; width: 60px; height: 80px;">
+                                        <div class="bbox-label">Monitor #18</div>
+                                        <div class="bbox-info">0.61m • 87% conf</div>
+                                    </div>
+                                    
+                                    <div class="bbox" style="left: 70%; top: 40%; width: 50px; height: 40px;">
+                                        <div class="bbox-label">Phone #7</div>
+                                        <div class="bbox-info">0.15m • 91% conf</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Bottom Controls -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                            <!-- Selected Object -->
+                            <div class="panel">
+                                <div class="panel-title">
+                                    <span class="icon">🎯</span>
+                                    Selected Object
+                                </div>
+                                <div class="info-card">
+                                    <h3>Camera #42</h3>
+                                    <p style="font-size: 14px;">Arlo Pro 4 Security Camera</p>
+                                    <div class="dimension-display">
+                                        <div class="dimension-row">
+                                            <span>Dimensions:</span>
+                                            <span>5.2" × 3.1" × 3.1"</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Timeline -->
+                            <div class="panel">
+                                <div class="panel-title">
+                                    <span class="icon">⏱️</span>
+                                    Processing Timeline
+                                </div>
+                                <div class="timeline-view" style="height: 80px;">
+                                    <div class="timeline-track" style="top: 25%; width: 80%;">
+                                        <span>Camera #42</span>
+                                        <div class="detection-marker" style="background: #4caf50;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Right Column: Gallery & Stats -->
+                <div>
+                    <h3 style="color: #4fc3f7; margin-bottom: 15px;">Processed Gallery</h3>
+                    <div class="sidebar" style="gap: 15px;">
+                        <!-- Gallery -->
+                        <div class="panel">
+                            <div class="panel-title">
+                                <span class="icon">🖼️</span>
+                                Processed Objects Gallery
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-height: 300px; overflow-y: auto;">
+                                <!-- Mini Gallery Items -->
+                                <div style="background: #1a1a1a; padding: 10px; border-radius: 4px;">
+                                    <div style="background: #0a0a0a; height: 80px; margin-bottom: 5px; border-radius: 4px;"></div>
+                                    <div style="font-size: 11px; text-align: center;">
+                                        <div>Camera #42</div>
+                                        <div style="color: #4fc3f7;">13.2cm</div>
+                                    </div>
+                                </div>
+                                <div style="background: #1a1a1a; padding: 10px; border-radius: 4px;">
+                                    <div style="background: #0a0a0a; height: 80px; margin-bottom: 5px; border-radius: 4px;"></div>
+                                    <div style="font-size: 11px; text-align: center;">
+                                        <div>Monitor #18</div>
+                                        <div style="color: #4fc3f7;">61.0cm</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Identification Results -->
+                        <div class="panel">
+                            <div class="panel-title">
+                                <span class="icon">📋</span>
+                                Identification Results
+                            </div>
+                            <div style="font-size: 12px;">
+                                <div style="padding: 8px 0; border-bottom: 1px solid #333;">
+                                    <strong>📷 Camera #42</strong><br>
+                                    Arlo Pro 4 - 5.2"×3.1"×3.1"
+                                </div>
+                                <div style="padding: 8px 0;">
+                                    <strong>🖥️ Monitor #18</strong><br>
+                                    Dell 24" - 21.2"×12.7"×7.1"
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Statistics -->
+                        <div class="panel">
+                            <div class="panel-title">
+                                <span class="icon">📊</span>
+                                Statistics
+                            </div>
+                            <div class="stats-grid">
+                                <div class="stat-item">
+                                    <div class="stat-value">24</div>
+                                    <div class="stat-label">FPS</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value">3</div>
+                                    <div class="stat-label">Objects</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value">45ms</div>
+                                    <div class="stat-label">Latency</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value">87%</div>
+                                    <div class="stat-label">Success</div>
+                                </div>
+                            </div>
+                            
+                            <!-- Scene Scale -->
+                            <div class="scene-scale" style="margin-top: 15px;">
+                                <div style="font-size: 12px; color: #b3e5fc;">Real-World Scale</div>
+                                <div class="scale-value">0.0254 m/unit</div>
+                                <div class="scale-confidence">87% confidence</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+            <div class="layout-grid">
+                <!-- Main Camera View with Integrated Overlays -->
+                <div class="panel">
+                    <div class="panel-title">
+                        <span class="icon">📹</span>
+                        Main Camera Feed - Integrated View
+                    </div>
+                    <div class="main-view">
+                        <div class="camera-feed">
+                            <div class="hallway-img">Hallway Scene</div>
+                            
+                            <!-- Integrated Bounding Boxes -->
+                            <div class="bbox" style="left: 20%; top: 30%; width: 80px; height: 100px;">
+                                <div class="bbox-label">Camera #42</div>
+                                <div class="bbox-info">0.13m • 94% conf</div>
+                            </div>
+                            
+                            <div class="bbox" style="left: 45%; top: 25%; width: 60px; height: 80px;">
+                                <div class="bbox-label">Monitor #18</div>
+                                <div class="bbox-info">0.61m • 87% conf</div>
+                            </div>
+                            
+                            <div class="bbox" style="left: 70%; top: 40%; width: 50px; height: 40px;">
+                                <div class="bbox-label">Phone #7</div>
+                                <div class="bbox-info">0.15m • 91% conf</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Right Sidebar with Contextual Information -->
+                <div class="sidebar">
+                    <!-- Live Statistics -->
+                    <div class="panel">
+                        <div class="panel-title">
+                            <span class="icon">📊</span>
+                            Live Statistics
+                        </div>
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <div class="stat-value">3</div>
+                                <div class="stat-label">Objects</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value">24</div>
+                                <div class="stat-label">FPS</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value">45ms</div>
+                                <div class="stat-label">Latency</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value">1.2GB</div>
+                                <div class="stat-label">GPU Mem</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Selected Object Details -->
+                    <div class="panel">
+                        <div class="panel-title">
+                            <span class="icon">🎯</span>
+                            Selected: Camera #42
+                        </div>
+                        <div class="info-card">
+                            <h3>Identification</h3>
+                            <p style="font-size: 14px; margin-bottom: 8px;">Arlo Pro 4 Security Camera</p>
+                            <div class="dimension-display">
+                                <div class="dimension-row">
+                                    <span>Width:</span>
+                                    <span>5.2 inches (13.2 cm)</span>
+                                </div>
+                                <div class="dimension-row">
+                                    <span>Height:</span>
+                                    <span>3.1 inches (7.9 cm)</span>
+                                </div>
+                                <div class="dimension-row">
+                                    <span>Depth:</span>
+                                    <span>3.1 inches (7.9 cm)</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="info-card" style="margin-top: 10px;">
+                            <h3>Tracking Quality</h3>
+                            <div class="quality-bar">
+                                <div class="quality-fill" style="height: 75%;"></div>
+                            </div>
+                            <div style="font-size: 10px; margin-top: 5px; text-align: center;">
+                                Score: 0.87 (Sharp • Well-lit • Centered)
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Scene Scale -->
+                    <div class="panel">
+                        <div class="panel-title">
+                            <span class="icon">📏</span>
+                            Scene Scale
+                        </div>
+                        <div class="scene-scale">
+                            <div style="font-size: 12px; color: #b3e5fc;">Real-World Scale Factor</div>
+                            <div class="scale-value">0.0254 m/unit</div>
+                            <div class="scale-confidence">87% confidence • 3 objects</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Timeline View -->
+            <div class="panel">
+                <div class="panel-title">
+                    <span class="icon">⏱️</span>
+                    Object Timeline & Processing Events
+                </div>
+                <div class="timeline-view">
+                    <div class="timeline-track" style="top: 25%; width: 80%;">
+                        <span style="margin-right: 10px;">Camera #42</span>
+                        <div class="detection-marker"></div>
+                        <div class="detection-marker"></div>
+                        <div class="detection-marker" style="background: #4caf50;"></div>
+                        <span style="margin-left: 10px; color: #4caf50;">✓ Processed</span>
+                    </div>
+                    <div class="timeline-track" style="top: 50%; width: 60%;">
+                        <span style="margin-right: 10px;">Monitor #18</span>
+                        <div class="detection-marker"></div>
+                        <div class="detection-marker"></div>
+                    </div>
+                    <div class="timeline-track" style="top: 75%; width: 40%;">
+                        <span style="margin-right: 10px;">Phone #7</span>
+                        <div class="detection-marker"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Page 2: Processed Objects Gallery -->
+        <div class="blueprint-container" style="margin-top: 30px;">
+            <h2 style="color: #4fc3f7; margin-bottom: 20px;">Page 2: Processed Objects Gallery</h2>
+            <p class="subtitle">Enhanced images with identification results</p>
+            
+        <!-- Implementation Code -->
+        <div class="code-block" style="margin-top: 30px;">
+            <pre><code><span class="comment"># Enhanced Rerun Blueprint Configuration for 0.23.2</span>
+<span class="keyword">import</span> rerun <span class="keyword">as</span> rr
+<span class="keyword">import</span> rerun.blueprint <span class="keyword">as</span> bp
+
+<span class="keyword">def</span> <span class="function">create_enhanced_blueprint</span>():
+    blueprint = bp.Blueprint(
+        bp.Horizontal(
+            <span class="comment"># Left: Live monitoring components</span>
+            bp.Vertical(
+                bp.SpaceView(
+                    name=<span class="string">"📹 Live Camera View"</span>,
+                    origin=<span class="string">"/live/camera"</span>,
+                    contents=[
+                        <span class="string">"/live/camera/**"</span>,
+                        <span class="string">"/live/detections/**"</span>,
+                        <span class="string">"/live/tracking/**"</span>
+                    ]
+                ),
+                bp.Horizontal(
+                    bp.TextDocumentView(
+                        name=<span class="string">"🎯 Selected Object"</span>,
+                        origin=<span class="string">"/live/selected_object"</span>
+                    ),
+                    bp.TimeSeriesView(
+                        name=<span class="string">"⏱️ Timeline"</span>,
+                        origin=<span class="string">"/live/timeline"</span>
+                    ),
+                    column_shares=[<span class="string">1</span>, <span class="string">1</span>]
+                ),
+                row_shares=[<span class="string">3</span>, <span class="string">1</span>]
+            ),
+            <span class="comment"># Right: Gallery and statistics</span>
+            bp.Vertical(
+                bp.SpaceView(
+                    name=<span class="string">"🖼️ Gallery"</span>,
+                    origin=<span class="string">"/gallery"</span>,
+                    contents=[<span class="string">"/gallery/**"</span>]
+                ),
+                bp.Horizontal(
+                    bp.TextDocumentView(
+                        name=<span class="string">"📋 Results"</span>,
+                        origin=<span class="string">"/gallery/results"</span>
+                    ),
+                    bp.TextDocumentView(
+                        name=<span class="string">"📊 Statistics"</span>,
+                        origin=<span class="string">"/stats"</span>
+                    ),
+                    column_shares=[<span class="string">2</span>, <span class="string">1</span>]
+                ),
+                row_shares=[<span class="string">2</span>, <span class="string">1</span>]
+            ),
+            column_shares=[<span class="string">3</span>, <span class="string">2</span>]
+        )
+    )
+    <span class="keyword">return</span> blueprint</code></pre>
+        </div>
+        
+        <!-- Key Improvements -->
+        <div class="blueprint-container" style="margin-top: 30px;">
+            <h2 style="color: #4fc3f7; margin-bottom: 20px;">Key Features of This Design</h2>
+            <ul class="feature-list">
+                <li>
+                    <span class="check">✓</span>
+                    <div>
+                        <strong>Dual-View Layout:</strong> Both live monitoring and gallery are visible simultaneously - no tabs needed
+                    </div>
+                </li>
+                <li>
+                    <span class="check">✓</span>
+                    <div>
+                        <strong>Flexible Viewing:</strong> Use Rerun's entity tree to collapse/expand sections as needed
+                    </div>
+                </li>
+                <li>
+                    <span class="check">✓</span>
+                    <div>
+                        <strong>Integrated Overlays:</strong> Bounding boxes with labels appear directly on the camera feed
+                    </div>
+                </li>
+                <li>
+                    <span class="check">✓</span>
+                    <div>
+                        <strong>Real-time Gallery:</strong> Processed objects appear immediately in the gallery view
+                    </div>
+                </li>
+                <li>
+                    <span class="check">✓</span>
+                    <div>
+                        <strong>Comprehensive Statistics:</strong> Live performance metrics and scene scale in one place
+                    </div>
+                </li>
+                <li>
+                    <span class="check">✓</span>
+                    <div>
+                        <strong>Path Organization:</strong> Clear separation between /live/* and /gallery/* paths for easy filtering
+                    </div>
+                </li>
+            </ul>
+            
+            <h3 style="color: #4fc3f7; margin-top: 30px; margin-bottom: 15px;">How to Use in Rerun Viewer</h3>
+            <div style="background: #2a2a2a; padding: 15px; border-radius: 8px; margin-top: 10px;">
+                <p style="margin: 0 0 10px 0;"><strong>To focus on live monitoring:</strong></p>
+                <ul style="margin: 0 0 10px 0; padding-left: 20px;">
+                    <li>Click the gallery panel header and drag to minimize</li>
+                    <li>Or collapse /gallery/* in the entity tree</li>
+                </ul>
+                
+                <p style="margin: 15px 0 10px 0;"><strong>To focus on processed results:</strong></p>
+                <ul style="margin: 0 0 10px 0; padding-left: 20px;">
+                    <li>Maximize the gallery panel by dragging</li>
+                    <li>Or collapse /live/* paths in the entity tree</li>
+                </ul>
+                
+                <p style="margin: 15px 0 0 0;"><strong>To see specific data:</strong></p>
+                <ul style="margin: 0; padding-left: 20px;">
+                    <li>Use the entity tree checkboxes to show/hide specific paths</li>
+                    <li>Drag panel dividers to adjust sizes</li>
+                    <li>Double-click panel headers to maximize/restore</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+            <pre><code><span class="comment"># Enhanced Rerun Blueprint Configuration</span>
+<span class="keyword">import</span> rerun <span class="keyword">as</span> rr
+<span class="keyword">import</span> rerun.blueprint <span class="keyword">as</span> bp
+
+<span class="keyword">def</span> <span class="function">create_enhanced_blueprint</span>():
+    blueprint = bp.Blueprint(
+        bp.Vertical(
+            <span class="comment"># Main view with integrated overlays</span>
+            bp.SpaceView(
+                name=<span class="string">"📹 Integrated Camera View"</span>,
+                origin=<span class="string">"/camera"</span>,
+                contents=[
+                    <span class="string">"/camera/**"</span>,          <span class="comment"># Camera feed</span>
+                    <span class="string">"/detections/**"</span>,     <span class="comment"># YOLO detections</span>
+                    <span class="string">"/tracking/**"</span>,       <span class="comment"># Tracked objects</span>
+                    <span class="string">"/annotations/**"</span>     <span class="comment"># Enhanced labels</span>
+                ],
+                <span class="comment"># Force 2D view to ensure overlays work</span>
+                space_view_type=<span class="string">"2D"</span>
+            ),
+            bp.Horizontal(
+                <span class="comment"># Left: Object details and timeline</span>
+                bp.Vertical(
+                    bp.TextDocumentView(
+                        name=<span class="string">"🎯 Selected Object"</span>,
+                        origin=<span class="string">"/selected_object"</span>,
+                        contents=[<span class="string">"/selected_object/**"</span>]
+                    ),
+                    bp.TimeSeriesView(
+                        name=<span class="string">"⏱️ Processing Timeline"</span>,
+                        origin=<span class="string">"/timeline"</span>,
+                        contents=[<span class="string">"/timeline/**"</span>]
+                    ),
+                    row_shares=[<span class="string">1</span>, <span class="string">1</span>]
+                ),
+                <span class="comment"># Right: Live stats and scene info</span>
+                bp.Vertical(
+                    bp.TextDocumentView(
+                        name=<span class="string">"📊 Live Statistics"</span>,
+                        origin=<span class="string">"/stats"</span>,
+                        contents=[<span class="string">"/stats/**"</span>]
+                    ),
+                    bp.TextDocumentView(
+                        name=<span class="string">"📏 Scene Understanding"</span>,
+                        origin=<span class="string">"/scene"</span>,
+                        contents=[<span class="string">"/scene/**"</span>]
+                    ),
+                    row_shares=[<span class="string">1</span>, <span class="string">1</span>]
+                ),
+                column_shares=[<span class="string">2</span>, <span class="string">1</span>]
+            ),
+            row_shares=[<span class="string">3</span>, <span class="string">1</span>]
+        )
+    )
+    <span class="keyword">return</span> blueprint</code></pre>
+        </div>
+
+    </div>
+</body>
+</html>

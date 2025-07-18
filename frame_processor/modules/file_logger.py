@@ -2,6 +2,7 @@ import os
 import time
 import json
 import threading
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
@@ -35,6 +36,20 @@ class FileLogger:
         
         # Write initial session header
         self._write_session_header()
+    
+    def _convert_numpy_types(self, obj):
+        """Convert numpy types to Python native types for JSON serialization."""
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: self._convert_numpy_types(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_numpy_types(i) for i in obj]
+        return obj
     
     def _write_session_header(self):
         """Write session header to all log files."""
@@ -83,8 +98,10 @@ class FileLogger:
             
             # Write as JSON line
             try:
+                # Convert numpy types to Python native types for JSON serialization
+                data_converted = self._convert_numpy_types(data)
                 with open(file_path, "a") as f:
-                    f.write(json.dumps(data) + "\n")
+                    f.write(json.dumps(data_converted) + "\n")
             except Exception as e:
                 print(f"Error writing to log file {file_path}: {e}")
     

@@ -85,6 +85,12 @@ from modules.file_logger import FileLogger
 print("[DEBUG] modules.file_logger imported successfully")
 sys.stdout.flush()
 
+print("[DEBUG] Importing enhanced_rerun_visualizer...")
+from enhanced_rerun_visualizer import EnhancedRerunVisualizer, show_both_pages, show_live_page_only, show_process_page_only
+from integrate_enhanced_visualizer import integrate_enhanced_visualization
+print("[DEBUG] enhanced_rerun_visualizer imported successfully")
+sys.stdout.flush()
+
 # Load environment variables
 print("[DEBUG] Loading environment variables...")
 load_dotenv()
@@ -216,27 +222,7 @@ class EnhancedFrameProcessor:
         if timestamp_ns and isinstance(timestamp_ns, str):
             timestamp_ns = int(timestamp_ns)
         
-        # Log camera frame
-        if RERUN_ENABLED:
-            try:
-                # Set time for this frame
-                rr.set_time("frame", sequence=frame_number)
-                if timestamp_ns:
-                    rr.set_time("sensor_time", timestamp=timestamp_ns / 1e9)
-                    
-                rr.log("camera/processed", rr.Image(frame).compress(jpeg_quality=80))
-            except AttributeError:
-                # Fallback for older versions without compress method
-                try:
-                    rr.log("camera/processed", rr.Image(frame))
-                except Exception as e:
-                    self.logger.log_error("RERUN_IMAGE_LOG_ERROR",
-                        f"Failed to log image to Rerun: {str(e)}",
-                        {"frame_number": frame_number})
-            except Exception as e:
-                self.logger.log_error("RERUN_CAMERA_LOG_ERROR",
-                    f"Failed to log camera frame to Rerun: {str(e)}",
-                    {"frame_number": frame_number, "has_timestamp": bool(timestamp_ns)})
+        # Camera frame logging is now handled by enhanced visualizer
         
         # Run YOLO detection
         try:
@@ -292,8 +278,8 @@ class EnhancedFrameProcessor:
             detections = []
             detection_count = 0
         
-        # Log YOLO detections to Rerun
-        if RERUN_ENABLED and detections:
+        # YOLO detections logging is now handled by enhanced visualizer
+        if False and RERUN_ENABLED and detections:  # Disabled - handled by enhanced visualizer
             try:
                 boxes_2d = []
                 labels = []
@@ -424,16 +410,7 @@ class EnhancedFrameProcessor:
                 "frame_count": len(obj.frame_history)
             })
         
-        # Log tracked objects to Rerun
-        if RERUN_ENABLED:
-            try:
-                self.log_tracked_objects_to_rerun(frame_number)
-            except Exception as e:
-                self.logger.log_error("LOG_TRACKED_OBJECTS_CALL_ERROR",
-                    f"Failed to call log_tracked_objects_to_rerun: {str(e)}",
-                    {"frame_number": frame_number})
-                import traceback
-                self.logger.log("errors", "LOG_TRACKED_CALL_TRACEBACK", {"traceback": traceback.format_exc()})
+        # Tracked objects logging is now handled by enhanced visualizer
         
         # Update quality scores for active tracks
         for track in self.tracker.get_active_tracks():
@@ -605,14 +582,7 @@ class EnhancedFrameProcessor:
             track.best_frame_number = self.frame_count
             track.score_components = components
             
-            if RERUN_ENABLED:
-                rr.log(
-                    "/logs",
-                    rr.TextLog(
-                        f"New best frame for object {track.id} (score: {score:.3f})",
-                        level="DEBUG"
-                    )
-                )
+            # Best frame logging is now handled by enhanced visualizer
             
             self.logger.log_tracking_event("NEW_BEST_FRAME", track.id, track.class_name, {
                 "score": score,
@@ -961,10 +931,11 @@ if RERUN_ENABLED:
         colors = np.zeros((10,3), dtype=np.uint8)
         colors[:,0] = np.linspace(0,255,10)
         
-        rr.log(
-            "test/my_points",
-            rr.Points3D(positions, colors=colors, radii=0.5)
-        )
+        # Test data logging disabled - using enhanced visualizer instead
+        # rr.log(
+        #     "test/my_points",
+        #     rr.Points3D(positions, colors=colors, radii=0.5)
+        # )
         print("[Rerun] Test data sent successfully")
         sys.stdout.flush()
     except Exception as e:
@@ -1022,9 +993,9 @@ sys.stdout.flush()
 print("[DEBUG] Initializing YOLO model...")
 sys.stdout.flush()
 try:
-    print("[DEBUG] Loading yolov8n.pt...")
+    print("[DEBUG] Loading yolov11l.pt...")
     sys.stdout.flush()
-    model = YOLO("yolov8n.pt")
+    model = YOLO("yolov11l.pt")
     print("[DEBUG] YOLO model loaded, checking CUDA availability...")
     sys.stdout.flush()
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -1037,7 +1008,7 @@ except Exception as e:
     print(f"Error loading YOLO model: {e}")
     print("Attempting to download yolov8n.pt...")
     try:
-        model = YOLO("yolov8n.pt")  # This will trigger download
+        model = YOLO("yolov11l.pt")  # This will trigger download
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model.to(device)
         print(f"Model downloaded successfully. Using device: {device}")
@@ -1092,6 +1063,18 @@ processor = EnhancedFrameProcessor()
 print("[DEBUG] EnhancedFrameProcessor instance created successfully")
 sys.stdout.flush()
 
+# Integrate enhanced Rerun visualizer
+if RERUN_ENABLED:
+    print("[DEBUG] Integrating enhanced Rerun visualizer...")
+    sys.stdout.flush()
+    visualizer = integrate_enhanced_visualization(processor)
+    print("[DEBUG] Enhanced Rerun visualizer integrated successfully")
+    print("[DEBUG] You can switch view modes with:")
+    print("  - show_both_pages(processor.visualizer)     # Both pages (default)")
+    print("  - show_live_page_only(processor.visualizer) # Live monitoring only")
+    print("  - show_process_page_only(processor.visualizer) # Gallery only")
+    sys.stdout.flush()
+
 print("Enhanced frame_processor: Ready to process frames...")
 sys.stdout.flush()
 
@@ -1134,32 +1117,7 @@ def frame_callback(ch, method, properties, body):
         if timestamp_ns and isinstance(timestamp_ns, str):
             timestamp_ns = int(timestamp_ns)
         
-        # Log to Rerun immediately
-        if RERUN_ENABLED:
-            print(f"[DEBUG frame_callback] Logging frame to Rerun at /camera/raw, frame shape: {frame.shape}")
-            sys.stdout.flush()
-            try:
-                # Set timestamp for Rerun
-                if timestamp_ns:
-                    rr.set_time("sensor_time", timestamp=1e-9 * timestamp_ns)
-                
-                rr.log("camera/raw", rr.Image(frame).compress(jpeg_quality=80))
-                print("[DEBUG frame_callback] Frame logged to Rerun successfully")
-            except AttributeError as e:
-                # Try without compress for older Rerun versions
-                try:
-                    rr.log("camera/raw", rr.Image(frame))
-                except Exception as e2:
-                    print(f"[ERROR frame_callback] Failed to log raw frame to Rerun: {e2}")
-                    if hasattr(processor, 'logger'):
-                        processor.logger.log_error("RERUN_RAW_IMAGE_ERROR", str(e2), 
-                            {"frame_count": processor.frame_count})
-            except Exception as e:
-                print(f"[ERROR frame_callback] Failed to log to Rerun: {e}")
-                if hasattr(processor, 'logger'):
-                    processor.logger.log_error("RERUN_RAW_LOG_ERROR", str(e),
-                        {"frame_count": processor.frame_count})
-            sys.stdout.flush()
+        # Raw frame logging is now handled by enhanced visualizer
         
         # Process frame if mode is active
         if current_mode == "yolo":

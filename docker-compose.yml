@@ -110,8 +110,10 @@ services:
     volumes:
       - ${WORKSPACE}/frame_processor/frame_processor.py:/app/frame_processor.py
       - ${WORKSPACE}/frame_processor/frame_processor_original.py:/app/frame_processor_original.py
+      - ${WORKSPACE}/frame_processor/enhanced_rerun_visualizer.py:/app/enhanced_rerun_visualizer.py
+      - ${WORKSPACE}/frame_processor/integrate_enhanced_visualizer.py:/app/integrate_enhanced_visualizer.py
       - ${WORKSPACE}/frame_processor/modules:/app/modules
-      - ${WORKSPACE}/frame_processor/yolov8n.pt:/app/yolov8n.pt
+      - ${WORKSPACE}/frame_processor/yolov11l.pt:/app/yolov11l.pt
       - ${WORKSPACE}/frame_processor/worldsystem-23f7306a1a75.json:/app/worldsystem-23f7306a1a75.json:ro
       - ${WORKSPACE}/frame_processor/logs:/app/logs
       - ${X11SOCKET}:${X11SOCKET}

@@ -4,32 +4,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Frame Processor Service Overview
 
-The frame_processor is a GPU-accelerated video processing service that:
-- Receives raw video frames from RabbitMQ
-- Optionally applies YOLO object detection
-- Publishes processed frames with annotations
+The frame_processor is a GPU-accelerated video processing service with a modular architecture that:
+- Performs real-time object detection and tracking
+- Identifies objects using Google Lens API
+- Estimates object dimensions via Perplexity AI
+- Calculates real-world scene scale
 - Provides real-time visualization via Rerun
-- Exposes Prometheus metrics for monitoring
-- Uses NTP time synchronization for accurate timestamps
+- Publishes results to multiple RabbitMQ exchanges
 
-## Architecture & Integration
+## Architecture
 
-This service is part of the WorldSystem microservices architecture:
-- **Input**: Raw video frames from `video_frames_exchange` 
-- **Output**: Processed frames to `processed_frames_exchange`
-- **Control**: Analysis mode updates from `analysis_mode_exchange`
-- **Monitoring**: Prometheus metrics on port 8003
-- **Visualization**: Rerun viewer integration on port 9090
+The service follows a clean, modular architecture:
 
-## Key Dependencies
-
-- **ultralytics**: YOLOv8 object detection model
-- **opencv-python-headless**: Image processing
-- **pika**: RabbitMQ client
-- **rerun-sdk==0.23.2**: Real-time visualization
-- **prometheus_client**: Metrics collection
-- **ntplib**: NTP time synchronization
-- **NVIDIA CUDA**: GPU acceleration (requires nvidia-docker)
+```
+frame_processor/
+├── main.py                    # Async entry point with RabbitMQ consumer
+├── core/                      # Core utilities
+│   ├── config.py             # Pydantic-based configuration
+│   └── utils.py              # Logging, NTP sync, timing utilities
+├── detection/                 # Detection algorithms (factory pattern)
+│   ├── base.py              # Abstract detector interface
+│   └── yolo.py              # YOLOv11 implementation
+├── tracking/                  # Tracking algorithms (factory pattern)
+│   ├── base.py              # Abstract tracker interface
+│   └── iou_tracker.py       # IOU-based tracker with quality scoring
+├── external/                  # External API integrations
+│   └── api_client.py        # GCS, SerpAPI, Perplexity clients
+├── pipeline/                  # Processing pipeline
+│   ├── processor.py         # Main orchestrator
+│   ├── scorer.py            # Frame quality scoring
+│   ├── enhancer.py          # Image enhancement
+│   └── publisher.py         # RabbitMQ publisher
+└── visualization/             # Real-time visualization
+    ├── rerun_client.py      # Rerun integration
+    └── enhanced_visualizer.py
+```
 
 ## Development Commands
 
@@ -37,90 +46,133 @@ This service is part of the WorldSystem microservices architecture:
 # Build the service
 docker-compose build frame_processor
 
-# Run with the full stack
-docker-compose up
+# Run with GPU support
+docker-compose --profile frame_processor up
+
+# Run without specific services
+docker compose up --detach $(docker compose config --services | grep -v frame_processor)
 
 # View logs
 docker logs -f worldsystem-frame_processor-1
 
-# Access metrics
+# Monitor metrics
 curl http://localhost:8003/metrics
 
-# Connect to Rerun viewer
-# The service connects to rerun+http://localhost:9876/proxy
+# Connect to Rerun viewer (automatic at startup)
+# Service connects to: rerun+http://localhost:9876/proxy
 ```
 
-## Configuration (Environment Variables)
+## Configuration
 
-- `RABBITMQ_URL`: RabbitMQ connection URL (default: "amqp://rabbitmq")
-- `VIDEO_FRAMES_EXCHANGE`: Input exchange name
-- `PROCESSED_FRAMES_EXCHANGE`: Output exchange name  
-- `ANALYSIS_MODE_EXCHANGE`: Control exchange name
-- `INITIAL_ANALYSIS_MODE`: Starting mode ("none" or "yolo")
-- `RERUN_ENABLED`: Enable Rerun visualization ("true"/"false")
-- `RERUN_VIEWER_ADDRESS`: Rerun viewer address
-- `RERUN_CONNECT_URL`: Rerun gRPC connection URL
-- `NTP_SERVER`: NTP server for time sync (default: "pool.ntp.org")
-- `METRICS_PORT`: Prometheus metrics port (default: 8003)
+### Algorithm Selection
+- `DETECTOR_TYPE`: Detection algorithm (`yolo`, future: `detectron2`, `grounding_dino`)
+- `TRACKER_TYPE`: Tracking algorithm (`iou`, future: `sort`, `deep_sort`)
 
-## Code Architecture
+### Detection Settings
+- `DETECTOR_MODEL`: Model path (default: `yolov11l.pt`)
+- `DETECTOR_CONFIDENCE`: Confidence threshold (0.0-1.0)
+- `DETECTOR_DEVICE`: `cuda` or `cpu`
+- `DETECTOR_BATCH_SIZE`: Batch size for inference
 
-The service follows a single-file architecture (`frame_processor.py`) with:
-1. **Metrics Setup**: Prometheus counters, gauges, and histograms
-2. **NTP Synchronization**: Time offset tracking and periodic sync
-3. **Rerun Initialization**: Visualization pipeline setup
-4. **RabbitMQ Connection**: Exchange/queue declarations and bindings
-5. **YOLO Model Loading**: GPU-aware model initialization
-6. **Message Callbacks**: Frame processing and mode switching handlers
+### Tracking Settings
+- `TRACKER_IOU_THRESHOLD`: IOU matching threshold (0.0-1.0)
+- `TRACKER_MAX_LOST`: Frames before removing lost track
+- `PROCESS_AFTER_SECONDS`: Delay before API processing
+- `REPROCESS_INTERVAL_SECONDS`: Interval between reprocessing
 
-Key functions:
-- `sync_ntp_time()`: Updates NTP time offset
-- `get_ntp_time_ns()`: Returns NTP-synchronized time in nanoseconds
-- `frame_callback()`: Main processing pipeline for video frames
-- `analysis_mode_callback()`: Handles dynamic mode switching
+### API Integration
+- `USE_GCS`: Enable Google Cloud Storage upload
+- `USE_SERPAPI`: Enable Google Lens identification
+- `USE_PERPLEXITY`: Enable dimension lookup
+- `GCS_BUCKET_NAME`: GCS bucket for uploads
+- `SERPAPI_KEY`: SerpAPI authentication
+- `PERPLEXITY_API_KEY`: Perplexity AI key
 
-## Message Flow
+### Enhancement Settings
+- `ENHANCEMENT_ENABLED`: Enable image enhancement
+- `ENHANCEMENT_AUTO_ADJUST`: Auto-adjust parameters
+- `ENHANCEMENT_GAMMA`: Gamma correction factor
+- `ENHANCEMENT_ALPHA`: Contrast factor
+- `ENHANCEMENT_BETA`: Brightness offset
 
-1. Raw frames arrive with headers containing:
-   - `timestamp_ns`: Original capture timestamp
-   - `server_received`: Server receipt timestamp
-   - `ntp_time`: NTP-synchronized timestamp
-   - Resolution and dimension metadata
+### RabbitMQ Exchanges
+- **Input**: `video_frames_exchange`, `analysis_mode_exchange`, `imu_data_exchange`
+- **Output**: `processed_frames_exchange`, `scene_scaling_exchange`, `api_results_exchange`
 
-2. Processing includes:
-   - Optional YOLO detection (if mode="yolo")
-   - Frame annotation with bounding boxes
-   - Rerun logging with synchronized timestamps
-   - Prometheus metric updates
+## Key Components
 
-3. Output frames include all original metadata plus:
-   - `processing_time_ms`: Processing duration
-   - `ntp_offset`: Current NTP offset
-   - Updated dimensions if resized
+### Detection Module
+- Abstract base class in `detection/base.py` for easy extension
+- YOLO detector supports GPU acceleration and batch processing
+- Returns list of `Detection` objects with bbox, confidence, class
+
+### Tracking Module  
+- Abstract base class in `tracking/base.py` for algorithm swapping
+- IOU tracker maintains tracks with quality scoring
+- Memory-optimized: stores only ROIs, not full frames
+- Integrated frame selection based on sharpness, exposure, centering
+
+### API Pipeline
+1. **Frame Selection**: Best quality frame after 1.5s delay
+2. **Enhancement**: Optional auto-adjusting enhancement
+3. **GCS Upload**: Temporary storage with signed URLs
+4. **Google Lens**: Object identification via SerpAPI
+5. **Perplexity**: Dimension query with structured extraction
+6. **Scene Scaling**: Real-world scale calculation
+
+### Processing Flow
+1. Async message consumption from RabbitMQ
+2. Object detection (configurable algorithm)
+3. Track association and management
+4. Quality-based frame selection
+5. Timed API processing pipeline
+6. Multi-exchange result publishing
+7. Real-time Rerun visualization
 
 ## Monitoring & Debugging
 
-Prometheus metrics available:
-- `frame_processor_frames_processed_total`: Frame count
-- `frame_processor_yolo_detections_total`: Detection count
-- `frame_processor_processing_time_ms`: Processing latency
-- `frame_processor_frame_size_bytes`: Output frame size
-- `frame_processor_connection_status`: RabbitMQ connection
-- `frame_processor_ntp_time_offset_seconds`: Time sync offset
+### Prometheus Metrics (port 8003)
+- `frame_processor_frames_processed_total`
+- `frame_processor_yolo_detections_total`
+- `frame_processor_processing_time_seconds`
+- `frame_processor_active_tracks`
+- `frame_processor_api_calls_total`
+- `frame_processor_ntp_time_offset_seconds`
+
+### Logging
+- Structured JSON logs to `/app/logs/`
+- Separate logs: detections, metrics, errors, api
+- Configurable via `LOG_LEVEL` environment variable
+
+### Rerun Visualization
+- Automatic connection on startup
+- Real-time frame display with annotations
+- Track visualization with IDs
+- Performance metrics overlay
+
+## Adding New Components
+
+### New Detector
+1. Create class in `detection/` inheriting from `BaseDetector`
+2. Implement `detect()` method returning `List[Detection]`
+3. Register in `detection/__init__.py` factory
+
+### New Tracker
+1. Create class in `tracking/` inheriting from `BaseTracker`
+2. Implement `update()` and track management methods
+3. Register in `tracking/__init__.py` factory
+
+### New API Integration
+1. Add client methods to `external/api_client.py`
+2. Add feature flag to `core/config.py`
+3. Integrate into `pipeline/processor.py` workflow
 
 ## Performance Considerations
 
-- GPU acceleration is automatically detected and used when available
-- JPEG compression quality is set to 85 for balance of quality/size
-- Heartbeat timeout is set to 3600s for long-running connections
-- NTP sync occurs every 60 seconds in a background thread
-- Rerun data is compressed for efficient transmission
-
-## Testing & Development
-
-When modifying the frame processor:
-1. Ensure GPU support if testing YOLO mode
-2. Monitor processing time metrics for performance regression
-3. Verify NTP synchronization is working correctly
-4. Check Rerun viewer for visual debugging
-5. Validate message headers are preserved through pipeline
+- GPU acceleration auto-detected and preferred
+- Batch processing support for efficiency
+- Async I/O throughout the pipeline
+- ROI-only storage reduces memory usage
+- API response caching minimizes costs
+- Configurable worker threads for parallel processing
+- NTP synchronization for accurate timestamps

@@ -20,7 +20,7 @@ class Config(BaseSettings):
     """
     
     # ========== Component Selection ==========
-    detector_type: Literal["yolo", "detectron2", "grounding_dino"] = Field(
+    detector_type: Literal["yolo", "sam", "fastsam", "detectron2", "grounding_dino"] = Field(
         default="yolo",
         description="Detection algorithm to use"
     )
@@ -30,9 +30,9 @@ class Config(BaseSettings):
     )
     
     # ========== Detector Configuration ==========
-    detector_model: str = Field(
-        default="yolov11l.pt",
-        description="Path to detector model weights"
+    detector_model: Optional[str] = Field(
+        default=None,
+        description="Path to detector model weights (auto-determined if not specified)"
     )
     detector_confidence: float = Field(
         default=0.5,
@@ -160,9 +160,9 @@ class Config(BaseSettings):
         default="analysis_mode_exchange",
         description="Exchange name for analysis mode control"
     )
-    initial_analysis_mode: str = Field(
-        default="yolo",
-        description="Initial analysis mode (none/yolo)"
+    detection_enabled: bool = Field(
+        default=True,
+        description="Whether detection is enabled (can be toggled at runtime)"
     )
     
     # ========== Monitoring Configuration ==========
@@ -231,12 +231,69 @@ class Config(BaseSettings):
         description="Seconds between NTP synchronizations"
     )
     
+    # ========== SAM2 Configuration ==========
+    sam_model_cfg: str = Field(
+        default="sam2_hiera_l.yaml",
+        description="SAM2 model configuration file"
+    )
+    sam_checkpoint_path: str = Field(
+        default="/app/models/sam2_hiera_large.pt",
+        description="Path to SAM2 checkpoint file"
+    )
+    sam_points_per_side: int = Field(
+        default=24,
+        ge=1,
+        le=64,
+        description="Number of points sampled per side"
+    )
+    sam_pred_iou_thresh: float = Field(
+        default=0.86,
+        ge=0.0,
+        le=1.0,
+        description="Threshold for predicted IoU"
+    )
+    sam_stability_score_thresh: float = Field(
+        default=0.92,
+        ge=0.0,
+        le=1.0,
+        description="Threshold for mask stability"
+    )
+    sam_min_mask_region_area: int = Field(
+        default=500,
+        ge=0,
+        description="Minimum area for valid masks"
+    )
+    
+    # ========== FastSAM Configuration ==========
+    fastsam_model_path: str = Field(
+        default="/app/models/FastSAM-x.pt",
+        description="Path to FastSAM model"
+    )
+    fastsam_conf_threshold: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Confidence threshold for FastSAM"
+    )
+    fastsam_iou_threshold: float = Field(
+        default=0.9,
+        ge=0.0,
+        le=1.0,
+        description="IoU threshold for NMS"
+    )
+    fastsam_max_det: int = Field(
+        default=300,
+        ge=1,
+        le=1000,
+        description="Maximum detections per image"
+    )
+    
     # ========== Validators ==========
     
     @field_validator('detector_type')
     def validate_detector(cls, v):
         """Ensure detector type is supported."""
-        supported = ["yolo", "detectron2", "grounding_dino"]
+        supported = ["yolo", "sam", "fastsam", "detectron2", "grounding_dino"]
         if v not in supported:
             raise ValueError(f"Detector must be one of {supported}, got {v}")
         return v
@@ -276,6 +333,9 @@ class Config(BaseSettings):
     @field_validator('detector_model')
     def validate_model_path(cls, v):
         """Check if model file exists (warning only)."""
+        if v is None:
+            # Model path will be auto-determined later
+            return v
         if not Path(v).exists():
             print(f"Warning: Model file not found: {v}. Will attempt to download.")
         return v
@@ -291,6 +351,27 @@ class Config(BaseSettings):
             path = Path(self.gcs_credentials_path)
             if not path.exists():
                 print(f"Warning: GCS credentials file not found: {self.gcs_credentials_path}")
+        return self
+    
+    @model_validator(mode='after')
+    def auto_determine_model_path(self):
+        """Automatically determine model path based on detector type if not specified."""
+        if self.detector_model is None:
+            # Default model paths for each detector type
+            model_paths = {
+                "yolo": "/app/models/yolov11l.pt",
+                "sam": "/app/models/sam2_hiera_large.pt",
+                "fastsam": "/app/models/FastSAM-x.pt",
+                "detectron2": "/app/models/detectron2_rcnn.pth",  # Future
+                "grounding_dino": "/app/models/grounding_dino.pth"  # Future
+            }
+            
+            if self.detector_type in model_paths:
+                self.detector_model = model_paths[self.detector_type]
+                print(f"Auto-determined model path for {self.detector_type}: {self.detector_model}")
+            else:
+                raise ValueError(f"No default model path for detector type: {self.detector_type}")
+        
         return self
     
     model_config = {

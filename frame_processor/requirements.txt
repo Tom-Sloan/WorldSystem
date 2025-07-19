@@ -1,5 +1,5 @@
 # Core dependencies
-ultralytics
+ultralytics>=8.0.230
 numpy
 opencv-python-headless
 aio-pika
@@ -33,3 +33,15 @@ scikit-image
 aiofiles  # For async file operations if needed
 aiohttp  # For async HTTP requests
 asyncio  # Built-in, but listing for clarity
+
+# Segment Anything Model 2 (SAM2)
+sam-2 @ git+https://github.com/facebookresearch/sam2.git
+
+# FastSAM dependencies
+fastsam @ git+https://github.com/CASIA-IVA-Lab/FastSAM.git
+
+# Additional dependencies for SAM/FastSAM
+matplotlib>=3.7.1
+pycocotools>=2.0.7
+onnx>=1.14.1
+onnxruntime-gpu>=1.16.0

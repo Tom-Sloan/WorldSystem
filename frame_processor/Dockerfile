@@ -33,6 +33,12 @@ RUN git clone https://github.com/facebookresearch/sam2.git /tmp/sam2 && \
     cp /tmp/sam2/sam2_configs/*.yaml /app/sam2_configs/ || true && \
     rm -rf /tmp/sam2
 
+# Create models directory
+RUN mkdir -p /app/models
+
+# Copy all model files from local models directory
+COPY models/ /app/models/
+
 # Copy the refactored application structure
 COPY core /app/core/
 COPY detection /app/detection/
@@ -45,22 +51,7 @@ COPY sam2_configs.py /app/sam2_configs.py
 
 # All modules are now part of the refactored structure
 
-# Create models directory
-RUN mkdir -p /app/models
 
-# Download SAM2 and FastSAM model weights
-RUN cd /app/models && \
-    # Download SAM2 Hiera Large weights
-    wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt && \
-    # Download FastSAM weights (138MB)
-    wget -q https://github.com/CASIA-IVA-Lab/FastSAM/releases/download/v0.0.1/FastSAM-x.pt || true
-
-# Copy YOLO models (this should exist)
-COPY models/yolov11l.pt /app/models/yolov11l.pt
-
-# Optionally copy pre-downloaded models if they exist
-# Note: These COPY commands will fail silently if no files match
-RUN true  # Dummy command to allow optional COPY
 
 # Copy Google Cloud credentials if available
 # This is optional - can also be mounted at runtime

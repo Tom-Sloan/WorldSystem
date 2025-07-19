@@ -85,15 +85,24 @@ class EnhancedRerunVisualizer:
         """Create blueprint showing both pages side by side."""
         return rrb.Blueprint(
             rrb.Horizontal(
-                # Page 1: Live Monitoring
+                # Page 1: Live Monitoring with Grid
                 rrb.Vertical(
-                    rrb.Spatial2DView(
-                        name="📹 Live Camera View",
-                        origin="/page1/live",
-                        contents=[
-                            "/page1/live/camera/**",
-                            "/page1/live/overlays/**",
-                        ]
+                    rrb.Horizontal(
+                        rrb.Spatial2DView(
+                            name="📹 Live Camera View",
+                            origin="/page1/live",
+                            contents=[
+                                "/page1/live/camera/**",
+                                "/page1/live/overlays/**",
+                                "/page1/live/labels/**",
+                            ]
+                        ),
+                        rrb.Spatial2DView(
+                            name="🎬 Frame Grid",
+                            origin="/grid_view",
+                            contents=["/grid_view/**"]
+                        ),
+                        column_shares=[1, 1]
                     ),
                     rrb.Horizontal(
                         rrb.TextDocumentView(
@@ -140,13 +149,22 @@ class EnhancedRerunVisualizer:
         """Create blueprint showing only the live monitoring page."""
         return rrb.Blueprint(
             rrb.Vertical(
-                rrb.Spatial2DView(
-                    name="📹 Live Camera View",
-                    origin="/page1/live",
-                    contents=[
-                        "/page1/live/camera/**",
-                        "/page1/live/overlays/**",
-                    ]
+                rrb.Horizontal(
+                    rrb.Spatial2DView(
+                        name="📹 Live Camera View",
+                        origin="/page1/live",
+                        contents=[
+                            "/page1/live/camera/**",
+                            "/page1/live/overlays/**",
+                            "/page1/live/labels/**",
+                        ]
+                    ),
+                    rrb.Spatial2DView(
+                        name="🎬 Frame Grid",
+                        origin="/grid_view",
+                        contents=["/grid_view/**"]
+                    ),
+                    column_shares=[1, 1]
                 ),
                 rrb.Horizontal(
                     rrb.TextDocumentView(
@@ -199,7 +217,7 @@ class EnhancedRerunVisualizer:
     def log_frame_with_overlays(self, frame: np.ndarray, tracked_objects: Dict,
                                frame_number: int, timestamp_ns: Optional[int] = None):
         """
-        Log camera frame with detection overlays.
+        Log camera frame with minimal overlays for cleaner visualization.
         
         Args:
             frame: Input frame (BGR)
@@ -219,43 +237,8 @@ class EnhancedRerunVisualizer:
         except AttributeError:
             rr.log("/page1/live/camera", rr.Image(frame_rgb))
         
-        # Log bounding boxes if any
-        if tracked_objects:
-            boxes_2d = []
-            labels = []
-            colors = []
-            
-            for track_id, track in tracked_objects.items():
-                x1, y1, x2, y2 = track.bbox
-                
-                # Convert to center + half-size format for Rerun
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
-                half_width = (x2 - x1) / 2
-                half_height = (y2 - y1) / 2
-                
-                boxes_2d.append([center_x, center_y, half_width, half_height])
-                labels.append(f"{track.class_name} #{track.id}")
-                
-                # Color based on processing status
-                if hasattr(track, 'estimated_dimensions') and track.estimated_dimensions:
-                    colors.append([0, 255, 0])  # Green - identified
-                elif hasattr(track, 'is_being_processed') and track.is_being_processed:
-                    colors.append([255, 165, 0])  # Orange - processing
-                else:
-                    colors.append([255, 255, 0])  # Yellow - tracking
-            
-            # Log boxes as overlay on Page 1
-            rr.log(
-                "/page1/live/overlays",
-                rr.Boxes2D(
-                    array=boxes_2d,
-                    array_format=rr.Box2DFormat.XCYCWH,
-                    labels=labels,
-                    colors=colors
-                )
-            )
-            
+        # Only log minimal overlays if there are few tracked objects
+        if tracked_objects and len(tracked_objects) < 5:
             # Log timeline data for tracked objects
             self._log_timeline_data(tracked_objects, frame_number)
         

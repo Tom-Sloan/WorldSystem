@@ -57,8 +57,8 @@ class SAMDetector(Detector):
     """
     
     def __init__(self, 
-                 model_cfg: str = "sam2_hiera_l.yaml",
-                 model_path: str = "sam2_hiera_large.pt",
+                 model_cfg: str,
+                 model_path: str,
                  device: str = "cuda",
                  points_per_side: int = 24,
                  pred_iou_thresh: float = 0.86,

@@ -233,11 +233,11 @@ class Config(BaseSettings):
     
     # ========== SAM2 Configuration ==========
     sam_model_cfg: str = Field(
-        default="sam2_hiera_l.yaml",
+        default="sam2_hiera_b+.yaml",
         description="SAM2 model configuration file"
     )
     sam_checkpoint_path: str = Field(
-        default="/app/models/sam2_hiera_large.pt",
+        default="/app/models/sam2_hiera_base_plus.pt",
         description="Path to SAM2 checkpoint file"
     )
     sam_points_per_side: int = Field(
@@ -360,7 +360,7 @@ class Config(BaseSettings):
             # Default model paths for each detector type
             model_paths = {
                 "yolo": "/app/models/yolov11l.pt",
-                "sam": "/app/models/sam2_hiera_large.pt",
+                "sam": "/app/models/sam2_hiera_base_plus.pt",
                 "fastsam": "/app/models/FastSAM-x.pt",
                 "detectron2": "/app/models/detectron2_rcnn.pth",  # Future
                 "grounding_dino": "/app/models/grounding_dino.pth"  # Future

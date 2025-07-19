@@ -8,7 +8,7 @@ the modular architecture.
 
 import numpy as np
 import cv2
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
 
 from .enhanced_visualizer import (
@@ -25,6 +25,8 @@ from core.utils import get_logger
 from core.config import Config
 
 import rerun as rr
+import rerun.blueprint as rrb
+import time
 
 
 logger = get_logger(__name__)
@@ -73,11 +75,21 @@ class RerunClient:
         # Set default view mode
         self.set_view_mode(ViewMode.BOTH)
         
+        # Setup blueprint for enhanced visualization
+        self._setup_blueprint()
+        
         # Frame buffer for grid view
         self.frame_buffer = []
         self.max_buffer_size = 12  # 3x4 grid
         self.grid_update_interval = 10  # Update grid every N frames
         self.frames_since_grid_update = 0
+        
+        # Enhanced objects buffer for grid view
+        self.enhanced_objects_buffer = []  # List of (enhanced_image, track_id, timestamp)
+        self.max_enhanced_objects = 12  # 4x3 grid
+        self.grid_rows = 3
+        self.grid_cols = 4
+        self.grid_cell_size = (200, 200)  # Fixed size for grid cells
         
         logger.info("Rerun visualization initialized with enhanced visualizer")
     
@@ -85,54 +97,43 @@ class RerunClient:
                   active_tracks: List[TrackedObject], frame_number: int,
                   timestamp_ns: Optional[int] = None):
         """
-        Log frame with detections and tracking info.
-        
-        Args:
-            frame: Current video frame
-            detections: List of detections from detector
-            active_tracks: List of active tracked objects
-            frame_number: Sequential frame number
-            timestamp_ns: Optional timestamp in nanoseconds
+        Log frame with SAM-style segmentation visualization.
         """
         if not self.enabled:
             return
         
-        # Add frame to buffer for grid view
-        frame_copy = frame.copy()
-        self.frame_buffer.append((frame_copy, frame_number, timestamp_ns))
+        # Set time context for all subsequent logs
+        rr.set_time_sequence("frame", frame_number)
+        if timestamp_ns:
+            rr.set_time_nanos("sensor_time", timestamp_ns)
         
-        # Keep buffer size limited
-        if len(self.frame_buffer) > self.max_buffer_size:
+        # Store frame with detections for gallery
+        self.frame_buffer.append((frame.copy(), frame_number, timestamp_ns, detections))
+        if len(self.frame_buffer) > 20:
             self.frame_buffer.pop(0)
         
-        # Update grid view periodically
-        self.frames_since_grid_update += 1
-        if self.frames_since_grid_update >= self.grid_update_interval:
-            self._log_grid_view()
-            self.frames_since_grid_update = 0
+        # Clear previous frame data to ensure updates
+        rr.log("/page1/live", rr.Clear(recursive=True))
         
-        # Clear previous frame's detections to prevent persistence
-        rr.log("/page1/live/overlays", rr.Clear(recursive=False))
-        rr.log("detections/yolo", rr.Clear(recursive=False))
-        rr.log("detections/sam_edges", rr.Clear(recursive=False))
-        
-        # For grid view, we'll minimize overlays on individual frames
-        # Just log the current frame without heavy overlays
+        # Log original frame
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         rr.log("/page1/live/camera", rr.Image(frame_rgb))
         
-        # Check if we're using SAM/FastSAM (many detections) or YOLO (few detections)
-        is_segmentation = self.config.detector_type in ['sam', 'fastsam']
+        # Create and log segmentation visualization
+        if detections:
+            self._log_sam_detections(detections, frame)
+        else:
+            # Log original frame as composite when no detections
+            rr.log("/page1/live/composite", rr.Image(frame_rgb))
         
-        # Only show minimal detection info for cleaner view
-        if active_tracks and len(active_tracks) < 5:  # Only show if few tracks
-            # Convert active_tracks list to dictionary
-            tracked_objects_dict = {}
-            for track in active_tracks:
-                tracked_objects_dict[track.id] = track
-            
-            # Log minimal overlays
-            self._log_minimal_overlays(tracked_objects_dict, frame_number, timestamp_ns)
+        # Update gallery periodically
+        if frame_number % 30 == 0:  # Every 30 frames
+            self._log_segmentation_gallery()
+        
+        # Log statistics - always update
+        self._log_segmentation_statistics(detections, active_tracks, frame_number)
+        
+        # No need for explicit flush - Rerun handles this
     
     def _log_yolo_detections(self, detections: List[Dict], frame_shape: tuple):
         """Log YOLO detections in Rerun format."""
@@ -217,49 +218,72 @@ class RerunClient:
         # Limit to top 10 segments
         return filtered[:10]
     
-    def _log_sam_detections(self, detections: List[Dict], frame_shape: tuple):
+    def _log_sam_detections(self, detections: List[Detection], frame: np.ndarray):
         """
-        Log SAM detections with edge-only visualization.
-        
-        Uses contours instead of filled boxes for cleaner visualization.
+        Log SAM detections with colorful segmentation masks like SAM2 demo.
         """
         if not detections:
             return
         
-        import cv2
+        # Create segmentation mask and color overlay
+        h, w = frame.shape[:2]
+        segmentation_mask = np.zeros((h, w), dtype=np.uint8)  # 2D for SegmentationImage
+        overlay = np.zeros((h, w, 4), dtype=np.uint8)  # RGBA for composite
         
-        # Create an edge map for visualization
-        edge_map = np.zeros((frame_shape[0], frame_shape[1], 3), dtype=np.uint8)
+        # Color palette similar to SAM2 demo - vibrant, distinct colors
+        colors = [
+            (255, 0, 0),      # Red
+            (0, 255, 0),      # Green
+            (0, 0, 255),      # Blue
+            (255, 255, 0),    # Yellow
+            (255, 0, 255),    # Magenta
+            (0, 255, 255),    # Cyan
+            (255, 128, 0),    # Orange
+            (128, 255, 0),    # Lime
+            (255, 0, 128),    # Pink
+            (0, 128, 255),    # Sky Blue
+            (128, 0, 255),    # Purple
+            (255, 128, 128),  # Light Pink
+            (128, 255, 128),  # Light Green
+            (128, 128, 255),  # Light Blue
+        ]
         
-        for i, det in enumerate(detections):
-            x1, y1, x2, y2 = det['bbox']
+        # Process each detection
+        for idx, det in enumerate(detections):
+            # Get color for this detection
+            color = colors[idx % len(colors)]
+            class_id = idx + 1  # Class IDs start from 1 (0 is background)
             
-            # Draw rectangle edges
-            color = self._get_segment_color(i, det['confidence'])
-            cv2.rectangle(edge_map, (x1, y1), (x2, y2), color, 2)
+            # If detection has a mask, use it; otherwise create from bbox
+            if hasattr(det, 'mask') and det.mask is not None:
+                mask = det.mask
+            else:
+                # Create mask from bbox
+                mask = np.zeros((h, w), dtype=np.uint8)
+                x1, y1, x2, y2 = det.bbox
+                mask[y1:y2, x1:x2] = 1
             
-            # Add subtle label
-            label = f"{det['class_name']} {det['confidence']:.2f}"
-            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+            # Update segmentation mask with class ID
+            mask_indices = mask > 0
+            segmentation_mask[mask_indices] = class_id
             
-            # Background for text (semi-transparent effect)
-            cv2.rectangle(edge_map, 
-                         (x1, y1 - label_size[1] - 4),
-                         (x1 + label_size[0], y1),
-                         color, -1)
-            cv2.putText(edge_map, label,
-                       (x1, y1 - 2),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                       (255, 255, 255), 1)
+            # Apply color to overlay for composite view
+            overlay[mask_indices] = (*color, int(255 * 0.5))  # 50% opacity
         
-        # Log edge map as separate image
-        try:
-            rr.log(
-                "detections/sam_edges",
-                rr.Image(edge_map)
-            )
-        except Exception as e:
-            logger.error(f"Failed to log SAM detections: {e}")
+        # Log the segmentation mask (2D array with class IDs)
+        rr.log("/page1/live/segmentation", rr.SegmentationImage(segmentation_mask))
+        
+        # Create a composite image (original + colored overlay)
+        composite = frame.copy()
+        mask_rgb = overlay[:, :, :3]
+        mask_alpha = overlay[:, :, 3:4] / 255.0
+        
+        # Blend the overlay with the original image
+        composite = (composite * (1 - mask_alpha) + mask_rgb * mask_alpha).astype(np.uint8)
+        
+        # Log the composite image
+        composite_rgb = cv2.cvtColor(composite, cv2.COLOR_BGR2RGB)
+        rr.log("/page1/live/composite", rr.Image(composite_rgb))
     
     def _get_segment_color(self, index: int, confidence: float) -> tuple:
         """Get color for segment based on index and confidence."""
@@ -272,6 +296,24 @@ class RerunClient:
         hsv = np.array([[[hue, saturation, value]]], dtype=np.uint8)
         bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
         return tuple(int(x) for x in bgr[0, 0])
+    
+    def _generate_distinct_colors(self, n: int) -> List[Tuple[int, int, int]]:
+        """Generate n visually distinct colors using HSV color space."""
+        colors = []
+        for i in range(n):
+            # Use golden ratio to distribute hues evenly
+            hue = int((i * 137.5) % 360)  # Golden angle approximation
+            
+            # Vary saturation and value for better distinction
+            saturation = 200 + (i % 3) * 25  # High saturation
+            value = 200 + (i % 2) * 55  # Bright colors
+            
+            # Convert HSV to RGB
+            hsv = np.array([[[hue/2, saturation, value]]], dtype=np.uint8)  # OpenCV uses 0-179 for hue
+            rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)[0, 0]
+            colors.append(tuple(int(c) for c in rgb))
+        
+        return colors
     
     def log_processed_object(self, track: TrackedObject):
         """
@@ -455,3 +497,279 @@ class RerunClient:
                 f"/page1/live/labels/track_{track_id}",
                 rr.TextLog(label_text, position=[x1, y1])
             )
+    
+    def log_enhanced_object(self, track: TrackedObject):
+        """
+        Log an enhanced object for the grid view.
+        
+        This is called after enhancement is complete but before API processing.
+        """
+        if not self.enabled or track.best_frame is None:
+            return
+        
+        # The best_frame is already the cropped ROI from the tracker
+        enhanced_crop = track.best_frame
+        
+        # Add to enhanced objects buffer
+        self.enhanced_objects_buffer.append({
+            'image': enhanced_crop.copy(),
+            'track_id': track.id,
+            'timestamp': time.time(),
+            'bbox': track.bbox  # Original bbox for reference
+        })
+        
+        # Maintain FIFO buffer size
+        if len(self.enhanced_objects_buffer) > self.max_enhanced_objects:
+            self.enhanced_objects_buffer.pop(0)  # Remove oldest
+        
+        # Update the grid view
+        self._update_enhanced_objects_grid()
+    
+    def _update_enhanced_objects_grid(self):
+        """Create and log a grid view of enhanced object crops."""
+        if not self.enhanced_objects_buffer:
+            return
+        
+        cell_w, cell_h = self.grid_cell_size
+        grid_w = cell_w * self.grid_cols
+        grid_h = cell_h * self.grid_rows
+        
+        # Create blank grid canvas (dark background)
+        grid_canvas = np.ones((grid_h, grid_w, 3), dtype=np.uint8) * 40  # Dark gray
+        
+        # Fill grid with enhanced objects
+        for idx, obj_data in enumerate(self.enhanced_objects_buffer):
+            if idx >= self.max_enhanced_objects:
+                break
+            
+            row = idx // self.grid_cols
+            col = idx % self.grid_cols
+            
+            # Get the enhanced crop
+            enhanced_crop = obj_data['image']
+            
+            # Resize to fit grid cell while maintaining aspect ratio
+            h, w = enhanced_crop.shape[:2]
+            scale = min(cell_w / w, cell_h / h) * 0.9  # 90% to leave some padding
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            
+            resized = cv2.resize(enhanced_crop, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            
+            # Calculate position to center in cell
+            x_offset = (cell_w - new_w) // 2
+            y_offset = (cell_h - new_h) // 2
+            
+            # Place in grid
+            x1 = col * cell_w + x_offset
+            y1 = row * cell_h + y_offset
+            x2 = x1 + new_w
+            y2 = y1 + new_h
+            
+            # Add a subtle border around the image
+            cv2.rectangle(grid_canvas, (x1-2, y1-2), (x2+2, y2+2), (80, 80, 80), 2)
+            
+            # Place the enhanced image
+            grid_canvas[y1:y2, x1:x2] = resized
+        
+        # Convert to RGB and log
+        grid_rgb = cv2.cvtColor(grid_canvas, cv2.COLOR_BGR2RGB)
+        rr.log("/page2/enhanced_objects/grid", rr.Image(grid_rgb))
+    
+    def _log_segmentation_gallery(self):
+        """Create a gallery view of recent segmentation results."""
+        if not self.frame_buffer:
+            return
+        
+        # Get the most recent frames with good segmentations
+        gallery_frames = []
+        for frame, frame_num, timestamp, detections in self.frame_buffer[-6:]:
+            if detections and len(detections) > 3:  # Only frames with multiple detections
+                gallery_frames.append((frame, detections))
+        
+        if not gallery_frames:
+            return
+        
+        # Create a horizontal gallery
+        gallery_height = 200
+        gallery_images = []
+        
+        for frame, detections in gallery_frames:
+            # Resize frame
+            h, w = frame.shape[:2]
+            scale = gallery_height / h
+            new_w = int(w * scale)
+            resized = cv2.resize(frame, (new_w, gallery_height))
+            
+            # Apply segmentation overlay
+            overlay = self._create_segmentation_overlay(resized, detections, scale)
+            gallery_images.append(overlay)
+        
+        # Concatenate horizontally
+        if gallery_images:
+            gallery = np.hstack(gallery_images)
+            gallery_rgb = cv2.cvtColor(gallery, cv2.COLOR_BGR2RGB)
+            rr.log("/segmentation/gallery", rr.Image(gallery_rgb))
+    
+    def _create_segmentation_overlay(self, frame: np.ndarray, detections: List[Detection], scale: float) -> np.ndarray:
+        """Create a segmentation overlay for a scaled frame."""
+        h, w = frame.shape[:2]
+        overlay = np.zeros((h, w, 4), dtype=np.uint8)
+        
+        colors = self._generate_distinct_colors(len(detections))
+        
+        for idx, det in enumerate(detections[:10]):  # Limit to 10 detections
+            color = colors[idx % len(colors)]
+            
+            # Scale bbox
+            x1, y1, x2, y2 = det.bbox
+            x1 = int(x1 * scale)
+            y1 = int(y1 * scale)
+            x2 = int(x2 * scale)
+            y2 = int(y2 * scale)
+            
+            # Create mask
+            mask = np.zeros((h, w), dtype=np.uint8)
+            mask[y1:y2, x1:x2] = 1
+            
+            # Apply color
+            mask_indices = mask > 0
+            overlay[mask_indices] = (*color, 128)  # 50% opacity
+        
+        # Blend with frame
+        composite = frame.copy()
+        mask_rgb = overlay[:, :, :3]
+        mask_alpha = overlay[:, :, 3:4] / 255.0
+        composite = (composite * (1 - mask_alpha) + mask_rgb * mask_alpha).astype(np.uint8)
+        
+        return composite
+    
+    def _log_segmentation_statistics(self, detections: List[Detection], 
+                                    active_tracks: List[TrackedObject], frame_number: int):
+        """Log statistics about segmentation results."""
+        num_segments = len(detections)
+        num_enhanced = len(self.enhanced_objects_buffer)
+        
+        # Calculate coverage
+        if detections:
+            # Get frame dimensions from config or use default
+            frame_area = 640 * 480  # Default, should get from actual frame
+            total_area = sum((d.bbox[2]-d.bbox[0])*(d.bbox[3]-d.bbox[1]) for d in detections)
+            coverage = total_area / frame_area if frame_area > 0 else 0
+        else:
+            coverage = 0
+        
+        stats_text = f"""# 📊 Processing Statistics
+
+**Frame:** {frame_number}
+**Segments Detected:** {num_segments}
+**Active Tracks:** {len(active_tracks)}
+**Enhanced Objects:** {num_enhanced}/12
+**Scene Coverage:** {coverage:.1%}
+
+## Detection Distribution
+"""
+        
+        # Add confidence distribution
+        if detections:
+            confidences = [d.confidence for d in detections]
+            stats_text += f"""
+- **Avg Confidence:** {np.mean(confidences):.3f}
+- **Min Confidence:** {np.min(confidences):.3f}  
+- **Max Confidence:** {np.max(confidences):.3f}
+
+The grid shows the 12 most recent enhanced object crops.
+Objects are added after enhancement completes.
+"""
+        
+        rr.log("/page1/stats", rr.TextDocument(stats_text, media_type=rr.MediaType.MARKDOWN))
+    
+    def clear_enhanced_objects_older_than(self, seconds: float):
+        """Remove enhanced objects older than specified seconds."""
+        current_time = time.time()
+        self.enhanced_objects_buffer = [
+            obj for obj in self.enhanced_objects_buffer 
+            if current_time - obj['timestamp'] < seconds
+        ]
+        self._update_enhanced_objects_grid()
+    
+    def _setup_blueprint(self):
+        """Setup the blueprint for both live view and enhanced objects grid."""
+        blueprint = self._create_both_pages_blueprint()
+        rr.send_blueprint(blueprint)
+    
+    def _create_both_pages_blueprint(self) -> rrb.Blueprint:
+        """Create blueprint showing both live view and enhanced objects grid."""
+        return rrb.Blueprint(
+            rrb.Vertical(
+                # Top row: Live feed and enhanced objects grid
+                rrb.Horizontal(
+                    rrb.Spatial2DView(
+                        name="📹 Live Segmentation",
+                        origin="/page1/live",
+                        contents=[
+                            "/page1/live/camera/**",
+                            "/page1/live/composite/**",
+                            "/page1/live/segmentation/**"
+                        ]
+                    ),
+                    rrb.Spatial2DView(
+                        name="🔍 Enhanced Objects",
+                        origin="/page2/enhanced_objects",
+                        contents=["/page2/enhanced_objects/grid/**"]
+                    ),
+                    column_shares=[1, 1]
+                ),
+                # Bottom row: Stats and timeline
+                rrb.Horizontal(
+                    rrb.TextDocumentView(
+                        name="📊 Processing Stats",
+                        origin="/page1/stats",
+                        contents=["/page1/stats/**"]
+                    ),
+                    rrb.TimeSeriesView(
+                        name="⏱️ Timeline",
+                        origin="/timeline",
+                        contents=["/timeline/**"]
+                    ),
+                    column_shares=[1, 1]
+                ),
+                row_shares=[3, 1]
+            )
+        )
+    
+    def _create_segmentation_blueprint(self) -> rrb.Blueprint:
+        """Create blueprint optimized for SAM segmentation visualization."""
+        return rrb.Blueprint(
+            rrb.Vertical(
+                # Main segmentation view
+                rrb.Horizontal(
+                    rrb.Spatial2DView(
+                        name="🎯 Segmentation Results",
+                        origin="/segmentation/composite",
+                        contents=["/segmentation/composite/**"]
+                    ),
+                    rrb.Spatial2DView(
+                        name="🎨 Segmentation Masks",
+                        origin="/segmentation/masks", 
+                        contents=["/segmentation/masks/**"]
+                    ),
+                    column_shares=[1, 1]
+                ),
+                # Bottom panels
+                rrb.Horizontal(
+                    rrb.Spatial2DView(
+                        name="📸 Recent Segmentations",
+                        origin="/segmentation/gallery",
+                        contents=["/segmentation/gallery/**"]
+                    ),
+                    rrb.TextDocumentView(
+                        name="📊 Segmentation Stats",
+                        origin="/segmentation/stats",
+                        contents=["/segmentation/stats/**"]
+                    ),
+                    column_shares=[2, 1]
+                ),
+                row_shares=[3, 1]
+            )
+        )

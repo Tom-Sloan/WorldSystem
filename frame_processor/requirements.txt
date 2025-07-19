@@ -1,18 +1,35 @@
+# Core dependencies
 ultralytics
 numpy
 opencv-python-headless
-pika
+aio-pika
 ntplib
 rerun-sdk==0.23.2
 prometheus_client
+
+# PyTorch for YOLO
 torch
 torchvision
 torchaudio
+
+# Configuration and utilities
 python-dotenv
+pydantic>=2.0
+pydantic-settings>=2.0
+colorama  # For colored logging
+
+# External API integrations
 google-cloud-storage
 google-api-python-client
-google-search-results
-pillow
+google-search-results  # For SerpAPI/Google Lens
 requests
+
+# Image processing
+pillow
 scipy
 scikit-image
+
+# Async support
+aiofiles  # For async file operations if needed
+aiohttp  # For async HTTP requests
+asyncio  # Built-in, but listing for clarity

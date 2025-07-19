@@ -33,6 +33,8 @@ ssh -N \
 
 RERUN_BIND=0.0.0.0:9876 rerun viewer
 
+docker stop $(docker ps -aq) && docker rm $(docker ps -aq)
+
 ssh -N \                                   # no remote shell – just the tunnels
   -L 8080:localhost:80 \                   # →  http://localhost:8080      (NGINX / website front‑end, remote port 80)
   -L 8443:localhost:443 \                  # →  https://localhost:8443     (NGINX HTTPS)

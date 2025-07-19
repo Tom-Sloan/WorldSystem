@@ -57,7 +57,6 @@ class FrameProcessorService:
         self.connection = None
         self.channel = None
         self.running = False
-        self.current_analysis_mode = self.config.initial_analysis_mode
         
         logger.info("Initializing Frame Processor Service...")
         
@@ -119,6 +118,13 @@ class FrameProcessorService:
                 durable=True
             )
             
+            # Declare api_results_exchange for publishing API results
+            self.api_results_exchange = await self.channel.declare_exchange(
+                "api_results_exchange",
+                ExchangeType.FANOUT,
+                durable=True
+            )
+            
             # Declare queues
             self.frame_queue = await self.channel.declare_queue(
                 'frame_processor_queue',
@@ -172,8 +178,8 @@ class FrameProcessorService:
                     logger.error("Failed to decode frame")
                     return
                 
-                # Process frame based on analysis mode
-                if self.current_analysis_mode.lower() != "none":
+                # Process frame based on detection enabled
+                if self.config.detection_enabled:
                     # Run processing pipeline
                     result = await self.processor.process_frame(frame, timestamp_ns)
                     
@@ -232,14 +238,18 @@ class FrameProcessorService:
             async with message.process():
                 # Parse mode update
                 mode_data = json.loads(message.body)
-                new_mode = mode_data.get('mode', 'yolo')
+                new_mode = mode_data.get('mode', 'on')
                 
                 logger.info(f"Received mode update: {new_mode}")
                 
-                # Update processor mode
-                self.current_analysis_mode = new_mode
+                # Update detection enabled based on mode
+                # Accept various formats: "none"/"off"/"false" = disabled, anything else = enabled
+                detection_enabled = new_mode.lower() not in ['none', 'off', 'false', '0']
+                self.config.detection_enabled = detection_enabled
+                
                 if self.processor:
-                    self.processor.update_analysis_mode(new_mode)
+                    self.processor.config.detection_enabled = detection_enabled
+                    logger.info(f"Detection {'enabled' if detection_enabled else 'disabled'}")
                 
         except Exception as e:
             logger.error(f"Error processing mode update: {e}")

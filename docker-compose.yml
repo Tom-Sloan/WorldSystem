@@ -60,12 +60,12 @@ services:
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
       - SCENE_SCALING_EXCHANGE=scene_scaling_exchange
+      
       # Processing configuration
-      - INITIAL_ANALYSIS_MODE=yolo
-      - DETECTOR_TYPE=yolo
+      - DETECTION_ENABLED=${DETECTION_ENABLED:-true}
+      - DETECTOR_TYPE=${DETECTOR_TYPE:-sam}
       - TRACKER_TYPE=iou
-      - YOLO_MODEL=yolov11l.pt
-      - YOLO_CONFIDENCE=0.5
+      - DETECTOR_CONFIDENCE=0.5
       - DEVICE=cuda
       
       # Tracking configuration
@@ -105,7 +105,7 @@ services:
       
       # Logging configuration
       - LOG_DIR=/app/logs
-      - PPLX_API_KEY=${PPLX_API_KEY}
+      - PERPLEXITY_KEY=${PPLX_API_KEY}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME:-worldsystem-frame-processor}
       
       # API usage control
@@ -120,8 +120,22 @@ services:
       - MIN_CONFIDENCE_FOR_SCALING=${MIN_CONFIDENCE_FOR_SCALING:-0.7}
       - DIMENSION_CACHE_EXPIRY_DAYS=${DIMENSION_CACHE_EXPIRY_DAYS:-30}
       
+      # SAM2 Configuration
+      - SAM_MODEL_CFG=${SAM_MODEL_CFG:-sam2_hiera_l.yaml}
+      - SAM_CHECKPOINT_PATH=${SAM_CHECKPOINT_PATH:-/app/models/sam2_hiera_large.pt}
+      - SAM_POINTS_PER_SIDE=${SAM_POINTS_PER_SIDE:-24}
+      - SAM_PRED_IOU_THRESH=${SAM_PRED_IOU_THRESH:-0.86}
+      - SAM_STABILITY_SCORE_THRESH=${SAM_STABILITY_SCORE_THRESH:-0.92}
+      - SAM_MIN_MASK_REGION_AREA=${SAM_MIN_MASK_REGION_AREA:-500}
+      
+      # FastSAM Configuration
+      - FASTSAM_MODEL_PATH=${FASTSAM_MODEL_PATH:-/app/models/FastSAM-x.pt}
+      - FASTSAM_CONF_THRESHOLD=${FASTSAM_CONF_THRESHOLD:-0.4}
+      - FASTSAM_IOU_THRESHOLD=${FASTSAM_IOU_THRESHOLD:-0.9}
+      - FASTSAM_MAX_DET=${FASTSAM_MAX_DET:-300}
+      
     volumes:
-      - ${WORKSPACE}/frame_processor/models/yolov11l.pt:/app/yolov11l.pt
+      - ${WORKSPACE}/frame_processor/models:/app/models:ro
       - ${WORKSPACE}/frame_processor/credentials/worldsystem-23f7306a1a75.json:/app/worldsystem-23f7306a1a75.json:ro
       - ${WORKSPACE}/frame_processor/logs:/app/logs
       - ${X11SOCKET}:${X11SOCKET}

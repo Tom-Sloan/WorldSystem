@@ -15,6 +15,8 @@ from core.config import Config
 from core.utils import get_logger, PerformanceTimer, get_ntp_time_ns
 from detection.base import Detector, Detection
 from detection.yolo import YOLODetector
+from detection.sam import SAMDetector
+from detection.fastsam import FastSAMDetector
 from tracking.base import Tracker, TrackedObject
 from tracking.iou_tracker import IOUTracker
 from external.api_client import APIClient
@@ -48,8 +50,10 @@ class ComponentFactory:
     # Registry of available detectors
     DETECTORS: Dict[str, Type[Detector]] = {
         "yolo": YOLODetector,
+        "sam": SAMDetector,
+        "fastsam": FastSAMDetector,
         # Future: "detectron2": Detectron2Detector,
-        # Future: "mmdetection": MMDetector,
+        # Future: "grounding_dino": GroundingDINODetector,
     }
     
     # Registry of available trackers
@@ -91,8 +95,25 @@ class ComponentFactory:
                 confidence=config.detector_confidence,
                 device=config.detector_device
             )
+        elif detector_type == "sam":
+            return detector_class(
+                model_cfg=config.sam_model_cfg,
+                model_path=config.sam_checkpoint_path,
+                device=config.detector_device,
+                points_per_side=config.sam_points_per_side,
+                pred_iou_thresh=config.sam_pred_iou_thresh,
+                stability_score_thresh=config.sam_stability_score_thresh,
+                min_mask_region_area=config.sam_min_mask_region_area
+            )
+        elif detector_type == "fastsam":
+            return detector_class(
+                model_path=config.fastsam_model_path,
+                device=config.detector_device,
+                conf_threshold=config.fastsam_conf_threshold,
+                iou_threshold=config.fastsam_iou_threshold,
+                max_det=config.fastsam_max_det
+            )
         else:
-            # Future detectors would have their own parameter mappings
             raise NotImplementedError(f"Factory not implemented for {detector_type}")
     
     @classmethod
@@ -207,9 +228,12 @@ class FrameProcessor:
             timestamp_ns = get_ntp_time_ns()
         
         with PerformanceTimer(f"frame_{self.frame_number}_total", logger):
-            # Step 1: Run detection
-            detections = await self.detector.detect(frame)
-            self.stats['total_detections'] += len(detections)
+            # Step 1: Run detection if enabled
+            if self.config.detection_enabled:
+                detections = await self.detector.detect(frame)
+                self.stats['total_detections'] += len(detections)
+            else:
+                detections = []
             
             # Step 2: Update tracking
             tracks_ready = self.tracker.update(detections, frame, self.frame_number)

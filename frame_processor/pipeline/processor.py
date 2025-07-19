@@ -292,6 +292,20 @@ class FrameProcessor:
             # Enhance image if enabled
             enhanced_image = self.enhancer.enhance_roi(track.best_frame)
             
+            # Log the enhanced object to Rerun IMMEDIATELY after enhancement
+            if self.rerun_client:
+                # Create a temporary track object with enhanced image
+                enhanced_track = TrackedObject(
+                    id=track.id,
+                    class_name=track.class_name,
+                    bbox=track.bbox,
+                    confidence=track.confidence
+                )
+                enhanced_track.best_frame = enhanced_image
+                
+                # Log to grid
+                self.rerun_client.log_enhanced_object(enhanced_track)
+            
             # Process through API client
             api_result = await self.api_client.process_object_for_dimensions(
                 enhanced_image, track.class_name

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Logs
+logs/
+*.log
+
+# Credentials - NEVER commit these!
+credentials/
+*.json
+*.key
+*.pem
+
+# Models (large files)
+models/
+*.pt
+*.pth
+*.onnx
+
+# Development
+.env
+.venv
+env/
+venv/
+.DS_Store
+.idea/
+.vscode/
+
+# Test outputs
+test_output/
+debug_output/
+
+# Cache
+cache/
+.cache/
+
+# Archive (old code for reference)
+Archive/

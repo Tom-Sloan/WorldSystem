@@ -60,15 +60,37 @@ services:
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
       - SCENE_SCALING_EXCHANGE=scene_scaling_exchange
+      # Processing configuration
       - INITIAL_ANALYSIS_MODE=yolo
+      - DETECTOR_TYPE=yolo
+      - TRACKER_TYPE=iou
+      - YOLO_MODEL=yolov11l.pt
+      - YOLO_CONFIDENCE=0.5
+      - DEVICE=cuda
+      
+      # Tracking configuration
+      - TRACKER_IOU_THRESHOLD=0.3
+      - TRACKER_MAX_LOST=10
+      - PROCESS_AFTER_SECONDS=1.5
+      - MAX_TRACKS=100
+      
+      # Enhancement configuration
+      - ENHANCEMENT_ENABLED=true
+      - ENHANCEMENT_AUTO_ADJUST=true
+      - ENHANCEMENT_GAMMA=1.2
+      - ENHANCEMENT_ALPHA=1.3
+      - ENHANCEMENT_BETA=20
 
       # Added Rerun configuration
       - RERUN_VIEWER_ADDRESS=0.0.0.0:9876
       - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
       - RERUN_ENABLED=true
 
-      # Prometheus metrics port
+      # System configuration
+      - NTP_SERVER=pool.ntp.org
       - METRICS_PORT=8003
+      - LOG_LEVEL=INFO
+      - LOG_FILE=/app/logs/frame_processor.log
 
       # GPU / display environment variables
       - NVIDIA_VISIBLE_DEVICES=all
@@ -91,30 +113,16 @@ services:
       - USE_PERPLEXITY=${USE_PERPLEXITY:-false}
       - USE_GCS=${USE_GCS:-false}
       
-      # Processing configuration
-      - PROCESS_AFTER_SECONDS=${PROCESS_AFTER_SECONDS:-1.5}
+      # Additional processing configuration
       - REPROCESS_INTERVAL_SECONDS=${REPROCESS_INTERVAL_SECONDS:-3.0}
-      - IOU_THRESHOLD=${IOU_THRESHOLD:-0.3}
-      - MAX_LOST_FRAMES=${MAX_LOST_FRAMES:-10}
-      
-      # Enhancement configuration
-      - ENHANCEMENT_ENABLED=${ENHANCEMENT_ENABLED:-true}
-      - ENHANCEMENT_GAMMA=${ENHANCEMENT_GAMMA:-1.2}
-      - ENHANCEMENT_ALPHA=${ENHANCEMENT_ALPHA:-1.3}
-      - ENHANCEMENT_BETA=${ENHANCEMENT_BETA:-20}
       
       # Scene scaling configuration
       - MIN_CONFIDENCE_FOR_SCALING=${MIN_CONFIDENCE_FOR_SCALING:-0.7}
       - DIMENSION_CACHE_EXPIRY_DAYS=${DIMENSION_CACHE_EXPIRY_DAYS:-30}
       
     volumes:
-      - ${WORKSPACE}/frame_processor/frame_processor.py:/app/frame_processor.py
-      - ${WORKSPACE}/frame_processor/frame_processor_original.py:/app/frame_processor_original.py
-      - ${WORKSPACE}/frame_processor/enhanced_rerun_visualizer.py:/app/enhanced_rerun_visualizer.py
-      - ${WORKSPACE}/frame_processor/integrate_enhanced_visualizer.py:/app/integrate_enhanced_visualizer.py
-      - ${WORKSPACE}/frame_processor/modules:/app/modules
-      - ${WORKSPACE}/frame_processor/yolov11l.pt:/app/yolov11l.pt
-      - ${WORKSPACE}/frame_processor/worldsystem-23f7306a1a75.json:/app/worldsystem-23f7306a1a75.json:ro
+      - ${WORKSPACE}/frame_processor/models/yolov11l.pt:/app/yolov11l.pt
+      - ${WORKSPACE}/frame_processor/credentials/worldsystem-23f7306a1a75.json:/app/worldsystem-23f7306a1a75.json:ro
       - ${WORKSPACE}/frame_processor/logs:/app/logs
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}

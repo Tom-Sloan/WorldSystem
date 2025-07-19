@@ -76,9 +76,8 @@ class RerunClient:
         # Frame buffer for grid view
         self.frame_buffer = []
         self.max_buffer_size = 12  # 3x4 grid
-        self.grid_update_interval = 30  # Update grid every 30 frames (1 second at 30fps)
+        self.grid_update_interval = 10  # Update grid every N frames
         self.frames_since_grid_update = 0
-        self.last_grid_update_time = 0
         
         logger.info("Rerun visualization initialized with enhanced visualizer")
     
@@ -106,17 +105,11 @@ class RerunClient:
         if len(self.frame_buffer) > self.max_buffer_size:
             self.frame_buffer.pop(0)
         
-        # Update grid view periodically (time-based for smoother updates)
-        import time
-        current_time = time.time()
+        # Update grid view periodically
         self.frames_since_grid_update += 1
-        
-        # Update grid based on time (1 second) OR frame count
-        if (current_time - self.last_grid_update_time >= 1.0 or 
-            self.frames_since_grid_update >= self.grid_update_interval):
+        if self.frames_since_grid_update >= self.grid_update_interval:
             self._log_grid_view()
             self.frames_since_grid_update = 0
-            self.last_grid_update_time = current_time
         
         # Clear previous frame's detections to prevent persistence
         rr.log("/page1/live/overlays", rr.Clear(recursive=False))

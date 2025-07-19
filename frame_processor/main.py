@@ -103,7 +103,8 @@ class FrameProcessorService:
                 reconnect_interval=5.0
             )
             self.channel = await self.connection.channel()
-            await self.channel.set_qos(prefetch_count=1)
+            # Increase prefetch to allow buffering and smoother processing
+            await self.channel.set_qos(prefetch_count=5)
             
             # Declare exchanges
             self.video_frames_exchange = await self.channel.declare_exchange(

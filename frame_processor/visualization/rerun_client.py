@@ -7,6 +7,7 @@ the modular architecture.
 """
 
 import numpy as np
+import cv2
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 
@@ -72,6 +73,13 @@ class RerunClient:
         # Set default view mode
         self.set_view_mode(ViewMode.BOTH)
         
+        # Frame buffer for grid view
+        self.frame_buffer = []
+        self.max_buffer_size = 12  # 3x4 grid
+        self.grid_update_interval = 30  # Update grid every 30 frames (1 second at 30fps)
+        self.frames_since_grid_update = 0
+        self.last_grid_update_time = 0
+        
         logger.info("Rerun visualization initialized with enhanced visualizer")
     
     def log_frame(self, frame: np.ndarray, detections: List[Detection], 
@@ -90,32 +98,48 @@ class RerunClient:
         if not self.enabled:
             return
         
-        # Convert our Detection objects to format expected by visualizer
-        detection_info = []
-        for det in detections:
-            detection_info.append({
-                'bbox': det.bbox,
-                'class_name': det.class_name,
-                'confidence': det.confidence
-            })
+        # Add frame to buffer for grid view
+        frame_copy = frame.copy()
+        self.frame_buffer.append((frame_copy, frame_number, timestamp_ns))
         
-        # Convert active_tracks list to dictionary for enhanced visualizer
-        tracked_objects_dict = {}
-        if active_tracks:
+        # Keep buffer size limited
+        if len(self.frame_buffer) > self.max_buffer_size:
+            self.frame_buffer.pop(0)
+        
+        # Update grid view periodically (time-based for smoother updates)
+        import time
+        current_time = time.time()
+        self.frames_since_grid_update += 1
+        
+        # Update grid based on time (1 second) OR frame count
+        if (current_time - self.last_grid_update_time >= 1.0 or 
+            self.frames_since_grid_update >= self.grid_update_interval):
+            self._log_grid_view()
+            self.frames_since_grid_update = 0
+            self.last_grid_update_time = current_time
+        
+        # Clear previous frame's detections to prevent persistence
+        rr.log("/page1/live/overlays", rr.Clear(recursive=False))
+        rr.log("detections/yolo", rr.Clear(recursive=False))
+        rr.log("detections/sam_edges", rr.Clear(recursive=False))
+        
+        # For grid view, we'll minimize overlays on individual frames
+        # Just log the current frame without heavy overlays
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rr.log("/page1/live/camera", rr.Image(frame_rgb))
+        
+        # Check if we're using SAM/FastSAM (many detections) or YOLO (few detections)
+        is_segmentation = self.config.detector_type in ['sam', 'fastsam']
+        
+        # Only show minimal detection info for cleaner view
+        if active_tracks and len(active_tracks) < 5:  # Only show if few tracks
+            # Convert active_tracks list to dictionary
+            tracked_objects_dict = {}
             for track in active_tracks:
                 tracked_objects_dict[track.id] = track
-        
-        # Log frame with overlays using enhanced visualizer
-        self.visualizer.log_frame_with_overlays(
-            frame=frame,
-            tracked_objects=tracked_objects_dict,
-            frame_number=frame_number,
-            timestamp_ns=timestamp_ns
-        )
-        
-        # Also log raw detections for analysis
-        if detection_info:
-            self._log_yolo_detections(detection_info, frame.shape[:2])
+            
+            # Log minimal overlays
+            self._log_minimal_overlays(tracked_objects_dict, frame_number, timestamp_ns)
     
     def _log_yolo_detections(self, detections: List[Dict], frame_shape: tuple):
         """Log YOLO detections in Rerun format."""
@@ -159,6 +183,102 @@ class RerunClient:
             )
         except Exception as e:
             logger.error(f"Failed to log YOLO detections: {e}")
+    
+    def _filter_sam_detections(self, detections: List[Detection], 
+                               frame_shape: tuple) -> List[Detection]:
+        """
+        Filter SAM detections to reduce clutter.
+        
+        Args:
+            detections: List of all SAM detections
+            frame_shape: (height, width) of frame
+            
+        Returns:
+            Filtered list of detections
+        """
+        if not detections:
+            return []
+        
+        filtered = []
+        frame_area = frame_shape[0] * frame_shape[1]
+        
+        for det in detections:
+            x1, y1, x2, y2 = det.bbox
+            bbox_area = (x2 - x1) * (y2 - y1)
+            
+            # Filter criteria:
+            # 1. Minimum size: at least 2% of frame area
+            # 2. Maximum size: no more than 50% of frame area
+            # 3. Confidence threshold higher for SAM
+            size_ratio = bbox_area / frame_area
+            
+            if (size_ratio >= 0.02 and 
+                size_ratio <= 0.5 and 
+                det.confidence >= 0.85):  # Higher threshold for SAM
+                filtered.append(det)
+        
+        # Sort by area (largest first) and take top N
+        filtered.sort(key=lambda d: (d.bbox[2]-d.bbox[0])*(d.bbox[3]-d.bbox[1]), 
+                     reverse=True)
+        
+        # Limit to top 10 segments
+        return filtered[:10]
+    
+    def _log_sam_detections(self, detections: List[Dict], frame_shape: tuple):
+        """
+        Log SAM detections with edge-only visualization.
+        
+        Uses contours instead of filled boxes for cleaner visualization.
+        """
+        if not detections:
+            return
+        
+        import cv2
+        
+        # Create an edge map for visualization
+        edge_map = np.zeros((frame_shape[0], frame_shape[1], 3), dtype=np.uint8)
+        
+        for i, det in enumerate(detections):
+            x1, y1, x2, y2 = det['bbox']
+            
+            # Draw rectangle edges
+            color = self._get_segment_color(i, det['confidence'])
+            cv2.rectangle(edge_map, (x1, y1), (x2, y2), color, 2)
+            
+            # Add subtle label
+            label = f"{det['class_name']} {det['confidence']:.2f}"
+            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+            
+            # Background for text (semi-transparent effect)
+            cv2.rectangle(edge_map, 
+                         (x1, y1 - label_size[1] - 4),
+                         (x1 + label_size[0], y1),
+                         color, -1)
+            cv2.putText(edge_map, label,
+                       (x1, y1 - 2),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                       (255, 255, 255), 1)
+        
+        # Log edge map as separate image
+        try:
+            rr.log(
+                "detections/sam_edges",
+                rr.Image(edge_map)
+            )
+        except Exception as e:
+            logger.error(f"Failed to log SAM detections: {e}")
+    
+    def _get_segment_color(self, index: int, confidence: float) -> tuple:
+        """Get color for segment based on index and confidence."""
+        # Use HSV color space for better distribution
+        hue = (index * 30) % 180  # Distribute hues
+        saturation = int(255 * confidence)  # Higher confidence = more saturated
+        value = 255
+        
+        # Convert HSV to BGR for OpenCV
+        hsv = np.array([[[hue, saturation, value]]], dtype=np.uint8)
+        bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        return tuple(int(x) for x in bgr[0, 0])
     
     def log_processed_object(self, track: TrackedObject):
         """
@@ -267,3 +387,78 @@ class RerunClient:
             rr.log(path, rr.Scalar(value))
         except Exception as e:
             logger.error(f"Failed to log metric to Rerun: {e}")
+    
+    def _log_grid_view(self):
+        """Create and log a grid view of recent frames."""
+        if not self.frame_buffer:
+            return
+        
+        # Create a 3x4 grid
+        grid_rows = 3
+        grid_cols = 4
+        
+        # Get dimensions from first frame
+        sample_frame = self.frame_buffer[0][0]
+        h, w = sample_frame.shape[:2]
+        
+        # Scale down frames for grid
+        scale_factor = 0.33  # Make each frame 1/3 size
+        cell_h = int(h * scale_factor)
+        cell_w = int(w * scale_factor)
+        
+        # Create grid canvas
+        grid_h = cell_h * grid_rows
+        grid_w = cell_w * grid_cols
+        grid_canvas = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
+        
+        # Fill grid with frames
+        for idx, (frame, frame_num, _) in enumerate(self.frame_buffer[-12:]):
+            if idx >= grid_rows * grid_cols:
+                break
+            
+            row = idx // grid_cols
+            col = idx % grid_cols
+            
+            # Resize frame
+            resized = cv2.resize(frame, (cell_w, cell_h))
+            
+            # Place in grid
+            y1 = row * cell_h
+            y2 = (row + 1) * cell_h
+            x1 = col * cell_w
+            x2 = (col + 1) * cell_w
+            
+            grid_canvas[y1:y2, x1:x2] = resized
+            
+            # Add subtle frame number
+            cv2.putText(grid_canvas, f"#{frame_num}", 
+                       (x1 + 5, y1 + 20),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                       (255, 255, 255), 1)
+        
+        # Convert to RGB and log
+        grid_rgb = cv2.cvtColor(grid_canvas, cv2.COLOR_BGR2RGB)
+        rr.log("/grid_view", rr.Image(grid_rgb))
+    
+    def _log_minimal_overlays(self, tracked_objects: Dict, frame_number: int, 
+                              timestamp_ns: Optional[int] = None):
+        """Log minimal overlays for cleaner visualization."""
+        # Set time context
+        rr.set_time("frame", sequence=frame_number)
+        if timestamp_ns:
+            rr.set_time("sensor_time", timestamp=timestamp_ns / 1e9)
+        
+        # Create minimal overlays - just small labels
+        for track_id, track in tracked_objects.items():
+            x1, y1, x2, y2 = track.bbox
+            
+            # Log just a small label at top-left of bbox
+            label_text = f"#{track.id}"
+            if hasattr(track, 'estimated_dimensions') and track.estimated_dimensions:
+                label_text += " ✓"  # Checkmark for identified objects
+            
+            # Create a small text annotation
+            rr.log(
+                f"/page1/live/labels/track_{track_id}",
+                rr.TextLog(label_text, position=[x1, y1])
+            )

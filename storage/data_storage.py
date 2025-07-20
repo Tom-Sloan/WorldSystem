@@ -7,6 +7,7 @@ import base64
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+from video_storage import VideoStorageIntegration
 
 # PROMETHEUS
 from prometheus_client import start_http_server, Counter, Histogram
@@ -70,6 +71,8 @@ class DataStorage:
         self.channel = None
         self.recording_path = None
         self.trajectory_file = None
+        self.video_storage = None  # Will be initialized in start_recording
+        self.save_individual_frames = os.getenv("SAVE_INDIVIDUAL_FRAMES", "false").lower() == "true"
         self._connect_with_retry()  # tries to connect until success
 
     def _connect_with_retry(self, max_retries=30, delay=2):
@@ -169,6 +172,9 @@ class DataStorage:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.recording_path = Path('/data') / timestamp / "mav0"
         
+        # Initialize video storage
+        self.video_storage = VideoStorageIntegration(self.recording_path)
+        
         # Create directories for cameras, IMU and ply data.
         (self.recording_path / "cam0" / "data").mkdir(parents=True, exist_ok=True)
         (self.recording_path / "cam1" / "data").mkdir(parents=True, exist_ok=True)  # New PNG folder
@@ -204,6 +210,14 @@ class DataStorage:
     def _save_image(self, ch, method, properties, body):
         start_time = time.time()
         try:
+            # First, try to handle as video data
+            if self.video_storage:
+                self.video_storage.handle_video_message(ch, method, properties, body)
+                
+            # Only save individual frames if enabled
+            if not self.save_individual_frames:
+                return
+                
             # If there is no timestamp in the headers, discard the message.
             if not (properties and properties.headers and "timestamp_ns" in properties.headers):
                 print("[!] No timestamp in image message; discarding message.")
@@ -416,6 +430,9 @@ class DataStorage:
                     self.imu_csv_file.close()
                 if hasattr(self, "processed_imu_csv_file") and not self.processed_imu_csv_file.closed:
                     self.processed_imu_csv_file.close()
+                # Clean up video storage
+                if self.video_storage:
+                    self.video_storage.cleanup()
                 self.start_recording()  # This creates a new timestamped folder and new files.
         except Exception as e:
             print("Error handling restart message:", e)

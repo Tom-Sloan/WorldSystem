@@ -10,9 +10,12 @@ import time
 from typing import Dict, Any, Optional, List, Type
 from dataclasses import dataclass
 import numpy as np
+import psutil
+import torch
 
 from core.config import Config
 from core.utils import get_logger, PerformanceTimer, get_ntp_time_ns
+from core.performance_monitor import DetailedTimer, get_performance_monitor
 from detection.base import Detector, Detection
 from detection.yolo import YOLODetector
 from detection.sam import SAMDetector
@@ -212,58 +215,104 @@ class FrameProcessor:
     async def process_frame(self, frame: np.ndarray, 
                           timestamp_ns: Optional[int] = None) -> ProcessingResult:
         """
-        Process a single frame through the entire pipeline.
-        
-        Args:
-            frame: Input video frame
-            timestamp_ns: Optional timestamp in nanoseconds
-            
-        Returns:
-            ProcessingResult with all processing outputs
+        Process a single frame through the entire pipeline with detailed timing.
         """
-        start_time = time.time()
-        self.frame_number += 1
+        monitor = get_performance_monitor()
+        frame_breakdown = {}
         
-        if timestamp_ns is None:
-            timestamp_ns = get_ntp_time_ns()
-        
-        with PerformanceTimer(f"frame_{self.frame_number}_total", logger):
-            # Step 1: Run detection if enabled
+        with DetailedTimer("total_frame_processing"):
+            start_time = time.time()
+            self.frame_number += 1
+            
+            if timestamp_ns is None:
+                timestamp_ns = get_ntp_time_ns()
+            
+            # Step 1: Run detection with timing
             if self.config.detection_enabled:
-                detections = await self.detector.detect(frame)
-                self.stats['total_detections'] += len(detections)
+                with DetailedTimer("detection") as timer:
+                    detections = await self.detector.detect(frame)
+                    self.stats['total_detections'] += len(detections)
+                frame_breakdown['detection'] = timer.elapsed_ms
+                
+                # Log detection details
+                monitor.add_event(
+                    f"Detected {len(detections)} objects ({timer.elapsed_ms:.1f}ms)",
+                    "info" if timer.elapsed_ms < 50 else "warning"
+                )
             else:
                 detections = []
+                frame_breakdown['detection'] = 0.0
             
-            # Step 2: Update tracking
-            tracks_ready = self.tracker.update(detections, frame, self.frame_number)
+            # Step 2: Update tracking with timing
+            with DetailedTimer("tracking") as timer:
+                tracks_ready = self.tracker.update(detections, frame, self.frame_number)
+            frame_breakdown['tracking'] = timer.elapsed_ms
             
             # Step 3: Process tracks ready for API
             api_tasks = []
+            api_start = time.perf_counter()
+            
             for track in tracks_ready:
                 if track.best_frame is not None and not track.api_processed:
                     api_tasks.append(self._process_track_for_api(track))
             
             # Run API processing concurrently
             if api_tasks:
-                await asyncio.gather(*api_tasks)
+                with DetailedTimer(f"api_processing_{len(api_tasks)}_tracks"):
+                    await asyncio.gather(*api_tasks)
+                    monitor.add_event(
+                        f"Processed {len(api_tasks)} tracks through API",
+                        "success"
+                    )
             
-            # Step 4: Update visualization if enabled
+            frame_breakdown['api_processing'] = (time.perf_counter() - api_start) * 1000
+            
+            # Step 4: Update visualization with timing
             if self.rerun_client:
-                active_tracks = self.tracker.get_active_tracks()
-                self.rerun_client.log_frame(
-                    frame, detections, active_tracks, 
-                    self.frame_number, timestamp_ns
-                )
+                with DetailedTimer("visualization") as timer:
+                    active_tracks = self.tracker.get_active_tracks()
+                    self.rerun_client.log_frame(
+                        frame, detections, active_tracks, 
+                        self.frame_number, timestamp_ns
+                    )
+                frame_breakdown['visualization'] = timer.elapsed_ms
+            else:
+                frame_breakdown['visualization'] = 0.0
             
-            # Calculate processing time
+            # Calculate total processing time
             processing_time_ms = (time.time() - start_time) * 1000
+            frame_breakdown['total'] = processing_time_ms
+            
+            # Update monitor metrics
+            monitor.record_frame_breakdown(frame_breakdown)
+            monitor.update_metric('frames_processed', self.stats['frames_processed'])
+            monitor.update_metric('active_tracks', len(self.tracker.get_active_tracks()))
+            monitor.update_metric('detections_per_frame', 
+                                self.stats['total_detections'] / max(1, self.stats['frames_processed']))
+            
+            # Update memory usage
+            process = psutil.Process()
+            monitor.update_metric('memory_mb', process.memory_info().rss / 1024 / 1024)
+            
+            if torch.cuda.is_available():
+                monitor.update_metric('gpu_memory_mb', 
+                                    torch.cuda.memory_allocated() / 1024 / 1024)
+            
+            # Calculate FPS
             self.stats['frames_processed'] += 1
             self.stats['total_processing_time_ms'] += processing_time_ms
             
-            # Log performance periodically
+            if self.frame_number % 30 == 0:  # Update FPS every 30 frames
+                avg_time = self.stats['total_processing_time_ms'] / self.stats['frames_processed']
+                fps = 1000.0 / avg_time if avg_time > 0 else 0
+                monitor.update_metric('fps', fps)
+            
+            # Log performance periodically with better formatting
             if self.frame_number % 100 == 0:
-                self._log_performance_stats()
+                monitor.add_event(
+                    f"Milestone: {self.frame_number} frames processed",
+                    "success"
+                )
             
             return ProcessingResult(
                 frame_number=self.frame_number,
@@ -276,21 +325,16 @@ class FrameProcessor:
             )
     
     async def _process_track_for_api(self, track: TrackedObject):
-        """
-        Process a track through the API pipeline.
+        """Process a track through the API pipeline with detailed timing."""
+        monitor = get_performance_monitor()
         
-        Args:
-            track: Track to process
-        """
         try:
-            logger.info(f"Processing track #{track.id} ({track.class_name}) for API")
-            
-            # Mark as being processed
             track.is_being_processed = True
             start_time = time.time()
             
-            # Enhance image if enabled
-            enhanced_image = self.enhancer.enhance_roi(track.best_frame)
+            # Enhance image with timing
+            with DetailedTimer(f"enhancement_track_{track.id}"):
+                enhanced_image = self.enhancer.enhance_roi(track.best_frame)
             
             # Log the enhanced object to Rerun IMMEDIATELY after enhancement
             if self.rerun_client:
@@ -306,12 +350,18 @@ class FrameProcessor:
                 # Log to grid
                 self.rerun_client.log_enhanced_object(enhanced_track)
             
-            # Process through API client
-            api_result = await self.api_client.process_object_for_dimensions(
-                enhanced_image, track.class_name
-            )
+            # Process through API client with timing
+            with DetailedTimer(f"api_call_track_{track.id}") as timer:
+                api_result = await self.api_client.process_object_for_dimensions(
+                    enhanced_image, track.class_name
+                )
             
-            # Store result in track
+            # Check if it was a cache hit
+            if timer.elapsed_ms < 10:  # Likely a cache hit if very fast
+                monitor.update_metric('api_cache_hits', 
+                                    self.stats.get('api_cache_hits', 0) + 1)
+            
+            # Store result
             track.api_result = api_result
             track.api_processed = True
             track.is_being_processed = False
@@ -325,6 +375,19 @@ class FrameProcessor:
             
             # Update stats
             self.stats['api_calls_made'] += 1
+            monitor.update_metric('api_calls', self.stats['api_calls_made'])
+            
+            # Log success/failure
+            if api_result.get('dimensions'):
+                monitor.add_event(
+                    f"✅ Track #{track.id}: {api_result.get('product_name', 'Unknown')}",
+                    "success"
+                )
+            else:
+                monitor.add_event(
+                    f"❌ Track #{track.id}: Failed to get dimensions",
+                    "warning"
+                )
             
             # Log to Rerun if enabled
             if self.rerun_client and api_result.get('dimensions'):
@@ -338,7 +401,8 @@ class FrameProcessor:
             
         except Exception as e:
             logger.error(f"API processing failed for track #{track.id}: {e}")
-            track.api_processed = True  # Mark as processed to avoid retry
+            monitor.add_event(f"API error for track #{track.id}: {str(e)}", "error")
+            track.api_processed = True
             track.api_result = {"error": str(e)}
             track.is_being_processed = False
     

@@ -60,5 +60,8 @@ COPY credentials/worldsystem-23f7306a1a75.json* /app/
 # Set Python path to include app directory
 ENV PYTHONPATH=/app
 
+# Set Docker environment flag for performance monitor
+ENV IS_DOCKER=true
+
 # Run the refactored main entry point
 CMD ["python3", "-u", "/app/main.py"]

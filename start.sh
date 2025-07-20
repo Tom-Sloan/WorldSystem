@@ -36,10 +36,12 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "All services rebuilt and started:"
-echo "- slam (3D SLAM)"
+echo "- slam3r (3D SLAM)"
 echo "- fantasy (Fantasy World Generator)"
 echo "- server (Backend API)"
-echo "- reconstruction (3D Reconstruction)"
 echo "- rabbitmq (Message Broker)"
 echo "- nginx (Web Server)"
 echo "- website (Frontend)"
+echo "- frame_processor (Video Processing)"
+echo "- mesh_service (Real-time Mesh Generation)"
+echo "- data_storage (Data Storage)"

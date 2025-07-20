@@ -54,6 +54,9 @@ COPY visualization /app/visualization/
 COPY main.py /app/main.py
 COPY sam2_configs.py /app/sam2_configs.py
 
+# Copy additional documentation if needed
+COPY docs /app/docs/
+
 # All modules are now part of the refactored structure
 
 

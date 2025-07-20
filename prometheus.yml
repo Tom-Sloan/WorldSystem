@@ -23,11 +23,6 @@ scrape_configs:
     static_configs:
       - targets: ['nvidia-dcgm-exporter:9400']
 
-  # Reconstruction (uses default bridge network)
-  - job_name: 'reconstruction'
-    static_configs:
-      - targets: ['reconstruction:8001']
-
   # Data Storage (uses host network mode)
   - job_name: 'data_storage'
     static_configs:
@@ -47,11 +42,6 @@ scrape_configs:
   - job_name: 'slam3r'
     static_configs:
       - targets: ['host.docker.internal:8000']
-
-  # MAST3R (uses host network mode, when running)  
-  - job_name: 'mast3r'
-    static_configs:
-      - targets: ['host.docker.internal:8001']
 
   # Mesh Service (uses host network mode)
   - job_name: 'mesh_service'

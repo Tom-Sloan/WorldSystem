@@ -16,6 +16,11 @@ RUN apt-get update && apt-get install -y \
       libgomp1 \
       wget \
       git \
+      ffmpeg \
+      libavcodec-dev \
+      libavformat-dev \
+      libavutil-dev \
+      libswscale-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

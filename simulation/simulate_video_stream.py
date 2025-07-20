@@ -30,6 +30,9 @@ USE_FOLDER = os.getenv("USE_FOLDER", "")
 if USE_FOLDER and os.path.exists("/simulation_data"):
     DATA_ROOT = Path("/simulation_data")
     print(f"[INFO] Using simulation data from: {DATA_ROOT}")
+elif os.path.exists("/data_test"):
+    DATA_ROOT = Path("/data_test")
+    print(f"[INFO] Using test data from: {DATA_ROOT}")
 else:
     DATA_ROOT = Path("/data")
     print(f"[INFO] Using default data path: {DATA_ROOT}")
@@ -67,31 +70,55 @@ class VideoStreamSimulator:
             print("[WebSocket] Disconnected")
             
     async def extract_h264_stream(self, video_path: Path) -> Optional[Path]:
-        """Extract raw H.264 stream from video file using ffmpeg"""
+        """Extract or re-encode video to H.264 stream"""
         h264_path = video_path.with_suffix('.h264')
         
-        cmd = [
-            'ffmpeg', '-i', str(video_path),
-            '-c:v', 'copy',  # Copy video codec (no re-encoding)
-            '-bsf:v', 'h264_mp4toannexb',  # Convert to Annex B format
-            '-an',  # No audio
-            '-f', 'h264',  # Raw H.264 format
-            str(h264_path),
-            '-y'  # Overwrite if exists
-        ]
+        # First try to copy if it's already H.264
+        probe_cmd = ['ffmpeg', '-i', str(video_path), '-hide_banner']
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
         
-        print(f"[H.264] Extracting H.264 stream from {video_path.name}...")
+        # Check if video is already H.264
+        is_h264 = 'Video: h264' in probe_result.stderr
+        
+        if is_h264:
+            # Try to copy H.264 stream
+            cmd = [
+                'ffmpeg', '-i', str(video_path),
+                '-c:v', 'copy',  # Copy video codec (no re-encoding)
+                '-bsf:v', 'h264_mp4toannexb',  # Convert to Annex B format
+                '-an',  # No audio
+                '-f', 'h264',  # Raw H.264 format
+                str(h264_path),
+                '-y'  # Overwrite if exists
+            ]
+            print(f"[H.264] Extracting existing H.264 stream from {video_path.name}...")
+        else:
+            # Re-encode to H.264
+            cmd = [
+                'ffmpeg', '-i', str(video_path),
+                '-c:v', 'libx264',  # Encode to H.264
+                '-preset', 'ultrafast',  # Fast encoding
+                '-tune', 'zerolatency',  # Low latency
+                '-profile:v', 'baseline',  # Compatible profile
+                '-level', '3.0',
+                '-an',  # No audio
+                '-f', 'h264',  # Raw H.264 format
+                str(h264_path),
+                '-y'  # Overwrite if exists
+            ]
+            print(f"[H.264] Re-encoding {video_path.name} to H.264...")
+        
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
-            print(f"[H.264] FFmpeg extraction failed: {result.stderr}")
+            print(f"[H.264] FFmpeg failed: {result.stderr}")
             return None
             
         if h264_path.exists() and h264_path.stat().st_size > 0:
-            print(f"[H.264] Successfully extracted {h264_path.stat().st_size / 1024 / 1024:.2f} MB")
+            print(f"[H.264] Successfully created {h264_path.stat().st_size / 1024 / 1024:.2f} MB")
             return h264_path
         else:
-            print(f"[H.264] Extraction failed - no output file")
+            print(f"[H.264] Failed - no output file")
             return None
             
     async def stream_h264_file(self, h264_path: Path):
@@ -143,98 +170,41 @@ class VideoStreamSimulator:
             await self.encode_and_stream_frames(video_path)
             
     async def encode_and_stream_frames(self, video_path: Path):
-        """Fallback: Read frames and encode to H.264 for streaming"""
-        print(f"[Encode] Encoding frames from {video_path.name}")
+        """Fallback: Re-encode video to H.264 file then stream it"""
+        print(f"[Encode] Re-encoding {video_path.name} to H.264...")
         
-        cap = cv2.VideoCapture(str(video_path))
-        if not cap.isOpened():
-            print(f"[Encode] Failed to open video: {video_path}")
-            return
-            
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        print(f"[Encode] Video: {width}x{height} @ {fps}fps, {total_frames} frames")
-        
-        # Create temporary H.264 file for encoding
+        # Create temporary H.264 file
         temp_h264 = video_path.parent / f"temp_{video_path.stem}.h264"
         
-        # Use ffmpeg to create H.264 encoder pipe
+        # Use ffmpeg to re-encode the entire video to H.264
         cmd = [
-            'ffmpeg',
-            '-f', 'rawvideo',
-            '-pix_fmt', 'bgr24',
-            '-s', f'{width}x{height}',
-            '-r', str(fps),
-            '-i', '-',  # Input from pipe
+            'ffmpeg', '-i', str(video_path),
             '-c:v', 'libx264',
             '-preset', 'ultrafast',  # Fast encoding
             '-tune', 'zerolatency',  # Low latency
             '-profile:v', 'baseline',  # Compatible profile
             '-level', '3.0',
-            '-f', 'h264',
-            '-'  # Output to pipe
+            '-an',  # No audio
+            '-f', 'h264',  # Raw H.264 format
+            str(temp_h264),
+            '-y'  # Overwrite if exists
         ]
         
-        # Start ffmpeg process
-        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print(f"[Encode] Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
         
-        frame_count = 0
-        chunk_buffer = bytearray()
-        
-        try:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                    
-                # Write frame to ffmpeg
-                process.stdin.write(frame.tobytes())
-                process.stdin.flush()
-                
-                frame_count += 1
-                
-                # Read encoded H.264 data from ffmpeg
-                # This is non-blocking, so we might not get data immediately
-                while True:
-                    try:
-                        chunk = process.stdout.read(CHUNK_SIZE)
-                        if chunk:
-                            chunk_buffer.extend(chunk)
-                            
-                            # Send accumulated data when we have enough
-                            if len(chunk_buffer) >= CHUNK_SIZE:
-                                await self.websocket.send(bytes(chunk_buffer[:CHUNK_SIZE]))
-                                chunk_buffer = chunk_buffer[CHUNK_SIZE:]
-                        else:
-                            break
-                    except:
-                        break
-                        
-                # Progress
-                if frame_count % 30 == 0:
-                    print(f"[Encode] Processed {frame_count}/{total_frames} frames")
-                    
-        finally:
-            # Close ffmpeg stdin to signal end of input
-            process.stdin.close()
+        if result.returncode != 0:
+            print(f"[Encode] FFmpeg encoding failed: {result.stderr}")
+            return
             
-            # Read any remaining output
-            remaining = process.stdout.read()
-            if remaining:
-                chunk_buffer.extend(remaining)
-                
-            # Send any remaining data
-            if chunk_buffer:
-                await self.websocket.send(bytes(chunk_buffer))
-                
+        if temp_h264.exists() and temp_h264.stat().st_size > 0:
+            print(f"[Encode] Successfully encoded to {temp_h264.stat().st_size / 1024 / 1024:.2f} MB")
+            # Stream the encoded file
+            await self.stream_h264_file(temp_h264)
             # Clean up
-            process.terminate()
-            cap.release()
-            
-        print(f"[Encode] Completed encoding {frame_count} frames")
+            temp_h264.unlink()
+        else:
+            print(f"[Encode] Encoding failed - no output file")
         
     async def stream_from_frames_directory(self, frames_path: Path):
         """Convert frame images to H.264 stream"""

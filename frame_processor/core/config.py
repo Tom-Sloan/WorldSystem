@@ -7,9 +7,12 @@ swapping of detection and tracking algorithms via environment variables.
 
 from pydantic import field_validator, Field, model_validator
 from pydantic_settings import BaseSettings
-from typing import Literal, Optional
+from typing import Literal, Optional, Dict, Any
 import os
 from pathlib import Path
+from .utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class Config(BaseSettings):
@@ -292,6 +295,164 @@ class Config(BaseSettings):
         description="Maximum detections per image"
     )
     
+    # ========== Video Processing Configuration ==========
+    video_mode: bool = Field(
+        default=False,
+        description="Enable video-aware processing"
+    )
+    
+    video_tracker_type: str = Field(
+        default="sam2_realtime",
+        description="Video tracker to use (sam2_realtime, yolo_track, grounded_sam2)"
+    )
+    
+    # Configuration profile
+    config_profile: str = Field(
+        default="balanced",
+        description="Configuration profile: performance, balanced, quality"
+    )
+    
+    # Performance settings
+    target_fps: int = Field(
+        default=15,
+        description="Target FPS for real-time processing"
+    )
+    
+    processing_resolution: int = Field(
+        default=720,
+        description="Max resolution for processing (scales down if needed)"
+    )
+    
+    # SAM2 Video configuration
+    sam2_model_size: str = Field(
+        default="small",
+        description="Model size: tiny, small, base, large"
+    )
+    
+    enable_model_compilation: bool = Field(
+        default=True,
+        description="Compile model for better performance (PyTorch 2.0+)"
+    )
+    
+    # Memory tree configuration
+    memory_tree_branches: int = Field(
+        default=3,
+        description="Number of hypothesis branches in memory tree"
+    )
+    
+    memory_tree_consistency_threshold: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description="Consistency threshold for memory tree branches"
+    )
+    
+    # Prompting configuration
+    sam2_prompt_strategy: str = Field(
+        default="grid",
+        description="Prompting strategy: grid, motion, saliency, hybrid"
+    )
+    
+    grid_prompt_density: int = Field(
+        default=16,
+        description="Points per side for grid prompting"
+    )
+    
+    reprompt_interval: int = Field(
+        default=60,
+        description="Frames between re-prompting for new objects"
+    )
+    
+    # Object filtering
+    min_object_area: int = Field(
+        default=1000,
+        description="Minimum pixel area for tracking"
+    )
+    
+    # Google Lens configuration
+    lens_api_rate_limit: int = Field(
+        default=10,
+        description="Max Google Lens API calls per second"
+    )
+    
+    lens_cache_size: int = Field(
+        default=1000,
+        description="Size of visual similarity cache"
+    )
+    
+    lens_cache_similarity_threshold: float = Field(
+        default=0.95,
+        ge=0.0,
+        le=1.0,
+        description="Similarity threshold for cache hits"
+    )
+    
+    lens_batch_size: int = Field(
+        default=10,
+        description="Maximum items per Lens API batch"
+    )
+    
+    lens_batch_wait_ms: int = Field(
+        default=500,
+        description="Maximum wait time before processing batch"
+    )
+    
+    lens_enable_similar_dedup: bool = Field(
+        default=True,
+        description="Deduplicate visually similar items in batch"
+    )
+    
+    # Processing intervals
+    reprocess_interval_ms: int = Field(
+        default=3000,
+        description="Minimum time between reprocessing same object (ms)"
+    )
+    
+    # Video buffer configuration
+    video_buffer_size: int = Field(
+        default=30,
+        description="Frames to buffer per stream"
+    )
+    
+    # Stream lifecycle
+    stream_stale_timeout_seconds: int = Field(
+        default=30,
+        description="Seconds before marking a stream as stale"
+    )
+    
+    stream_cleanup_timeout_seconds: int = Field(
+        default=120,
+        description="Seconds before cleaning up an inactive stream"
+    )
+    
+    # GPU memory management
+    model_switch_threshold_mb: int = Field(
+        default=3000,
+        description="GPU memory threshold for model switching (MB)"
+    )
+    
+    enable_dynamic_model_switching: bool = Field(
+        default=True,
+        description="Enable automatic model size switching on GPU pressure"
+    )
+    
+    # Error recovery
+    max_retry_attempts: int = Field(
+        default=2,
+        description="Maximum retry attempts for GPU OOM errors"
+    )
+    
+    retry_delay_ms: int = Field(
+        default=100,
+        description="Delay between retry attempts (ms)"
+    )
+    
+    # Metrics
+    metrics_enabled: bool = Field(
+        default=True,
+        description="Enable Prometheus metrics export"
+    )
+    
     # ========== Validators ==========
     
     @field_validator('detector_type')
@@ -378,12 +539,126 @@ class Config(BaseSettings):
         
         return self
     
+    @model_validator(mode='before')
+    def apply_profile(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply configuration profile presets."""
+        profile = values.get('config_profile', 'balanced')
+        
+        profiles = {
+            "performance": {
+                "sam2_model_size": "tiny",
+                "target_fps": 25,
+                "processing_resolution": 480,
+                "grid_prompt_density": 8,
+                "reprompt_interval": 120,
+                "min_object_area": 2000,
+                "memory_tree_branches": 2,
+                "enable_model_compilation": True,
+                "lens_batch_size": 20,
+                "lens_batch_wait_ms": 1000,
+                "enhancement_enabled": False  # Disable for speed
+            },
+            "balanced": {
+                "sam2_model_size": "small",
+                "target_fps": 15,
+                "processing_resolution": 720,
+                "grid_prompt_density": 16,
+                "reprompt_interval": 60,
+                "min_object_area": 1000,
+                "memory_tree_branches": 3,
+                "enable_model_compilation": True,
+                "lens_batch_size": 10,
+                "lens_batch_wait_ms": 500
+            },
+            "quality": {
+                "sam2_model_size": "base",
+                "target_fps": 10,
+                "processing_resolution": 1080,
+                "grid_prompt_density": 24,
+                "reprompt_interval": 30,
+                "min_object_area": 500,
+                "memory_tree_branches": 4,
+                "enable_model_compilation": False,  # Prefer accuracy
+                "lens_batch_size": 5,
+                "lens_batch_wait_ms": 250,
+                "enhancement_enabled": True,
+                "enhancement_auto_adjust": True
+            }
+        }
+        
+        if profile in profiles:
+            # Apply profile defaults (can be overridden by explicit settings)
+            profile_settings = profiles[profile]
+            for key, value in profile_settings.items():
+                if key not in values or values[key] is None:
+                    values[key] = value
+            logger.info(f"Applied configuration profile: {profile}")
+        
+        return values
+    
+    @field_validator('processing_resolution')
+    def validate_resolution(cls, v):
+        """Ensure resolution is reasonable."""
+        valid_resolutions = [480, 720, 1080, 1440, 2160]
+        if v not in valid_resolutions:
+            # Find closest valid resolution
+            closest = min(valid_resolutions, key=lambda x: abs(x - v))
+            logger.warning(f"Invalid resolution {v}, using closest: {closest}")
+            return closest
+        return v
+    
+    @field_validator('sam2_model_size')
+    def validate_sam2_model_size(cls, v):
+        """Ensure model size is valid."""
+        valid_sizes = ["tiny", "small", "base", "large"]
+        if v not in valid_sizes:
+            raise ValueError(f"Invalid SAM2 model size: {v}. Must be one of {valid_sizes}")
+        return v
+    
+    @field_validator('target_fps')
+    def validate_target_fps(cls, v):
+        """Ensure FPS target is reasonable."""
+        if v < 5:
+            logger.warning("Target FPS < 5 may cause tracking issues")
+        elif v > 30:
+            logger.warning("Target FPS > 30 may not be achievable")
+        return v
+    
+    @field_validator('sam2_prompt_strategy')
+    def validate_prompt_strategy(cls, v):
+        """Ensure prompt strategy is valid."""
+        valid_strategies = ["grid", "motion", "saliency", "hybrid"]
+        if v not in valid_strategies:
+            raise ValueError(f"Invalid prompt strategy: {v}. Must be one of {valid_strategies}")
+        return v
+    
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": False,  # Allow both lowercase and uppercase env vars
         "extra": "ignore"  # Ignore extra fields
     }
+
+
+class ConfigFactory:
+    """Factory for creating configurations with different profiles."""
+    
+    @staticmethod
+    def create_config(profile: str = "balanced", **overrides) -> Config:
+        """Create a configuration with a specific profile and optional overrides."""
+        config_dict = {"config_profile": profile}
+        config_dict.update(overrides)
+        return Config(**config_dict)
+    
+    @staticmethod
+    def create_performance_config(**overrides) -> Config:
+        """Create a performance-optimized configuration."""
+        return ConfigFactory.create_config("performance", **overrides)
+    
+    @staticmethod
+    def create_quality_config(**overrides) -> Config:
+        """Create a quality-optimized configuration."""
+        return ConfigFactory.create_config("quality", **overrides)
 
 
 # Singleton instance

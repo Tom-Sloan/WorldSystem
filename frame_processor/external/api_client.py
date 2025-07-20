@@ -145,6 +145,31 @@ class APIClient:
         logger.warning("No writable cache directory found, using memory-only cache")
         return None
     
+    async def upload_image_to_gcs(self, image: np.ndarray) -> Optional[Dict[str, str]]:
+        """
+        Upload image to Google Cloud Storage asynchronously.
+        
+        Args:
+            image: Image array to upload
+            
+        Returns:
+            Dict with 'url' and 'blob_name' or None on failure
+        """
+        import uuid
+        object_name = f"lens_objects/{int(time.time())}_{uuid.uuid4().hex}.jpg"
+        
+        # Use sync method in thread pool
+        loop = asyncio.get_event_loop()
+        url = await loop.run_in_executor(None, self.upload_to_gcs, image, object_name)
+        
+        if url:
+            return {
+                "url": url,
+                "blob_name": object_name,
+                "bucket": self.config.gcs_bucket_name
+            }
+        return None
+    
     def upload_to_gcs(self, image: np.ndarray, object_name: str) -> Optional[str]:
         """
         Upload image to Google Cloud Storage.
@@ -191,6 +216,33 @@ class APIClient:
             except Exception as e:
                 logger.error(f"GCS upload failed: {e}")
                 return None
+    
+    async def cleanup_gcs_blob(self, blob_name: str) -> bool:
+        """
+        Delete a blob from GCS asynchronously.
+        
+        Args:
+            blob_name: Name of the blob to delete
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.use_gcs or not self.gcs_bucket:
+            return False
+        
+        loop = asyncio.get_event_loop()
+        
+        def _delete_blob():
+            try:
+                blob = self.gcs_bucket.blob(blob_name)
+                blob.delete()
+                logger.debug(f"Deleted GCS blob: {blob_name}")
+                return True
+            except Exception as e:
+                logger.error(f"Error deleting GCS blob {blob_name}: {e}")
+                return False
+        
+        return await loop.run_in_executor(None, _delete_blob)
     
     async def identify_with_google_lens(self, image_url: str) -> Optional[Dict[str, Any]]:
         """

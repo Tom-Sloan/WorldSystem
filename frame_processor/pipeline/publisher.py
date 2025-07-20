@@ -51,6 +51,7 @@ class RabbitMQPublisher:
         self.stats = {
             'frames_published': 0,
             'api_results_published': 0,
+            'identifications_published': 0,
             'publish_errors': 0,
             'total_bytes_published': 0
         }
@@ -264,6 +265,58 @@ class RabbitMQPublisher:
             stats['avg_frame_size_kb'] = 0
         
         return stats
+    
+    async def publish_identification(self, identification_data: Dict[str, Any]):
+        """
+        Publish object identification results from Google Lens.
+        
+        Args:
+            identification_data: Dictionary containing:
+                - object_id: Unique object identifier
+                - identification: Lens API results
+                - timestamp: Processing timestamp
+                - batch_id: Optional batch identifier
+                - from_cache: Whether result was from cache
+        """
+        if not self.api_results_exchange_obj:
+            logger.error("RabbitMQ not connected")
+            return
+        
+        with PerformanceTimer("publish_identification", logger):
+            try:
+                # Prepare message
+                message_data = {
+                    'type': 'object_identification',
+                    'object_id': identification_data.get('object_id'),
+                    'identification': identification_data.get('identification'),
+                    'timestamp': identification_data.get('timestamp', datetime.now().timestamp()),
+                    'batch_id': identification_data.get('batch_id'),
+                    'from_cache': identification_data.get('from_cache', False)
+                }
+                
+                # Publish
+                message_body = json.dumps(message_data).encode()
+                
+                await self.api_results_exchange_obj.publish(
+                    Message(
+                        body=message_body,
+                        content_type='application/json'
+                    ),
+                    routing_key=''
+                )
+                
+                # Update statistics
+                self.stats['identifications_published'] += 1
+                self.stats['total_bytes_published'] += len(message_body)
+                
+                logger.debug(
+                    f"Published identification for object {identification_data.get('object_id')}"
+                )
+                
+            except Exception as e:
+                logger.error(f"Failed to publish identification: {e}")
+                self.stats['publish_errors'] += 1
+                await self._handle_connection_error()
     
     async def close(self):
         """Close RabbitMQ connection."""

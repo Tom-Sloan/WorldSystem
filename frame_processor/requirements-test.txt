@@ -1,0 +1,23 @@
+# Additional requirements for running tests locally
+# Install with: pip install -r requirements-test.txt
+
+# For H.264 video encoding/decoding
+av>=10.0.0
+
+# For RabbitMQ integration testing
+aio-pika>=9.0.0
+
+# For metrics
+prometheus-client>=0.19.0
+
+# For async HTTP (if testing API)
+aiohttp>=3.9.0
+
+# For testing utilities
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+
+# Visualization
+matplotlib>=3.7.0
+rich>=13.7.0

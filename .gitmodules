@@ -1,15 +1,9 @@
-[submodule "reconstruction"]
-	path = reconstruction
-	url = https://github.com/Tom-Sloan/MambaRecon.git
 [submodule "android"]
 	path = android
 	url = https://github.com/Tom-Sloan/DJIDroneAndroidApp.git
 [submodule "website"]
 	path = website
 	url = https://github.com/Tom-Sloan/WorldBuilderWebsite.git
-[submodule "slam"]
-	path = slam
-	url = https://github.com/Tom-Sloan/ORB-SLAM3-python.git
 [submodule "server"]
 	path = server
 	url = https://github.com/Tom-Sloan/LidarWorld_Server.git

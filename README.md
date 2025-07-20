@@ -79,13 +79,13 @@ docker-compose exec server bash
  This is built using react and uses react 3 fibre. The purpose of this component is visualize what is going on in real time in the system. It receives images at 30fps, and json data in real time through a web socket. I am considering moving this to a desktop application, though it would have to be cross platform. It also occasionally sends requests to the api of the server, or through the web socket. I start it using nom run dev and going to my localhost. It will request 3d files through the api from the server to show using three js. Using the visualization tool I can control the drone.
 
 ### Server [server]
-This component is meant to be the waypoint or connection of the data. It recieves data from the external sensors as images at 30fps, and json data through a web socket. The server then forwards the data to the Visualizer through another web socket. It also writes all the images to the computer, and the imu data to text files. This component is written in python using fastapi. It sends the information to the Visualizer using a second process. It write the information to the computer using another process. This also reads the trajectory information from the shared memory and forwards this to the visualizer. It then calls the 3d reconstruction method with the camera poses from the trajectory information and the previously saved images.
+This component is meant to be the waypoint or connection of the data. It receives data from the external sensors as images at 30fps, and json data through a web socket. The server then forwards the data to the Visualizer through another web socket. It also writes all the images to the computer, and the imu data to text files. This component is written in python using fastapi. It sends the information to the Visualizer using a second process. It writes the information to the computer using another process. The server manages the data flow between all components and provides real-time updates to the visualization website.
 
-### SLAM mechanism [slam]
- Using the saved images and imu information from the server, I use python bindings on ORBSLAM3 (C++14). This generates the trajectory information, which it load into shared memory. This runs at around 15fps.
+### SLAM mechanism [slam3r]
+ Using the saved images and imu information from the server, SLAM3R processes video frames to generate camera poses and trajectory information, which it loads into shared memory. This runs at around 15fps and enables real-time 3D reconstruction.
 
-### 3d reconstruction method [reconstruction]
- called by the server to generate a 3d model of the room. It continuously generates new .ply files multiple times a second. These 3d models are then what are sent to the visualization method when it calls the server. This uses pytorch, and is an implementation of Neural Recon. This runs at around 15fps.
+### Real-time Mesh Generation [mesh_service]
+ The mesh service reads camera poses from shared memory and generates 3D meshes in real-time using TSDF + Marching Cubes or Open3D Poisson reconstruction. It produces continuous mesh updates that are visualized through Rerun and sent to the website.
 
 ### The android application [android]
 The drone can only connect to a specific remote, which can only run on an android device. The android phone connects to the server using a web socket and streams the video and the imu information of the drone. It also sends the status information to the server using the web socket. 

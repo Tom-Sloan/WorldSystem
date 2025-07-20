@@ -54,88 +54,62 @@ services:
     profiles: ["frame_processor"]
     network_mode: host
     environment:
+      # ========== Core RabbitMQ Configuration ==========
       - RABBITMQ_URL=amqp://127.0.0.1:5672
-      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
       - VIDEO_STREAM_EXCHANGE=video_stream_exchange
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
-      - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
-      - SCENE_SCALING_EXCHANGE=scene_scaling_exchange
+      - API_RESULTS_EXCHANGE=api_results_exchange
       
-      # Processing configuration
-      - DETECTION_ENABLED=${DETECTION_ENABLED:-true}
-      - DETECTOR_TYPE=${DETECTOR_TYPE:-sam}
-      - TRACKER_TYPE=iou
-      - DETECTOR_CONFIDENCE=0.5
+      # ========== Video Mode Configuration (Primary) ==========
+      - VIDEO_MODE=${VIDEO_MODE:-true}
+      - CONFIG_PROFILE=${CONFIG_PROFILE:-balanced}  # performance, balanced, quality
+      
+      # Performance settings (auto-configured by profile)
+      - TARGET_FPS=${TARGET_FPS:-15}
+      - PROCESSING_RESOLUTION=${PROCESSING_RESOLUTION:-720}
+      - SAM2_MODEL_SIZE=${SAM2_MODEL_SIZE:-small}  # tiny, small, base, large
+      
+      # ========== System Configuration ==========
       - DEVICE=cuda
-      
-      # Tracking configuration
-      - TRACKER_IOU_THRESHOLD=0.3
-      - TRACKER_MAX_LOST=10
-      - PROCESS_AFTER_SECONDS=1.5
-      - MAX_TRACKS=100
-      
-      # Enhancement configuration
-      - ENHANCEMENT_ENABLED=true
-      - ENHANCEMENT_AUTO_ADJUST=true
-      - ENHANCEMENT_GAMMA=1.2
-      - ENHANCEMENT_ALPHA=1.3
-      - ENHANCEMENT_BETA=20
-
-      # Added Rerun configuration
-      - RERUN_VIEWER_ADDRESS=0.0.0.0:9876
-      - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
-      - RERUN_ENABLED=true
-
-      # System configuration
-      - NTP_SERVER=pool.ntp.org
-      - METRICS_PORT=8003
-      - LOG_LEVEL=INFO
-      - LOG_FILE=/app/logs/frame_processor.log
-
-      # GPU / display environment variables
       - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_PATH=${CUDA_PATH}
-      - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
-      - DISPLAY=${DISPLAY}
-      - HOME=${HOME}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - METRICS_ENABLED=${METRICS_ENABLED:-true}
+      - RERUN_ENABLED=${RERUN_ENABLED:-true}
       
-      # Google Cloud and API configurations
-      - GOOGLE_APPLICATION_CREDENTIALS=/app/worldsystem-23f7306a1a75.json
+      # ========== API Configuration ==========
+      - USE_SERPAPI=${USE_SERPAPI:-true}
+      - USE_GCS=${USE_GCS:-true}
       - SERPAPI_API_KEY=${SERPAPI_API_KEY}
-      
-      # Logging configuration
-      - LOG_DIR=/app/logs
-      - PERPLEXITY_KEY=${PPLX_API_KEY}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/worldsystem-23f7306a1a75.json
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME:-worldsystem-frame-processor}
       
-      # API usage control
-      - USE_SERPAPI=${USE_SERPAPI:-false}
-      - USE_PERPLEXITY=${USE_PERPLEXITY:-false}
-      - USE_GCS=${USE_GCS:-false}
+      # ========== Advanced Settings (Usually Don't Need to Change) ==========
+      # Video Processing
+      - GRID_PROMPT_DENSITY=${GRID_PROMPT_DENSITY:-16}
+      - REPROMPT_INTERVAL=${REPROMPT_INTERVAL:-60}
+      - MIN_OBJECT_AREA=${MIN_OBJECT_AREA:-1000}
+      - VIDEO_BUFFER_SIZE=${VIDEO_BUFFER_SIZE:-30}
       
-      # Additional processing configuration
-      - REPROCESS_INTERVAL_SECONDS=${REPROCESS_INTERVAL_SECONDS:-3.0}
+      # Stream Management
+      - STREAM_STALE_TIMEOUT_SECONDS=${STREAM_STALE_TIMEOUT_SECONDS:-30}
+      - STREAM_CLEANUP_TIMEOUT_SECONDS=${STREAM_CLEANUP_TIMEOUT_SECONDS:-120}
       
-      # Scene scaling configuration
-      - MIN_CONFIDENCE_FOR_SCALING=${MIN_CONFIDENCE_FOR_SCALING:-0.7}
-      - DIMENSION_CACHE_EXPIRY_DAYS=${DIMENSION_CACHE_EXPIRY_DAYS:-30}
+      # Google Lens Batch Processing
+      - LENS_BATCH_SIZE=${LENS_BATCH_SIZE:-10}
+      - LENS_BATCH_WAIT_MS=${LENS_BATCH_WAIT_MS:-500}
+      - PROCESS_AFTER_SECONDS=${PROCESS_AFTER_SECONDS:-1.5}
       
-      # SAM2 Configuration
-      - SAM_MODEL_CFG=${SAM_MODEL_CFG:-sam2_hiera_l.yaml}
+      # GPU Memory Management
+      - ENABLE_DYNAMIC_MODEL_SWITCHING=${ENABLE_DYNAMIC_MODEL_SWITCHING:-true}
+      - MODEL_SWITCH_THRESHOLD_MB=${MODEL_SWITCH_THRESHOLD_MB:-3000}
+      
+      # ========== Legacy Configuration (For Backward Compatibility) ==========
+      # These are only used when VIDEO_MODE=false
+      - DETECTOR_TYPE=${DETECTOR_TYPE:-sam}
+      - TRACKER_TYPE=iou
+      - DETECTION_ENABLED=${DETECTION_ENABLED:-true}
+      - ENHANCEMENT_ENABLED=true
       - SAM_CHECKPOINT_PATH=${SAM_CHECKPOINT_PATH:-/app/models/sam2_hiera_large.pt}
-      - SAM_POINTS_PER_SIDE=${SAM_POINTS_PER_SIDE:-24}
-      - SAM_PRED_IOU_THRESH=${SAM_PRED_IOU_THRESH:-0.86}
-      - SAM_STABILITY_SCORE_THRESH=${SAM_STABILITY_SCORE_THRESH:-0.92}
-      - SAM_MIN_MASK_REGION_AREA=${SAM_MIN_MASK_REGION_AREA:-500}
-      
-      # FastSAM Configuration
-      - FASTSAM_MODEL_PATH=${FASTSAM_MODEL_PATH:-/app/models/FastSAM-x.pt}
-      - FASTSAM_CONF_THRESHOLD=${FASTSAM_CONF_THRESHOLD:-0.4}
-      - FASTSAM_IOU_THRESHOLD=${FASTSAM_IOU_THRESHOLD:-0.9}
-      - FASTSAM_MAX_DET=${FASTSAM_MAX_DET:-300}
-      
-      # Terminal display mode configuration
-      - ENABLE_RICH_TERMINAL=${ENABLE_RICH_TERMINAL:-false}
       
     volumes:
       - ${WORKSPACE}/frame_processor/models:/app/models:ro
@@ -180,63 +154,6 @@ services:
     depends_on:
       - rabbitmq
 
-  mast3r:
-    image: mast3r:latest
-    profiles: ["mast3r"]          # ⇠ choose at runtime with --profile mast3r
-    privileged: true
-    shm_size: "4g"  # 4 GB /dev/shm so PyTorch shared tensors avoid SIGBUS crashes
-    build:
-      context: ./mast3r           # Dockerfile & processor live here
-      args:
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
-    container_name: mast3r
-    runtime: nvidia
-    network_mode: host            # same trick as slam3r
-
-    # ───────── volume mounts ─────────
-    volumes:
-      # live-edit the processor & config without rebuilding
-      - ${WORKSPACE}/mast3r/mast3r_processor.py:/app/mast3r_processor.py
-      - ${WORKSPACE}/mast3r/config:/app/config                 # optional extra cfgs
-      - ${X11SOCKET}:${X11SOCKET}
-      - ${XAUTHORITY}:${XAUTHORITY}
-
-    # ───────── environment ─────────
-    environment:
-      # RabbitMQ (ONLY INPUT queues!)
-      - RABBITMQ_URL=amqp://127.0.0.1:5672
-      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
-      - RESTART_EXCHANGE=restart_exchange
-
-      # Rerun live viewer
-      - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
-      - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
-      - RERUN_ENABLED=true
-
-      # GPU / display
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_PATH=${CUDA_PATH}
-      - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
-      - DISPLAY=${DISPLAY}
-
-      # Misc
-      - PYTHONUNBUFFERED=1
-      - PYTHONPATH=/app:$PYTHONPATH
-      - HOME=${HOME}
-
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
-    depends_on:
-      - rabbitmq
-  
   slam3r:
     image: slam3r:latest
     profiles: ["slam3r"]
@@ -424,8 +341,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Mesh reconstruction service using NVIDIA Marching Cubes with algorithm selector
-  # Supports TSDF + Marching Cubes (current) with future support for Poisson/NKSR
   mesh_service:
     image: mesh_service:latest
     profiles: ["mesh_service", "slam3r"]  # Run with slam3r profile
@@ -612,45 +527,6 @@ services:
         max-size: "10m"
         max-file: "3"
     
-    depends_on:
-      - rabbitmq
-
-  reconstruction:
-    image: reconstruction:latest
-    profiles: ["reconstruction"]
-    build:
-      context: ./reconstruction
-      args:
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
-    volumes:
-      - ${WORKSPACE}/reconstruction:/app
-      - ${WORKSPACE}/Drone_Camera_Imu_Config/drone_config.yaml:/app/drone_config.yaml
-      - ${X11SOCKET}:${X11SOCKET}
-      - ${XAUTHORITY}:${XAUTHORITY}
-    runtime: nvidia
-    ports:
-      - "8001:8001"
-      - "5678:5678"  # Add this port for debugpy
-    environment:
-      CUDA_PATH: ${CUDA_PATH}
-      LIBGL_ALWAYS_INDIRECT: ${LIBGL_ALWAYS_INDIRECT}
-      DISPLAY: ${DISPLAY}
-      HOME: ${HOME}
-      PYTHONUNBUFFERED: 1  # Ensures Python output is sent straight to the terminal
-      RABBITMQ_URL: amqp://rabbitmq
-      VIDEO_FRAMES_EXCHANGE: video_frames_exchange
-      TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
-      PLY_FANOUT_EXCHANGE: ply_fanout_exchange
-      RESTART_EXCHANGE: restart_exchange
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     depends_on:
       - rabbitmq
 

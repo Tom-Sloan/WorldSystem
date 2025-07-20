@@ -22,6 +22,8 @@ from core.performance_monitor import get_performance_monitor, DetailedTimer
 from core.h264_decoder import H264StreamDecoder
 from pipeline.processor import FrameProcessor
 from pipeline.publisher import RabbitMQPublisher
+from pipeline.video_processor import VideoProcessor
+from external.lens_identifier import LensIdentifier
 
 
 logger = get_logger(__name__)
@@ -61,11 +63,16 @@ class FrameProcessorService:
         self.running = False
         self.h264_decoder = H264StreamDecoder()
         
+        # Video processing components
+        self.video_processor = None
+        self.lens_identifier = None
+        
         # Initialize performance monitor
         self.monitor = get_performance_monitor()
         self.monitor.start()  # Start the dashboard
         
         logger.info("Initializing Frame Processor Service...")
+        logger.info(f"Video mode: {'ENABLED' if self.config.video_mode else 'DISABLED'}")
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -282,51 +289,71 @@ class FrameProcessorService:
                             
                         # Process frame based on detection enabled
                         if self.config.detection_enabled:
-                            # Run processing pipeline
-                            result = await self.processor.process_frame(frame, timestamp_ns)
-                            
-                            # Update metrics
-                            frames_processed.inc()
-                            yolo_detections.inc(result.detection_count)
-                            processing_time.observe(result.processing_time_ms / 1000.0)
-                            active_tracks.set(result.active_track_count)
-                            
-                            # Publish processed frame
-                            if result.detections:
-                                with DetailedTimer("result_publishing"):
-                                    # Draw bounding boxes
-                                    annotated_frame = self._draw_annotations(frame, result.detections)
-                                    
-                                    # Prepare detection data for publishing
-                                    detection_data = [
-                                        {
-                                            'bbox': det.bbox,
-                                            'class_name': det.class_name,
-                                            'confidence': det.confidence
-                                        }
-                                        for det in result.detections
-                                    ]
-                                    
-                                    # Publish
-                                    await self.publisher.publish_processed_frame(
-                                        annotated_frame,
-                                        detection_data,
-                                        {
-                                            'timestamp_ns': timestamp_ns,
-                                            'frame_number': result.frame_number,
-                                            'processing_time_ms': result.processing_time_ms,
-                                            'ntp_time': get_ntp_time_ns(),
-                                            'ntp_offset': ntp_offset._value.get(),
-                                            'source': 'h264_stream'
-                                        }
-                                    )
+                            # Check if video mode is enabled
+                            if self.config.video_mode and self.video_processor:
+                                # Use video processor for stream-aware processing
+                                video_result = await self.video_processor.process_stream_frame(
+                                    websocket_id, frame, timestamp_ns
+                                )
                                 
-                                # Publish API results for processed tracks
-                                if result.tracks_for_api:
-                                    for track in result.tracks_for_api:
-                                        if track.api_processed and track.api_result:
-                                            await self.publisher.publish_api_result(track)
-                                            api_calls.inc()
+                                # Update metrics
+                                frames_processed.inc()
+                                processing_time.observe(video_result.processing_time_ms / 1000.0)
+                                active_tracks.set(video_result.tracking_result.object_count)
+                                
+                                # Process video tracking result
+                                await self._process_video_result(video_result, frame, timestamp_ns)
+                                
+                                # Handle identifications asynchronously
+                                asyncio.create_task(
+                                    self._process_identifications(websocket_id)
+                                )
+                            else:
+                                # Use regular frame-by-frame processing
+                                result = await self.processor.process_frame(frame, timestamp_ns)
+                                
+                                # Update metrics
+                                frames_processed.inc()
+                                yolo_detections.inc(result.detection_count)
+                                processing_time.observe(result.processing_time_ms / 1000.0)
+                                active_tracks.set(result.active_track_count)
+                                
+                                # Publish processed frame
+                                if result.detections:
+                                    with DetailedTimer("result_publishing"):
+                                        # Draw bounding boxes
+                                        annotated_frame = self._draw_annotations(frame, result.detections)
+                                        
+                                        # Prepare detection data for publishing
+                                        detection_data = [
+                                            {
+                                                'bbox': det.bbox,
+                                                'class_name': det.class_name,
+                                                'confidence': det.confidence
+                                            }
+                                            for det in result.detections
+                                        ]
+                                        
+                                        # Publish
+                                        await self.publisher.publish_processed_frame(
+                                            annotated_frame,
+                                            detection_data,
+                                            {
+                                                'timestamp_ns': timestamp_ns,
+                                                'frame_number': result.frame_number,
+                                                'processing_time_ms': result.processing_time_ms,
+                                                'ntp_time': get_ntp_time_ns(),
+                                                'ntp_offset': ntp_offset._value.get(),
+                                                'source': 'h264_stream'
+                                            }
+                                        )
+                                    
+                                    # Publish API results for processed tracks
+                                    if result.tracks_for_api:
+                                        for track in result.tracks_for_api:
+                                            if track.api_processed and track.api_result:
+                                                await self.publisher.publish_api_result(track)
+                                                api_calls.inc()
                         else:
                             # Pass through without processing
                             logger.debug(f"Analysis mode is 'none', passing through streamed frame")
@@ -388,6 +415,121 @@ class FrameProcessorService:
         
         return annotated
     
+    async def _process_video_result(self, result, frame: np.ndarray, timestamp_ns: int):
+        """Process results from video tracking."""
+        # Update metrics
+        frames_processed.inc()
+        processing_time.observe(result.processing_time_ms / 1000.0)
+        active_tracks.set(result.tracking_result.object_count)
+        
+        # Log FPS periodically
+        if result.tracking_result.frame_number % 30 == 0:
+            logger.info(f"Video processing FPS: {result.fps:.1f}")
+        
+        # Publish to Rerun if enabled
+        if self.config.rerun_enabled and hasattr(self.processor, 'rerun_client'):
+            from visualization.rerun_client import RerunClient
+            if isinstance(self.processor.rerun_client, RerunClient):
+                await self.processor.rerun_client.log_video_tracking(result)
+        
+        # Convert video tracks to detection format for publishing
+        if result.tracking_result.tracks:
+            detection_data = []
+            for track in result.tracking_result.tracks:
+                detection_data.append({
+                    'bbox': track['bbox'],
+                    'class_name': f"Track_{track['object_id']}",
+                    'confidence': track.get('confidence', 0.0),
+                    'track_id': track['track_id']
+                })
+            
+            # Draw annotations
+            annotated_frame = self._draw_video_annotations(frame, result.tracking_result.tracks)
+            
+            # Publish
+            await self.publisher.publish_processed_frame(
+                annotated_frame,
+                detection_data,
+                {
+                    'timestamp_ns': timestamp_ns,
+                    'frame_number': result.tracking_result.frame_number,
+                    'processing_time_ms': result.processing_time_ms,
+                    'ntp_time': get_ntp_time_ns(),
+                    'ntp_offset': ntp_offset._value.get(),
+                    'source': 'h264_video_stream',
+                    'fps': result.fps,
+                    'resolution': f"{result.original_resolution[0]}x{result.original_resolution[1]}"
+                }
+            )
+    
+    async def _process_identifications(self, stream_id: str):
+        """Process pending object identifications."""
+        if not self.video_processor or not self.lens_batch_processor:
+            return
+            
+        try:
+            # Get objects ready for identification
+            pending = await self.video_processor.get_pending_identifications()
+            
+            if pending:
+                # Add items to batch processor
+                await self.lens_batch_processor.add_items(pending)
+                
+                # Note: Results will be published automatically by the batch processor
+                        
+        except Exception as e:
+            logger.error(f"Error processing identifications: {e}", exc_info=True)
+    
+    def _draw_video_annotations(self, frame: np.ndarray, tracks) -> np.ndarray:
+        """Draw bounding boxes and track IDs on frame."""
+        annotated = frame.copy()
+        
+        for track in tracks:
+            bbox = track.get('bbox', [])
+            if len(bbox) != 4:
+                continue
+                
+            x1, y1, x2, y2 = bbox
+            track_id = track.get('object_id', 'unknown')
+            confidence = track.get('confidence', 0.0)
+            
+            # Draw box with track-specific color
+            color = self._get_track_color(track_id)
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+            
+            # Draw label
+            label = f"ID:{track_id} {confidence:.2f}"
+            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            
+            # Background for text
+            cv2.rectangle(annotated, 
+                         (x1, y1 - label_size[1] - 4),
+                         (x1 + label_size[0], y1),
+                         color, -1)
+            
+            # Text
+            cv2.putText(annotated, label,
+                       (x1, y1 - 2),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                       (255, 255, 255), 1)
+        
+        return annotated
+    
+    def _get_track_color(self, track_id):
+        """Get consistent color for a track ID."""
+        # Simple hash-based color generation
+        if isinstance(track_id, str):
+            hash_val = hash(track_id)
+        else:
+            hash_val = int(track_id)
+        
+        # Generate color from hash
+        r = (hash_val * 123) % 256
+        g = (hash_val * 456) % 256
+        b = (hash_val * 789) % 256
+        
+        return (b, g, r)  # BGR for OpenCV
+    
     async def run(self):
         """Main run loop."""
         self.running = True
@@ -409,17 +551,54 @@ class FrameProcessorService:
             self.processor = FrameProcessor(self.config)
             self.publisher = RabbitMQPublisher(self.config)
             
-            # Update detector/tracker info
-            self.monitor.update_component_status(
-                'detector', 
-                name=self.processor.detector.name,
-                status='✅ Ready'
-            )
-            self.monitor.update_component_status(
-                'tracker',
-                name=self.processor.tracker.name,
-                status='✅ Ready'
-            )
+            # Initialize video processing if enabled
+            if self.config.video_mode:
+                logger.info("Initializing video processing components...")
+                self.video_processor = VideoProcessor(self.config)
+                
+                # Initialize Lens identifier if API is enabled
+                if self.config.use_serpapi:
+                    try:
+                        from external.lens_identifier import LensIdentifier
+                        from external.lens_batch_processor import LensBatchProcessor
+                        
+                        # Initialize with API client from processor
+                        self.lens_identifier = LensIdentifier(self.config, self.processor.api_client)
+                        
+                        # Initialize batch processor with publisher
+                        self.lens_batch_processor = LensBatchProcessor(
+                            self.config, 
+                            self.lens_identifier,
+                            publisher=self.publisher
+                        )
+                        
+                        # Start batch processor
+                        await self.lens_batch_processor.start()
+                        
+                        logger.info("Google Lens integration initialized with batch processing")
+                    except Exception as e:
+                        logger.warning(f"Failed to initialize Lens identifier: {e}")
+                        self.lens_identifier = None
+                        self.lens_batch_processor = None
+                
+                # Update status
+                self.monitor.update_component_status(
+                    'video_tracker',
+                    name=self.video_processor.video_tracker.name,
+                    status='✅ Ready'
+                )
+            else:
+                # Update detector/tracker info for regular mode
+                self.monitor.update_component_status(
+                    'detector', 
+                    name=self.processor.detector.name,
+                    status='✅ Ready'
+                )
+                self.monitor.update_component_status(
+                    'tracker',
+                    name=self.processor.tracker.name,
+                    status='✅ Ready'
+                )
             
             # Connect to RabbitMQ
             await self.connect_rabbitmq()
@@ -460,6 +639,17 @@ class FrameProcessorService:
         finally:
             # Cleanup
             logger.info("Shutting down frame processor service...")
+            
+            # Cleanup video processor streams
+            if self.video_processor:
+                logger.info("Cleaning up video processor streams...")
+                for stream_id in list(self.video_processor.active_streams.keys()):
+                    await self.video_processor.cleanup_stream(stream_id)
+            
+            # Stop batch processor
+            if hasattr(self, 'lens_batch_processor') and self.lens_batch_processor:
+                logger.info("Stopping lens batch processor...")
+                await self.lens_batch_processor.stop()
             
             # Cancel NTP sync task
             if self._ntp_task and not self._ntp_task.done():

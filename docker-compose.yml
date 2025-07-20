@@ -56,7 +56,7 @@ services:
     environment:
       - RABBITMQ_URL=amqp://127.0.0.1:5672
       - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
-      - IMU_DATA_EXCHANGE=imu_data_exchange
+      - VIDEO_STREAM_EXCHANGE=video_stream_exchange
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
       - SCENE_SCALING_EXCHANGE=scene_scaling_exchange
@@ -662,18 +662,14 @@ services:
     restart: "no"  # Don't restart when simulation completes
     volumes:
       - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
-      - ${USE_FOLDER:-/data}:/simulation_data  # mount specific folder for simulation (defaults to /data)
+      - ${WORKSPACE}/data_test:/data_test  # mount test data folder
+      - ${USE_FOLDER:-/data_test}:/simulation_data  # mount specific folder for simulation (defaults to /data_test)
     environment:
       - PYTHONUNBUFFERED=1  # Ensures Python output is sent straight to the terminal
-      - RABBITMQ_URL=amqp://127.0.0.1:5672
-      - VIDEO_FRAMES_EXCHANGE=video_frames_exchange
-      - IMU_DATA_EXCHANGE=imu_data_exchange
-      - TRAJECTORY_DATA_EXCHANGE=trajectory_data_exchange
-      - PLY_FANOUT_EXCHANGE=ply_fanout_exchange
-
+      - SERVER_WS_URL=ws://127.0.0.1:5001/ws/video  # WebSocket URL for H.264 streaming
       - USE_FOLDER=${USE_FOLDER:-/home/sam3/Desktop/Toms_Workspace/WorldSystem/20250617_211214_segments}  # set in .env file!!!
     depends_on:
-      - rabbitmq
+      - server  # Now depends on server for WebSocket connection
 
   website:
     image: website:latest

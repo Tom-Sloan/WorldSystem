@@ -19,6 +19,7 @@ from typing import Optional
 from core.config import Config
 from core.utils import get_logger, sync_ntp_time, get_ntp_time_ns, async_sync_ntp_time
 from core.performance_monitor import get_performance_monitor, DetailedTimer
+from core.h264_decoder import H264StreamDecoder
 from pipeline.processor import FrameProcessor
 from pipeline.publisher import RabbitMQPublisher
 
@@ -58,6 +59,7 @@ class FrameProcessorService:
         self.connection = None
         self.channel = None
         self.running = False
+        self.h264_decoder = H264StreamDecoder()
         
         # Initialize performance monitor
         self.monitor = get_performance_monitor()
@@ -117,6 +119,12 @@ class FrameProcessorService:
                 durable=True
             )
             
+            self.video_stream_exchange = await self.channel.declare_exchange(
+                self.config.video_stream_exchange,
+                ExchangeType.FANOUT,
+                durable=True
+            )
+            
             self.analysis_mode_exchange = await self.channel.declare_exchange(
                 self.config.analysis_mode_exchange,
                 ExchangeType.FANOUT,
@@ -136,6 +144,11 @@ class FrameProcessorService:
                 durable=True
             )
             
+            self.stream_queue = await self.channel.declare_queue(
+                'frame_processor_stream_queue',
+                durable=True
+            )
+            
             self.mode_queue = await self.channel.declare_queue(
                 'frame_processor_mode_queue',
                 durable=True
@@ -144,6 +157,10 @@ class FrameProcessorService:
             # Bind queues (fanout exchanges don't use routing keys)
             await self.frame_queue.bind(
                 self.video_frames_exchange
+            )
+            
+            await self.stream_queue.bind(
+                self.video_stream_exchange
             )
             
             await self.mode_queue.bind(
@@ -239,6 +256,85 @@ class FrameProcessorService:
         except Exception as e:
             self.monitor.add_event(f"Frame processing error: {e}", "error")
             logger.error(f"Error processing frame: {e}", exc_info=True)
+            # Message will be rejected/requeued by the context manager
+    
+    async def process_stream_message(self, message: aio_pika.IncomingMessage):
+        """
+        Process incoming H.264 video stream chunks.
+        
+        This is called by RabbitMQ for each stream chunk.
+        """
+        try:
+            async with message.process():
+                with DetailedTimer("stream_chunk_processing"):
+                    # Extract headers
+                    headers = message.headers or {}
+                    websocket_id = headers.get('websocket_id', 'unknown')
+                    timestamp_ns = int(headers.get('timestamp_ns', get_ntp_time_ns()))
+                    
+                    # Process H.264 chunk
+                    frames = await self.h264_decoder.process_stream_chunk(websocket_id, message.body)
+                    
+                    # Process each decoded frame
+                    for frame in frames:
+                        if frame is None:
+                            continue
+                            
+                        # Process frame based on detection enabled
+                        if self.config.detection_enabled:
+                            # Run processing pipeline
+                            result = await self.processor.process_frame(frame, timestamp_ns)
+                            
+                            # Update metrics
+                            frames_processed.inc()
+                            yolo_detections.inc(result.detection_count)
+                            processing_time.observe(result.processing_time_ms / 1000.0)
+                            active_tracks.set(result.active_track_count)
+                            
+                            # Publish processed frame
+                            if result.detections:
+                                with DetailedTimer("result_publishing"):
+                                    # Draw bounding boxes
+                                    annotated_frame = self._draw_annotations(frame, result.detections)
+                                    
+                                    # Prepare detection data for publishing
+                                    detection_data = [
+                                        {
+                                            'bbox': det.bbox,
+                                            'class_name': det.class_name,
+                                            'confidence': det.confidence
+                                        }
+                                        for det in result.detections
+                                    ]
+                                    
+                                    # Publish
+                                    await self.publisher.publish_processed_frame(
+                                        annotated_frame,
+                                        detection_data,
+                                        {
+                                            'timestamp_ns': timestamp_ns,
+                                            'frame_number': result.frame_number,
+                                            'processing_time_ms': result.processing_time_ms,
+                                            'ntp_time': get_ntp_time_ns(),
+                                            'ntp_offset': ntp_offset._value.get(),
+                                            'source': 'h264_stream'
+                                        }
+                                    )
+                                
+                                # Publish API results for processed tracks
+                                if result.tracks_for_api:
+                                    for track in result.tracks_for_api:
+                                        if track.api_processed and track.api_result:
+                                            await self.publisher.publish_api_result(track)
+                                            api_calls.inc()
+                        else:
+                            # Pass through without processing
+                            logger.debug(f"Analysis mode is 'none', passing through streamed frame")
+                            frames_processed.inc()
+                    
+        except Exception as e:
+            self.monitor.add_event(f"Stream processing error: {e}", "error")
+            logger.error(f"Error processing video stream: {e}", exc_info=True)
             # Message will be rejected/requeued by the context manager
     
     async def process_mode_message(self, message: aio_pika.IncomingMessage):
@@ -346,6 +442,7 @@ class FrameProcessorService:
             
             # Setup consumers
             await self.frame_queue.consume(self.process_frame_message)
+            await self.stream_queue.consume(self.process_stream_message)
             await self.mode_queue.consume(self.process_mode_message)
             
             logger.info("Frame processor service started, waiting for messages...")
@@ -374,6 +471,9 @@ class FrameProcessorService:
             
             if self.processor:
                 await self.processor.cleanup()
+            
+            if self.h264_decoder:
+                self.h264_decoder.cleanup_all()
             
             if self.publisher:
                 await self.publisher.close()

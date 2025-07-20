@@ -148,6 +148,10 @@ class Config(BaseSettings):
         default="video_frames_exchange",
         description="Exchange name for incoming video frames"
     )
+    video_stream_exchange: str = Field(
+        default="video_stream_exchange",
+        description="Exchange name for incoming H.264 video streams"
+    )
     processed_frames_exchange: str = Field(
         default="processed_frames_exchange",
         description="Exchange name for processed frames"

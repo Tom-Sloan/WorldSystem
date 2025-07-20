@@ -17,6 +17,7 @@ python-dotenv
 pydantic>=2.0
 pydantic-settings>=2.0
 colorama  # For colored logging
+rich>=13.7.0  # For beautiful terminal output and dashboard
 
 # External API integrations
 google-cloud-storage

@@ -18,6 +18,7 @@ from typing import Optional
 
 from core.config import Config
 from core.utils import get_logger, sync_ntp_time, get_ntp_time_ns, async_sync_ntp_time
+from core.performance_monitor import get_performance_monitor, DetailedTimer
 from pipeline.processor import FrameProcessor
 from pipeline.publisher import RabbitMQPublisher
 
@@ -57,6 +58,10 @@ class FrameProcessorService:
         self.connection = None
         self.channel = None
         self.running = False
+        
+        # Initialize performance monitor
+        self.monitor = get_performance_monitor()
+        self.monitor.start()  # Start the dashboard
         
         logger.info("Initializing Frame Processor Service...")
         
@@ -163,20 +168,22 @@ class FrameProcessorService:
         """
         try:
             async with message.process():
-                # Extract headers
-                headers = message.headers or {}
-                # Ensure timestamp_ns is an integer
-                timestamp_ns_raw = headers.get('timestamp_ns', get_ntp_time_ns())
-                timestamp_ns = int(timestamp_ns_raw) if timestamp_ns_raw else get_ntp_time_ns()
-                frame_number = headers.get('frame_number', 0)
+                with DetailedTimer("rabbitmq_message_processing"):
+                    # Extract headers
+                    headers = message.headers or {}
+                    # Ensure timestamp_ns is an integer
+                    timestamp_ns_raw = headers.get('timestamp_ns', get_ntp_time_ns())
+                    timestamp_ns = int(timestamp_ns_raw) if timestamp_ns_raw else get_ntp_time_ns()
+                    frame_number = headers.get('frame_number', 0)
+                    
+                    # Decode frame with timing
+                    with DetailedTimer("frame_decode"):
+                        nparr = np.frombuffer(message.body, np.uint8)
+                        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                 
-                # Decode frame
-                nparr = np.frombuffer(message.body, np.uint8)
-                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-                if frame is None:
-                    logger.error("Failed to decode frame")
-                    return
+                    if frame is None:
+                        self.monitor.add_event("Failed to decode frame", "error")
+                        return
                 
                 # Process frame based on detection enabled
                 if self.config.detection_enabled:
@@ -191,21 +198,22 @@ class FrameProcessorService:
                     
                     # Publish processed frame
                     if result.detections:
-                        # Draw bounding boxes
-                        annotated_frame = self._draw_annotations(frame, result.detections)
-                        
-                        # Prepare detection data for publishing
-                        detection_data = [
-                            {
-                                'bbox': det.bbox,
-                                'class_name': det.class_name,
-                                'confidence': det.confidence
-                            }
-                            for det in result.detections
-                        ]
-                        
-                        # Publish
-                        await self.publisher.publish_processed_frame(
+                        with DetailedTimer("result_publishing"):
+                            # Draw bounding boxes
+                            annotated_frame = self._draw_annotations(frame, result.detections)
+                            
+                            # Prepare detection data for publishing
+                            detection_data = [
+                                {
+                                    'bbox': det.bbox,
+                                    'class_name': det.class_name,
+                                    'confidence': det.confidence
+                                }
+                                for det in result.detections
+                            ]
+                            
+                            # Publish
+                            await self.publisher.publish_processed_frame(
                             annotated_frame,
                             detection_data,
                             {
@@ -229,6 +237,7 @@ class FrameProcessorService:
                     frames_processed.inc()
                 
         except Exception as e:
+            self.monitor.add_event(f"Frame processing error: {e}", "error")
             logger.error(f"Error processing frame: {e}", exc_info=True)
             # Message will be rejected/requeued by the context manager
     
@@ -288,10 +297,14 @@ class FrameProcessorService:
         self.running = True
         
         try:
+            # Update component status
+            self.monitor.update_component_status('rabbitmq', status='🔄 Connecting...')
+            
             # Do initial NTP sync now that event loop is running
             initial_offset = await async_sync_ntp_time(self.config.ntp_server)
             ntp_offset.set(initial_offset)
             logger.info(f"Initial NTP sync complete, offset: {initial_offset:.3f}s")
+            self.monitor.add_event("NTP sync complete", "success")
             
             # Start NTP sync task now that event loop is running
             self._ntp_task = asyncio.create_task(self._ntp_sync_task())
@@ -300,11 +313,36 @@ class FrameProcessorService:
             self.processor = FrameProcessor(self.config)
             self.publisher = RabbitMQPublisher(self.config)
             
+            # Update detector/tracker info
+            self.monitor.update_component_status(
+                'detector', 
+                name=self.processor.detector.name,
+                status='✅ Ready'
+            )
+            self.monitor.update_component_status(
+                'tracker',
+                name=self.processor.tracker.name,
+                status='✅ Ready'
+            )
+            
             # Connect to RabbitMQ
             await self.connect_rabbitmq()
+            self.monitor.update_component_status('rabbitmq', status='✅ Connected')
             
             # Connect publisher (creates its own connection)
             await self.publisher.connect()
+            
+            # Update API status
+            if self.config.use_serpapi or self.config.use_perplexity:
+                self.monitor.update_component_status('api', status='✅ Enabled')
+            else:
+                self.monitor.update_component_status('api', status='⏸️ Disabled')
+            
+            # Update Rerun status
+            if self.config.rerun_enabled:
+                self.monitor.update_component_status('rerun', status='✅ Connected')
+            else:
+                self.monitor.update_component_status('rerun', status='⏸️ Disabled')
             
             # Setup consumers
             await self.frame_queue.consume(self.process_frame_message)
@@ -342,6 +380,9 @@ class FrameProcessorService:
             
             if self.connection and not self.connection.is_closed:
                 await self.connection.close()
+            
+            # Stop monitor on shutdown
+            self.monitor.stop()
             
             logger.info("Frame processor service stopped")
 

@@ -134,6 +134,9 @@ services:
       - FASTSAM_IOU_THRESHOLD=${FASTSAM_IOU_THRESHOLD:-0.9}
       - FASTSAM_MAX_DET=${FASTSAM_MAX_DET:-300}
       
+      # Terminal display mode configuration
+      - ENABLE_RICH_TERMINAL=${ENABLE_RICH_TERMINAL:-false}
+      
     volumes:
       - ${WORKSPACE}/frame_processor/models:/app/models:ro
       - ${WORKSPACE}/frame_processor/credentials/worldsystem-23f7306a1a75.json:/app/worldsystem-23f7306a1a75.json:ro
@@ -149,6 +152,11 @@ services:
               capabilities: [gpu]
     depends_on:
       - rabbitmq
+    
+    # TTY configuration for rich terminal display
+    # Set ENABLE_RICH_TERMINAL=true and run with -t flag for interactive terminal
+    tty: ${ENABLE_RICH_TERMINAL:-false}
+    stdin_open: ${ENABLE_RICH_TERMINAL:-false}
 
   data_storage:
     image: data_storage:latest

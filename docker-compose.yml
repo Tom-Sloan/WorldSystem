@@ -110,6 +110,11 @@ services:
       - ENABLE_DYNAMIC_MODEL_SWITCHING=${ENABLE_DYNAMIC_MODEL_SWITCHING:-true}
       - MODEL_SWITCH_THRESHOLD_MB=${MODEL_SWITCH_THRESHOLD_MB:-3000}
       
+      # Enhancement Configuration
+      - ENHANCEMENT_ENABLED=${ENHANCEMENT_ENABLED:-false}
+      
+      # Rich Terminal Display
+      - ENABLE_RICH_TERMINAL=${ENABLE_RICH_TERMINAL:-false}
       
     volumes:
       - ${WORKSPACE}/frame_processor/models:/app/models:ro

@@ -227,7 +227,14 @@ class LensBatchProcessor:
                     continue
                 
                 # Make API call
+                api_call_start = time.time()
                 identification = await self.lens_identifier._call_lens_api(item.image)
+                api_time = (time.time() - api_call_start) * 1000
+                
+                # Record API timing
+                from core.performance_monitor import get_performance_monitor
+                monitor = get_performance_monitor()
+                monitor.record_timing('lens_api_call', api_time)
                 
                 # Cache result
                 await self.lens_identifier.cache.put(item.image, identification)

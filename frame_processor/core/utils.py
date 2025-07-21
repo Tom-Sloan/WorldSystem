@@ -82,7 +82,41 @@ class ConsoleFormatter(logging.Formatter):
         return message
 
 
-def setup_logging(log_level: str = "INFO", log_dir: Optional[Path] = None) -> None:
+class MessageFilter(logging.Filter):
+    """Filter to suppress specific unwanted log messages."""
+    
+    def __init__(self, patterns_to_suppress: list = None):
+        """
+        Initialize filter with patterns to suppress.
+        
+        Args:
+            patterns_to_suppress: List of string patterns to filter out
+        """
+        super().__init__()
+        self.patterns_to_suppress = patterns_to_suppress or [
+            "For numpy array image",
+            "Using cache found in",
+            "Downloading: ",
+            "to /root/.cache/torch",
+        ]
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        """
+        Filter out messages containing specific patterns.
+        
+        Returns:
+            False if message should be suppressed, True otherwise
+        """
+        message = record.getMessage()
+        for pattern in self.patterns_to_suppress:
+            if pattern in message:
+                return False
+        return True
+
+
+def setup_logging(log_level: str = "INFO", log_dir: Optional[Path] = None, 
+                  disable_console_when_rich: bool = True,
+                  suppress_external_logs: bool = True) -> None:
     """
     Configure logging for the application.
     
@@ -92,6 +126,8 @@ def setup_logging(log_level: str = "INFO", log_dir: Optional[Path] = None) -> No
     Args:
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_dir: Directory for log files (creates if not exists)
+        disable_console_when_rich: Disable console handler when rich terminal is enabled
+        suppress_external_logs: Apply filters to suppress noisy external library messages
     """
     # Create log directory if specified
     if log_dir:
@@ -105,15 +141,29 @@ def setup_logging(log_level: str = "INFO", log_dir: Optional[Path] = None) -> No
     # Remove existing handlers
     root_logger.handlers.clear()
     
-    # Console handler with colored output
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(getattr(logging, log_level))
-    console_formatter = ConsoleFormatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console_handler.setFormatter(console_formatter)
-    root_logger.addHandler(console_handler)
+    # Add message filter to suppress unwanted messages (if enabled)
+    if suppress_external_logs:
+        message_filter = MessageFilter()
+        root_logger.addFilter(message_filter)
+    
+    # Check if rich terminal is enabled
+    import os
+    rich_enabled = os.environ.get('ENABLE_RICH_TERMINAL', 'false').lower() == 'true'
+    
+    # Allow override of suppress_external_logs via environment
+    if os.environ.get('SUPPRESS_EXTERNAL_LOGS'):
+        suppress_external_logs = os.environ.get('SUPPRESS_EXTERNAL_LOGS', 'true').lower() == 'true'
+    
+    # Console handler with colored output (unless rich is enabled and we want to disable)
+    if not (rich_enabled and disable_console_when_rich):
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(getattr(logging, log_level))
+        console_formatter = ConsoleFormatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
     
     # File handlers if log_dir is specified
     if log_dir:
@@ -141,6 +191,18 @@ def setup_logging(log_level: str = "INFO", log_dir: Optional[Path] = None) -> No
     logging.getLogger("pika").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("google").setLevel(logging.WARNING)
+    
+    # Suppress SAM2 and related libraries
+    logging.getLogger("sam2").setLevel(logging.WARNING)
+    logging.getLogger("detectron2").setLevel(logging.WARNING)
+    logging.getLogger("fvcore").setLevel(logging.WARNING)
+    logging.getLogger("iopath").setLevel(logging.WARNING)
+    
+    # Suppress any library that might be logging "For numpy array image..."
+    # This is likely coming from a computer vision library
+    logging.getLogger("cv2").setLevel(logging.WARNING)
+    logging.getLogger("PIL").setLevel(logging.WARNING)
+    logging.getLogger("torchvision").setLevel(logging.WARNING)
     
     # Log startup message
     logger = logging.getLogger(__name__)

@@ -9,12 +9,15 @@ import asyncio
 import signal
 import sys
 import json
+import time
 import cv2
 import numpy as np
 import aio_pika
 from aio_pika import Message, ExchangeType
 from prometheus_client import start_http_server, Counter, Gauge, Histogram
 from typing import Optional
+import psutil
+import torch
 
 from core.config import Config
 from core.utils import get_logger, sync_ntp_time, get_ntp_time_ns, async_sync_ntp_time
@@ -185,27 +188,85 @@ class FrameProcessorService:
                     timestamp_ns = int(headers.get('timestamp_ns', get_ntp_time_ns()))
                     
                     # Process H.264 chunk
+                    decode_start = time.time()
                     frames = await self.h264_decoder.process_stream_chunk(websocket_id, message.body)
+                    decode_time = (time.time() - decode_start) * 1000
+                    
+                    if len(frames) > 0:
+                        logger.info(f"Decoded {len(frames)} frames in {decode_time:.1f}ms from H.264 chunk")
                     
                     # Process each decoded frame
+                    frame_count = 0
                     for frame in frames:
+                        frame_count += 1
                         if frame is None:
                             continue
                             
                         # Process frame with video processor
                         if self.video_processor:
                             # Use video processor for stream-aware processing
+                            frame_start = time.time()
                             video_result = await self.video_processor.process_stream_frame(
                                 websocket_id, frame, timestamp_ns
                             )
+                            frame_time = (time.time() - frame_start) * 1000
+                            
+                            if frame_count == 1 or frame_count % 10 == 0:
+                                logger.info(f"Frame {frame_count}: {frame_time:.1f}ms, {video_result.tracking_result.object_count} objects")
                             
                             # Update metrics
                             frames_processed.inc()
                             processing_time.observe(video_result.processing_time_ms / 1000.0)
                             active_tracks.set(video_result.tracking_result.object_count)
                             
+                            # Update performance monitor
+                            self.monitor.update_metric('frames_processed', frames_processed._value.get())
+                            self.monitor.update_metric('fps', video_result.fps)
+                            self.monitor.update_metric('active_tracks', video_result.tracking_result.object_count)
+                            self.monitor.update_metric('detections_per_frame', len(video_result.tracking_result.masks))
+                            
+                            # Update memory metrics
+                            try:
+                                # CPU memory
+                                process = psutil.Process()
+                                memory_info = process.memory_info()
+                                self.monitor.update_metric('memory_mb', memory_info.rss / (1024 * 1024))
+                                
+                                # GPU memory if available
+                                if torch.cuda.is_available():
+                                    gpu_memory = torch.cuda.memory_allocated() / (1024 * 1024)
+                                    self.monitor.update_metric('gpu_memory_mb', gpu_memory)
+                            except Exception as e:
+                                logger.debug(f"Failed to update memory metrics: {e}")
+                            
                             # Process video tracking result
                             await self._process_video_result(video_result, frame, timestamp_ns, websocket_id)
+                            
+                            # Record frame breakdown for performance monitoring
+                            frame_breakdown = {
+                                'total': video_result.processing_time_ms,
+                                'sam2_tracking': 0,  # Will be filled from timing data
+                                'enhancement': 0,
+                                'api_calls': 0,
+                                'other': 0
+                            }
+                            
+                            # Get timing data from monitor
+                            if hasattr(self.monitor, 'timings'):
+                                with self.monitor._timing_lock:
+                                    if 'sam2_tracking' in self.monitor.timings:
+                                        frame_breakdown['sam2_tracking'] = self.monitor.timings['sam2_tracking'].recent[-1] if self.monitor.timings['sam2_tracking'].recent else 0
+                                    if 'object_enhancement_total' in self.monitor.timings:
+                                        frame_breakdown['enhancement'] = self.monitor.timings['object_enhancement_total'].recent[-1] if self.monitor.timings['object_enhancement_total'].recent else 0
+                                    if 'lens_api_call' in self.monitor.timings:
+                                        frame_breakdown['api_calls'] = self.monitor.timings['lens_api_call'].recent[-1] if self.monitor.timings['lens_api_call'].recent else 0
+                            
+                            # Calculate other time
+                            accounted_time = frame_breakdown['sam2_tracking'] + frame_breakdown['enhancement'] + frame_breakdown['api_calls']
+                            frame_breakdown['other'] = max(0, frame_breakdown['total'] - accounted_time)
+                            
+                            # Record breakdown
+                            self.monitor.record_frame_breakdown(frame_breakdown)
                             
                             # Handle identifications asynchronously
                             asyncio.create_task(
@@ -292,8 +353,9 @@ class FrameProcessorService:
                 websocket_id=websocket_id
             )
             
-            # Log enhanced objects to Rerun grid if available
-            if hasattr(result, 'enhanced_crops') and result.enhanced_crops:
+            # Log enhanced objects to Rerun grid only if enhancement is enabled
+            if (hasattr(result, 'enhanced_crops') and result.enhanced_crops and 
+                hasattr(self.config, 'enhancement_enabled') and self.config.enhancement_enabled):
                 for crop_data in result.enhanced_crops:
                     # Create a TrackedObject-like structure for the enhanced object
                     tracked = TrackedObject(
@@ -473,10 +535,16 @@ class FrameProcessorService:
             
             # Update status
             self.monitor.update_component_status(
-                'video_tracker',
-                name=self.video_processor.video_tracker.name,
+                'sam2',
+                name='SAM2 Video',
                 status='✅ Ready'
             )
+            
+            # Update enhancement status
+            if hasattr(self.config, 'enhancement_enabled') and self.config.enhancement_enabled:
+                self.monitor.update_component_status('enhancement', status='✅ Enabled')
+            else:
+                self.monitor.update_component_status('enhancement', status='⏸️ Disabled')
             
             # Connect to RabbitMQ
             await self.connect_rabbitmq()

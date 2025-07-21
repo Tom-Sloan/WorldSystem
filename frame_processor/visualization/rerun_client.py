@@ -19,14 +19,35 @@ from .enhanced_visualizer import (
     show_live_page_only,
     show_process_page_only
 )
-from detection.base import Detection
-from tracking.base import TrackedObject
+# from detection.base import Detection
+# from tracking.base import TrackedObject
+# Temporary placeholder classes until we update visualization for video-only
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+
+@dataclass
+class Detection:
+    bbox: List[float]
+    class_name: str
+    confidence: float
+    mask: Optional[Any] = None
+
+@dataclass  
+class TrackedObject:
+    id: int
+    bbox: List[float]
+    class_name: str
+    best_frame: Optional[np.ndarray] = None
+    created_at: Optional[int] = None
+    confidence: float = 0.0
+    api_result: Optional[Dict] = None
 from core.utils import get_logger
 from core.config import Config
 
 import rerun as rr
 import rerun.blueprint as rrb
 import time
+import av
 
 
 logger = get_logger(__name__)
@@ -92,12 +113,17 @@ class RerunClient:
         self.grid_cell_size = (200, 200)  # Fixed size for grid cells
         
         logger.info("Rerun visualization initialized with enhanced visualizer")
+        
+        # Initialize video streams and encoders
+        self.video_streams = {}  # websocket_id -> av.CodecContext
+        self.video_containers = {}  # websocket_id -> av.container.OutputContainer
+        self.video_frame_counts = {}  # websocket_id -> frame count
     
     def log_frame(self, frame: np.ndarray, detections: List[Detection], 
                   active_tracks: List[TrackedObject], frame_number: int,
-                  timestamp_ns: Optional[int] = None):
+                  timestamp_ns: Optional[int] = None, websocket_id: str = "default"):
         """
-        Log frame with SAM-style segmentation visualization.
+        Log frame with SAM-style segmentation visualization using video streaming.
         """
         if not self.enabled:
             return
@@ -112,19 +138,20 @@ class RerunClient:
         if len(self.frame_buffer) > 20:
             self.frame_buffer.pop(0)
         
-        # Clear previous frame data to ensure updates
-        rr.log("/page1/live", rr.Clear(recursive=True))
-        
-        # Log original frame
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        rr.log("/page1/live/camera", rr.Image(frame_rgb))
-        
-        # Create and log segmentation visualization
+        # Create composite image with segmentation overlay
         if detections:
-            self._log_sam_detections(detections, frame)
+            composite_frame = self._create_composite_with_detections(detections, frame)
         else:
-            # Log original frame as composite when no detections
-            rr.log("/page1/live/composite", rr.Image(frame_rgb))
+            composite_frame = frame.copy()
+        
+        # Convert to RGB for video streaming
+        composite_rgb = cv2.cvtColor(composite_frame, cv2.COLOR_BGR2RGB)
+        
+        # Initialize video stream if needed
+        self._init_video_stream_if_needed(websocket_id, composite_rgb.shape[:2])
+        
+        # Stream the composite frame
+        self._stream_video_frame(websocket_id, composite_rgb, frame_number, timestamp_ns)
         
         # Update gallery periodically
         if frame_number % 30 == 0:  # Every 30 frames
@@ -218,16 +245,16 @@ class RerunClient:
         # Limit to top 10 segments
         return filtered[:10]
     
-    def _log_sam_detections(self, detections: List[Detection], frame: np.ndarray):
+    def _create_composite_with_detections(self, detections: List[Detection], frame: np.ndarray) -> np.ndarray:
         """
-        Log SAM detections with colorful segmentation masks like SAM2 demo.
+        Create a composite frame with colored segmentation masks overlaid.
+        Returns BGR frame with overlays.
         """
         if not detections:
-            return
+            return frame.copy()
         
         # Create segmentation mask and color overlay
         h, w = frame.shape[:2]
-        segmentation_mask = np.zeros((h, w), dtype=np.uint8)  # 2D for SegmentationImage
         overlay = np.zeros((h, w, 4), dtype=np.uint8)  # RGBA for composite
         
         # Color palette similar to SAM2 demo - vibrant, distinct colors
@@ -252,7 +279,6 @@ class RerunClient:
         for idx, det in enumerate(detections):
             # Get color for this detection
             color = colors[idx % len(colors)]
-            class_id = idx + 1  # Class IDs start from 1 (0 is background)
             
             # If detection has a mask, use it; otherwise create from bbox
             if hasattr(det, 'mask') and det.mask is not None:
@@ -263,15 +289,9 @@ class RerunClient:
                 x1, y1, x2, y2 = det.bbox
                 mask[y1:y2, x1:x2] = 1
             
-            # Update segmentation mask with class ID
-            mask_indices = mask > 0
-            segmentation_mask[mask_indices] = class_id
-            
             # Apply color to overlay for composite view
+            mask_indices = mask > 0
             overlay[mask_indices] = (*color, int(255 * 0.5))  # 50% opacity
-        
-        # Log the segmentation mask (2D array with class IDs)
-        rr.log("/page1/live/segmentation", rr.SegmentationImage(segmentation_mask))
         
         # Create a composite image (original + colored overlay)
         composite = frame.copy()
@@ -281,7 +301,20 @@ class RerunClient:
         # Blend the overlay with the original image
         composite = (composite * (1 - mask_alpha) + mask_rgb * mask_alpha).astype(np.uint8)
         
-        # Log the composite image
+        return composite
+    
+    def _log_sam_detections(self, detections: List[Detection], frame: np.ndarray):
+        """
+        Log SAM detections with colorful segmentation masks like SAM2 demo.
+        Note: This is kept for backward compatibility but video streaming is preferred.
+        """
+        if not detections:
+            return
+        
+        # Create composite with detections
+        composite = self._create_composite_with_detections(detections, frame)
+        
+        # Log the composite image (for non-video mode)
         composite_rgb = cv2.cvtColor(composite, cv2.COLOR_BGR2RGB)
         rr.log("/page1/live/composite", rr.Image(composite_rgb))
     
@@ -297,6 +330,62 @@ class RerunClient:
         bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
         return tuple(int(x) for x in bgr[0, 0])
     
+    async def log_video_tracking(self, result):
+        """
+        Log video tracking results to Rerun.
+        
+        Args:
+            result: VideoTrackingResult or similar object with tracking data
+        """
+        if not self.enabled:
+            return
+        
+        try:
+            # Log masks if available
+            if hasattr(result, 'masks') and result.masks:
+                for i, mask_data in enumerate(result.masks):
+                    if 'segmentation' in mask_data:
+                        # Convert segmentation to image
+                        seg = mask_data['segmentation']
+                        if isinstance(seg, np.ndarray):
+                            # Create colored mask for visualization
+                            colored_mask = np.zeros((*seg.shape, 3), dtype=np.uint8)
+                            colored_mask[seg > 0] = [255, 0, 0]  # Red color for masks
+                            
+                            rr.log(
+                                f"video/masks/mask_{i}",
+                                rr.Image(colored_mask)
+                            )
+            
+            # Log tracks
+            if hasattr(result, 'tracks') and result.tracks:
+                for track in result.tracks:
+                    track_id = track.get('id', 0)
+                    bbox = track.get('bbox', [])
+                    
+                    if bbox and len(bbox) == 4:
+                        # Log bounding box
+                        x, y, w, h = bbox
+                        rr.log(
+                            f"video/tracks/track_{track_id}",
+                            rr.Boxes2D(
+                                array=[[x, y, w, h]],
+                                array_format=rr.Box2DFormat.XYWH,
+                                labels=[f"Track {track_id}"],
+                                class_ids=[track_id]
+                            )
+                        )
+            
+            # Log metrics
+            if hasattr(result, 'object_count'):
+                rr.log("metrics/video/object_count", rr.Scalar(result.object_count))
+            
+            if hasattr(result, 'processing_time_ms'):
+                rr.log("metrics/video/processing_time_ms", rr.Scalar(result.processing_time_ms))
+                
+        except Exception as e:
+            logger.error(f"Error logging video tracking results: {e}")
+
     def _generate_distinct_colors(self, n: int) -> List[Tuple[int, int, int]]:
         """Generate n visually distinct colors using HSV color space."""
         colors = []
@@ -705,12 +794,10 @@ Objects are added after enhancement completes.
                 # Top row: Live feed and enhanced objects grid
                 rrb.Horizontal(
                     rrb.Spatial2DView(
-                        name="📹 Live Segmentation",
-                        origin="/page1/live",
+                        name="📹 Live Video Stream",
+                        origin="/page1/live/video",
                         contents=[
-                            "/page1/live/camera/**",
-                            "/page1/live/composite/**",
-                            "/page1/live/segmentation/**"
+                            "/page1/live/video/**"
                         ]
                     ),
                     rrb.Spatial2DView(
@@ -737,6 +824,99 @@ Objects are added after enhancement completes.
                 row_shares=[3, 1]
             )
         )
+    
+    def _init_video_stream_if_needed(self, websocket_id: str, frame_shape: Tuple[int, int]):
+        """Initialize video stream for a websocket connection if not already initialized."""
+        if websocket_id not in self.video_streams:
+            height, width = frame_shape
+            
+            # Create container for H.264 encoding
+            # Using null output as we're only interested in the encoded packets
+            container = av.open("/dev/null", mode='w', format='h264')
+            stream = container.add_stream('libx264', rate=30)  # 30 fps
+            stream.width = width
+            stream.height = height
+            stream.pix_fmt = 'yuv420p'
+            
+            # Configure encoder for real-time streaming
+            stream.options = {
+                'preset': 'ultrafast',  # Fastest encoding
+                'tune': 'zerolatency',  # Low latency
+                'crf': '23',  # Quality (lower is better, 23 is default)
+            }
+            # Disable B-frames as Rerun doesn't support them yet
+            stream.max_b_frames = 0
+            
+            self.video_containers[websocket_id] = container
+            self.video_streams[websocket_id] = stream
+            self.video_frame_counts[websocket_id] = 0
+            
+            # Initialize the video stream in Rerun with codec metadata
+            rr.log(f"/page1/live/video/{websocket_id}", rr.VideoStream(codec=rr.VideoCodec.H264), static=True)
+            
+            logger.info(f"Initialized video stream for websocket {websocket_id} with resolution {width}x{height}")
+    
+    def _stream_video_frame(self, websocket_id: str, frame_rgb: np.ndarray, frame_number: int, timestamp_ns: Optional[int]):
+        """Encode and stream a video frame to Rerun."""
+        if websocket_id not in self.video_streams:
+            logger.warning(f"Video stream not initialized for websocket {websocket_id}")
+            return
+        
+        try:
+            stream = self.video_streams[websocket_id]
+            
+            # Create video frame from numpy array
+            av_frame = av.VideoFrame.from_ndarray(frame_rgb, format='rgb24')
+            av_frame.pts = self.video_frame_counts[websocket_id]
+            self.video_frame_counts[websocket_id] += 1
+            
+            # Encode the frame
+            for packet in stream.encode(av_frame):
+                if packet.pts is None:
+                    continue
+                
+                # Set time context based on packet timing
+                if timestamp_ns:
+                    # Use actual timestamp if available
+                    time_seconds = timestamp_ns / 1e9
+                    rr.set_time_seconds("video_time", time_seconds)
+                else:
+                    # Use packet timing
+                    rr.set_time("time", duration=float(packet.pts * packet.time_base))
+                
+                # Log the video packet using the correct method
+                rr.log(
+                    f"/page1/live/video/{websocket_id}", 
+                    rr.VideoStream.from_fields(sample=bytes(packet))
+                )
+                
+        except Exception as e:
+            logger.error(f"Error streaming video frame: {e}")
+    
+    def cleanup_video_stream(self, websocket_id: str):
+        """Clean up video stream resources for a websocket connection."""
+        if websocket_id in self.video_streams:
+            try:
+                # Flush any remaining frames
+                stream = self.video_streams[websocket_id]
+                for packet in stream.encode():
+                    if packet.pts is not None:
+                        rr.log(
+                            f"/page1/live/video/{websocket_id}",
+                            rr.VideoStream.from_fields(sample=bytes(packet))
+                        )
+                
+                # Close the container
+                if websocket_id in self.video_containers:
+                    self.video_containers[websocket_id].close()
+                    del self.video_containers[websocket_id]
+                
+                del self.video_streams[websocket_id]
+                del self.video_frame_counts[websocket_id]
+                
+                logger.info(f"Cleaned up video stream for websocket {websocket_id}")
+            except Exception as e:
+                logger.error(f"Error cleaning up video stream: {e}")
     
     def _create_segmentation_blueprint(self) -> rrb.Blueprint:
         """Create blueprint optimized for SAM segmentation visualization."""

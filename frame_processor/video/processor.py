@@ -16,9 +16,9 @@ from collections import deque
 from core.config import Config
 from core.utils import get_logger, PerformanceTimer
 from core.video_buffer import SAM2LongVideoBuffer
-from tracking.video_base import VideoTracker, VideoTrackingResult
-from tracking.sam2_realtime_tracker import SAM2RealtimeTracker
-from tracking.prompt_strategies import create_prompt_strategy, PromptStrategy
+from .base import VideoTracker, VideoTrackingResult
+from .tracker import SAM2RealtimeTracker
+from .prompt_strategies import create_prompt_strategy, PromptStrategy
 from pipeline.enhancer import ImageEnhancer
 
 logger = get_logger(__name__)
@@ -149,17 +149,27 @@ class VideoProcessor:
                 
                 # Check if we need to initialize stream
                 stream_status = self.video_tracker.get_stream_status(stream_id)
+                logger.debug(f"Stream {stream_id} status: {stream_status}")
+                
                 if stream_status["status"] == "not_initialized":
+                    logger.info(f"Initializing stream {stream_id} with SAM2 tracker")
                     # Generate initial prompts
                     prompts = await self.prompt_strategy.generate_prompts(normalized_frame)
+                    logger.debug(f"Generated {len(prompts.get('points', []))} prompts")
                     tracking_result = await self.video_tracker.initialize_stream(
                         stream_id, normalized_frame, prompts
                     )
+                    logger.info(f"Stream initialized with {tracking_result.object_count} objects")
                 else:
                     # Continue tracking
+                    logger.debug(f"Processing frame {stream_info.frame_count} for stream {stream_id}")
                     tracking_result = await self.video_tracker.process_frame(
                         stream_id, normalized_frame, timestamp
                     )
+                
+                logger.debug(f"Tracking result: {tracking_result.object_count} objects, "
+                           f"{len(tracking_result.masks)} masks, "
+                           f"processing time: {tracking_result.processing_time_ms}ms")
                 
                 # Update memory tree in buffer
                 if tracking_result.masks:
@@ -310,7 +320,7 @@ class VideoProcessor:
             enhanced = crop
             if self.enhancer:
                 try:
-                    enhanced = await self.enhancer.enhance_async(crop)
+                    enhanced = self.enhancer.enhance_roi(crop)
                 except Exception as e:
                     logger.error(f"Enhancement failed for object {track_id}: {e}")
             

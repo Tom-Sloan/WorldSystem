@@ -65,7 +65,7 @@ curl http://localhost:8003/metrics
 ## Configuration
 
 ### Algorithm Selection
-- `DETECTOR_TYPE`: Detection algorithm (`yolo`, future: `detectron2`, `grounding_dino`)
+- `DETECTOR_TYPE`: Detection algorithm 
 - `TRACKER_TYPE`: Tracking algorithm (`iou`, future: `sort`, `deep_sort`)
 
 ### Detection Settings

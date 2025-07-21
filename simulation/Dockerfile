@@ -10,7 +10,10 @@ RUN apt-get update && apt-get install -y \
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
-COPY . .
 RUN pip install aio-pika opencv-python-headless numpy websockets
+COPY . .
+
+# Copy test data into the container
+COPY test_data /test_data
 
 CMD ["python", "simulate_video_stream.py"] 

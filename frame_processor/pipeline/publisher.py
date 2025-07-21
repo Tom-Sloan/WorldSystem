@@ -15,7 +15,6 @@ from datetime import datetime
 
 from core.utils import get_logger, PerformanceTimer
 from core.config import Config
-from tracking.base import TrackedObject
 
 
 logger = get_logger(__name__)
@@ -156,77 +155,6 @@ class RabbitMQPublisher:
                 self.stats['publish_errors'] += 1
                 self._handle_connection_error()
     
-    async def publish_api_result(self, track: TrackedObject):
-        """
-        Publish API processing result for a track.
-        
-        Args:
-            track: TrackedObject with api_result populated
-        """
-        if not track.api_result:
-            return
-        
-        with PerformanceTimer("rabbitmq_publish_api_result", logger):
-            try:
-                # Prepare message payload
-                payload = {
-                    'track_id': track.id,
-                    'class_name': track.class_name,
-                    'confidence': track.confidence,
-                    'created_at': track.created_at,
-                    'processed_at': datetime.now().isoformat(),
-                    'api_result': track.api_result,
-                    'bbox': track.bbox,
-                    'best_score': track.best_score
-                }
-                
-                # Include dimensions if available
-                if track.api_result.get('dimensions'):
-                    payload['dimensions_m'] = track.api_result['dimensions']
-                
-                # Encode as JSON
-                message_body = json.dumps(payload)
-                
-                # Create message
-                message = Message(
-                    body=message_body.encode(),
-                    content_type='application/json',
-                    timestamp=int(datetime.now().timestamp())
-                )
-                
-                # Publish to exchange
-                await self.api_results_exchange_obj.publish(
-                    message,
-                    routing_key=''  # Fanout exchanges ignore routing key
-                )
-                
-                # Update statistics
-                self.stats['api_results_published'] += 1
-                
-                logger.debug(
-                    f"Published API result for track #{track.id} ({track.class_name})"
-                )
-                
-            except Exception as e:
-                logger.error(f"Failed to publish API result: {e}")
-                self.stats['publish_errors'] += 1
-                self._handle_connection_error()
-    
-    async def publish_batch_results(self, tracks: List[TrackedObject]):
-        """
-        Publish multiple API results as a batch.
-        
-        Args:
-            tracks: List of TrackedObjects with api_results
-        """
-        valid_tracks = [t for t in tracks if t.api_result]
-        if not valid_tracks:
-            return
-        
-        logger.info(f"Publishing batch of {len(valid_tracks)} API results")
-        
-        for track in valid_tracks:
-            await self.publish_api_result(track)
     
     async def _handle_connection_error(self):
         """Handle RabbitMQ connection errors."""

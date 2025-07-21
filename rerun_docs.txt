@@ -1,20 +1,88 @@
-https://ref.rerun.io/docs/python/0.23.2/common/\
+# Rerun Video Streaming Documentation
 
-https://ref.rerun.io/docs/python/0.23.2/common/blueprint_apis/
-https://ref.rerun.io/docs/python/0.23.2/common/blueprint_archetypes/
-https://ref.rerun.io/docs/python/0.23.2/common/blueprint_components/
-https://ref.rerun.io/docs/python/0.23.2/common/blueprint_views/
+## Official Rerun Documentation Links
+- Python API Reference: https://ref.rerun.io/docs/python/0.24.0/common/
+- Blueprint APIs: https://ref.rerun.io/docs/python/0.24.0/common/blueprint_apis/
+- Blueprint Archetypes: https://ref.rerun.io/docs/python/0.24.0/common/blueprint_archetypes/
+- Blueprint Components: https://ref.rerun.io/docs/python/0.24.0/common/blueprint_components/
+- Blueprint Views: https://ref.rerun.io/docs/python/0.24.0/common/blueprint_views/
+- VideoStream Archetype: https://rerun.io/docs/reference/types/archetypes/video_stream
+- Video Reference: https://rerun.io/docs/reference/video
+- Initialization Functions: https://ref.rerun.io/docs/python/0.24.0/common/initialization_functions/
+- Logging Functions: https://ref.rerun.io/docs/python/0.24.0/common/logging_functions/
+- Timeline Functions: https://ref.rerun.io/docs/python/0.24.0/common/timeline_functions/
+- Columnar API: https://ref.rerun.io/docs/python/0.24.0/common/columnar_api/
+- Archetypes: https://ref.rerun.io/docs/python/0.24.0/common/archetypes/
+- Datatypes: https://ref.rerun.io/docs/python/0.24.0/common/datatypes/
+- Components: https://ref.rerun.io/docs/python/0.24.0/common/components/
+- Enums: https://ref.rerun.io/docs/python/0.24.0/common/enums/
+- Utilities: https://ref.rerun.io/docs/python/0.24.0/common/utilities/
+- Custom Data: https://ref.rerun.io/docs/python/0.24.0/common/custom_data/
+- Script Helpers: https://ref.rerun.io/docs/python/0.24.0/common/script_helpers/
+- Other Classes and Functions: https://ref.rerun.io/docs/python/0.24.0/common/other_classes_and_functions/
+- Dataframe: https://ref.rerun.io/docs/python/0.24.0/common/dataframe/
 
-https://ref.rerun.io/docs/python/0.23.2/common/initialization_functions/
-https://ref.rerun.io/docs/python/0.23.2/common/logging_functions/
-https://ref.rerun.io/docs/python/0.23.2/common/timeline_functions/
-https://ref.rerun.io/docs/python/0.23.2/common/columnar_api/
-https://ref.rerun.io/docs/python/0.23.2/common/archetypes/
-https://ref.rerun.io/docs/python/0.23.2/common/datatypes/
-https://ref.rerun.io/docs/python/0.23.2/common/components/
-https://ref.rerun.io/docs/python/0.23.2/common/enums/
-https://ref.rerun.io/docs/python/0.23.2/common/utilities/
-https://ref.rerun.io/docs/python/0.23.2/common/custom_data/
-https://ref.rerun.io/docs/python/0.23.2/common/script_helpers/
-https://ref.rerun.io/docs/python/0.23.2/common/other_classes_and_functions/
-https://ref.rerun.io/docs/python/0.23.2/common/dataframe/
+## H.264 Video Streaming with Rerun
+
+### Key Points:
+1. **VideoStream archetype** is used for streaming raw video chunks
+2. **Status**: Unstable and may change significantly
+3. **Codec support**: Currently only H.264 is supported
+4. **B-frames**: Not supported yet, must disable with `max_b_frames = 0`
+
+### Correct Implementation Pattern:
+
+```python
+import rerun as rr
+import av
+
+# 1. Initialize video stream ONCE with codec metadata (static=True)
+rr.log("video_stream", rr.VideoStream(codec=rr.VideoCodec.H264), static=True)
+
+# 2. Configure encoder for H.264 with no B-frames
+container = av.open("/dev/null", mode='w', format='h264')
+stream = container.add_stream('libx264', rate=30)
+stream.width = width
+stream.height = height
+stream.pix_fmt = 'yuv420p'
+stream.options = {
+    'preset': 'ultrafast',
+    'tune': 'zerolatency',
+    'crf': '23',
+}
+stream.max_b_frames = 0  # IMPORTANT: Rerun doesn't support B-frames
+
+# 3. For each frame, encode and log
+av_frame = av.VideoFrame.from_ndarray(frame_rgb, format='rgb24')
+av_frame.pts = frame_count
+
+for packet in stream.encode(av_frame):
+    if packet.pts is not None:
+        # Set time context
+        rr.set_time("time", duration=float(packet.pts * packet.time_base))
+        
+        # Log the video packet
+        rr.log(
+            "video_stream", 
+            rr.VideoStream.from_fields(sample=bytes(packet))
+        )
+```
+
+### Common Errors Fixed:
+1. ❌ `rr.VideoFrameSample` - This class doesn't exist
+2. ❌ `rr.VideoStream.from_fields()` with wrong parameters
+3. ✅ Use `rr.VideoStream.from_fields(sample=bytes(packet))`
+
+### Best Practices:
+- Use `VideoStream` for incomplete or open-ended video streams
+- Log codec statically once at initialization
+- Log samples for each frame on the timeline
+- Set appropriate time context before logging each frame
+- Use AnnexB H.264 stream format
+- Disable B-frames for compatibility
+
+### Limitations:
+- Only H.264 codec is currently supported
+- Native decoding can be slower than browser decoding
+- Potential latency issues with playback
+- Exact video display varies across platforms

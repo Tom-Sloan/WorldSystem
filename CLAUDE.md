@@ -26,7 +26,7 @@ Key services:
 - **SLAM3R**: Camera pose estimation (C++/Python bindings)
 - **Mesh Service**: GPU-accelerated real-time mesh generation (CUDA C++)
 - **Website**: Real-time 3D visualization (React/Three.js)
-- **Frame Processor**: Video processing with YOLO detection
+- **Frame Processor**: Video processing with YOLO/SAM2 detection and segmentation
 - **Fantasy Builder**: Adds game-like elements to 3D models (WIP)
 - **Storage**: Persistent storage for images and IMU data
 
@@ -47,10 +47,12 @@ Key services:
 ### Development Commands
 - Website: `cd website && npm run dev`
 - Website build: `cd website && npm run build`
+- Website lint: `cd website && npm run lint`
 
 ### Testing Commands
 - Website: `cd website && npm run lint`
 - Mesh Service: `cd mesh_service && python3 test_mesh_service.py`
+- Frame Processor: `cd frame_processor && ./test_integration.sh`
 - Integration tests: `cd tests && python test_*.py`
 
 ### Monitoring URLs (when running)

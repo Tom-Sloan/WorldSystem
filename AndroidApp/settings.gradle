@@ -1,0 +1,21 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        google()
+        mavenCentral()
+        // DJI's Maven repository
+        maven { url 'https://dji-sdk.bintray.com/sdk/deploy/maven2' }
+    }
+}
+
+rootProject.name = "My Application"
+include ':app'
+include ':android-sdk-v5-uxsdk'
+//project(':uxsdk').projectDir = new File(rootProject.projectDir, './android-sdk-v5-uxsdk')

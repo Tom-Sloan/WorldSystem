@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Background track -->
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <corners android:radius="3dp"/>
+            <size android:height="6dp"/>
+            <stroke android:width="1dp" android:color="@color/hud_cyan_30"/>
+            <solid android:color="#1A000000"/>
+        </shape>
+    </item>
+    
+    <!-- Progress track -->
+    <item android:id="@android:id/progress">
+        <clip>
+            <shape android:shape="rectangle">
+                <corners android:radius="3dp"/>
+                <size android:height="6dp"/>
+                <gradient
+                    android:startColor="@color/hud_cyan_50"
+                    android:centerColor="@color/hud_primary_cyan"
+                    android:endColor="@color/hud_cyan_50"
+                    android:angle="0"/>
+            </shape>
+        </clip>
+    </item>
+</layer-list>

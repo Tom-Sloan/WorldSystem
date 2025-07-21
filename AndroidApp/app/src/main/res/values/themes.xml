@@ -1,0 +1,15 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Base.Theme.WebSocketTest" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- HUD Theme Customization -->
+        <item name="colorPrimary">@color/hud_primary_cyan</item>
+        <item name="colorPrimaryVariant">@color/hud_cyan_50</item>
+        <item name="colorOnPrimary">@color/hud_background</item>
+        <item name="android:windowBackground">@color/hud_background</item>
+        <item name="android:statusBarColor">@color/hud_background</item>
+        <item name="android:navigationBarColor">@color/hud_background</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+
+    <style name="Theme.WebSocketTest" parent="Base.Theme.WebSocketTest" />
+</resources>

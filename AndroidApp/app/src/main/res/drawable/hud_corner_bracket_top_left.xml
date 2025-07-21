@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- L-shaped corner bracket -->
+    <item>
+        <shape android:shape="line">
+            <stroke android:width="2dp" android:color="@color/hud_border"/>
+            <size android:width="40dp" android:height="2dp"/>
+        </shape>
+    </item>
+    <item android:top="0dp">
+        <rotate android:fromDegrees="90" android:toDegrees="90"
+            android:pivotX="0%" android:pivotY="0%">
+            <shape android:shape="line">
+                <stroke android:width="2dp" android:color="@color/hud_border"/>
+                <size android:width="40dp" android:height="2dp"/>
+            </shape>
+        </rotate>
+    </item>
+</layer-list>

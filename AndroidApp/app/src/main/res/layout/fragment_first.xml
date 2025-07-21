@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/hud_background"
+    tools:context=".FirstFragment">
+
+    <!-- Video Surface (full screen behind everything) -->
+    <SurfaceView
+        android:id="@+id/video_surface_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Grid overlay -->
+    <com.tomscompany.websockettest.HudGridView
+        android:id="@+id/grid_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0.3"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Corner brackets -->
+
+    <View
+        android:id="@+id/corner_bottom_left"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginBottom="32dp"
+        android:layout_marginLeft="27dp"
+        android:rotation="270"
+        android:background="@drawable/hud_corner_bracket_top_left"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent" />
+
+    <View
+        android:id="@+id/corner_bottom_right"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginBottom="32dp"
+        android:layout_marginRight="27dp"
+        android:rotation="270"
+        android:background="@drawable/hud_corner_bracket_top_left"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent" />
+
+    <!-- Top Control Bar -->
+    <LinearLayout
+        android:id="@+id/top_control_bar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="40dp"
+        android:orientation="horizontal"
+        android:gravity="center"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <Button
+            android:id="@+id/btn_takeoff"
+            style="@style/HudButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:text="TAKE OFF" />
+
+        <Button
+            android:id="@+id/btn_h264_stream"
+            style="@style/HudButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:text="STREAM" />
+
+        <Button
+            android:id="@+id/btn_virtual_stick"
+            style="@style/HudButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:text="V-STICK" />
+
+        <Button
+            android:id="@+id/fab_ip_settings"
+            style="@style/HudButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="CONFIG" />
+
+    </LinearLayout>
+
+    <!-- Left Telemetry Panel (Top Left Corner) -->
+    <GridLayout
+        android:id="@+id/telemetry_panel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="16dp"
+        android:columnCount="2"
+        android:rowCount="2"
+        android:alpha="0.9"
+        android:scaleX="0.8"
+        android:scaleY="0.8"
+        android:transformPivotX="0dp"
+        android:transformPivotY="0dp"
+        style="@style/HudTelemetryContainer"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <!-- Altitude -->
+        <TextView
+            style="@style/HudLabelText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:text="ALT:" />
+        <TextView
+            android:id="@+id/altitude_value"
+            style="@style/HudValueText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="025.4 M" />
+
+        <!-- Speed -->
+        <TextView
+            style="@style/HudLabelText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:layout_marginTop="4dp"
+            android:text="SPD:" />
+        <TextView
+            android:id="@+id/speed_value_display"
+            style="@style/HudValueText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="05.2 M/S" />
+
+    </GridLayout>
+
+    <!-- Right Battery Panel (Top Right Corner) -->
+    <LinearLayout
+        android:id="@+id/battery_panel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="16dp"
+        android:layout_marginTop="16dp"
+        android:orientation="vertical"
+        android:alpha="0.9"
+        android:scaleX="0.8"
+        android:scaleY="0.8"
+        android:transformPivotX="80dp"
+        android:transformPivotY="0dp"
+        style="@style/HudTelemetryContainer"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:id="@+id/battery_status"
+            style="@style/HudValueText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="PWR: 75%"
+            android:layout_gravity="center" />
+
+        <ProgressBar
+            android:id="@+id/battery_bar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="80dp"
+            android:layout_height="16dp"
+            android:layout_marginTop="4dp"
+            android:progressDrawable="@drawable/hud_battery_bar"
+            android:progress="75"
+            android:max="100" />
+
+    </LinearLayout>
+
+    <!-- H.264 Stats Display -->
+    <TextView
+        android:id="@+id/h264_stats_text"
+        style="@style/HudLabelText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/hud_telemetry_background"
+        android:padding="8dp"
+        android:text="VIDEO: 0.0 MBPS | 0.0 FPS"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@+id/top_control_bar"
+        app:layout_constraintStart_toStartOf="@+id/top_control_bar"
+        app:layout_constraintEnd_toEndOf="@+id/top_control_bar" />
+
+    <!-- Left Virtual Joystick -->
+    <com.tomscompany.websockettest.virtualstick.OnScreenJoystick
+        android:id="@+id/joystick_left"
+        android:layout_width="120dp"
+        android:layout_height="120dp"
+        android:layout_marginStart="80dp"
+        android:layout_marginBottom="70dp"
+        android:background="@drawable/hud_joystick_background"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- Right Virtual Joystick -->
+    <com.tomscompany.websockettest.virtualstick.OnScreenJoystick
+        android:id="@+id/joystick_right"
+        android:layout_width="120dp"
+        android:layout_height="120dp"
+        android:layout_marginEnd="80dp"
+        android:layout_marginBottom="70dp"
+        android:background="@drawable/hud_joystick_background"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Throttle Control -->
+    <TextView
+        android:id="@+id/speed_value"
+        style="@style/HudValueText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp"
+        android:text="THROTTLE: 0.001"
+        app:layout_constraintBottom_toTopOf="@+id/speed_slider"
+        app:layout_constraintStart_toStartOf="@+id/speed_slider"
+        app:layout_constraintEnd_toEndOf="@+id/speed_slider" />
+
+    <SeekBar
+        android:id="@+id/speed_slider"
+        style="@style/HudSeekBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="30dp"
+        android:layout_marginStart="30dp"
+        android:layout_marginEnd="30dp"
+        android:max="90"
+        android:progress="0"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Hidden elements that are no longer needed -->
+    <Button
+        android:id="@+id/btn_startstream"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+    
+    <Button
+        android:id="@+id/btn_record"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+    
+    <Button
+        android:id="@+id/btn_land"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+    
+    <Spinner
+        android:id="@+id/resolution_spinner"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+    
+    <TextView
+        android:id="@+id/resolution_label"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>

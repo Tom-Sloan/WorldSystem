@@ -253,14 +253,22 @@ class SAM2RealtimeTracker(VideoTracker):
                             }
                     
                     # Generate prompts if not provided
+                    prompt_start = time.time()
                     if prompts is None:
                         logger.info("Generating initial prompts...")
                         prompts = await self._generate_initial_prompts(first_frame)
+                    prompt_time = (time.time() - prompt_start) * 1000
+                    
+                    # Record prompt generation time
+                    from core.performance_monitor import get_performance_monitor
+                    monitor = get_performance_monitor()
+                    monitor.record_timing('prompt_generation', prompt_time)
                     
                     logger.info(f"Prompts: {len(prompts.get('points', []))} points")
                     
                     # Add prompts and get initial masks
                     masks = []
+                    mask_start = time.time()
                     if state.inference_state:
                         logger.info("Adding prompts to state...")
                         masks = await self._add_prompts_to_state(
@@ -340,12 +348,19 @@ class SAM2RealtimeTracker(VideoTracker):
                         
                         # Process with SAM2
                         masks = []
+                        sam_start = time.time()
                         if state.inference_state and self.predictor:
                             masks = await self._propagate_masks(
                                 state.inference_state,
                                 frame,
                                 state.frame_count
                             )
+                        sam_time = (time.time() - sam_start) * 1000
+                        
+                        # Record SAM2 tracking time
+                        from core.performance_monitor import get_performance_monitor
+                        monitor = get_performance_monitor()
+                        monitor.record_timing('sam2_tracking', sam_time)
                         
                         # Update memory tree
                         state.memory_tree.update(masks, timestamp)

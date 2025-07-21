@@ -75,6 +75,8 @@ class VideoProcessor:
         
         # Performance monitoring
         self.fps_monitor = FPSMonitor(target_fps=config.target_fps)
+        self.last_quality_adjustment_time = 0
+        self.quality_adjustment_cooldown = 30.0  # seconds
         
         # Stream management
         self.active_streams: Dict[str, StreamInfo] = {}
@@ -298,6 +300,11 @@ class VideoProcessor:
                                        stream_id: str, timestamp: int) -> List[Dict]:
         """Extract and enhance tracked objects."""
         enhanced_crops = []
+        total_enhancement_time = 0.0
+        
+        # Skip entirely if enhancement is disabled and no API processing
+        if not self.enhancer and not (hasattr(self.config, 'use_serpapi') and self.config.use_serpapi):
+            return enhanced_crops
         
         for track in tracking_result.tracks:
             track_id = track["track_id"]
@@ -318,11 +325,14 @@ class VideoProcessor:
             
             # Enhance if enabled
             enhanced = crop
+            enhancement_start = time.time()
             if self.enhancer:
                 try:
                     enhanced = self.enhancer.enhance_roi(crop)
                 except Exception as e:
                     logger.error(f"Enhancement failed for object {track_id}: {e}")
+            enhancement_time = (time.time() - enhancement_start) * 1000
+            total_enhancement_time += enhancement_time
             
             # Prepare for identification
             crop_data = {
@@ -339,6 +349,12 @@ class VideoProcessor:
             
             # Mark as pending identification
             self.pending_identifications[track_id] = crop_data
+            
+        # Record total enhancement time
+        if total_enhancement_time > 0:
+            from core.performance_monitor import get_performance_monitor
+            monitor = get_performance_monitor()
+            monitor.record_timing('object_enhancement_total', total_enhancement_time)
             
         return enhanced_crops
     
@@ -364,8 +380,14 @@ class VideoProcessor:
         """Dynamically adjust settings to maintain target FPS."""
         current_fps = self.fps_monitor.current_fps
         target_fps = self.config.target_fps
+        current_time = time.time()
         
-        if current_fps < target_fps * 0.8:  # Below 80% of target
+        # Check cooldown to avoid spam
+        if current_time - self.last_quality_adjustment_time < self.quality_adjustment_cooldown:
+            return
+        
+        if current_fps < target_fps * 0.5:  # Below 50% of target (more reasonable threshold)
+            self.last_quality_adjustment_time = current_time
             logger.warning(f"FPS dropped to {current_fps:.1f}, adjusting quality...")
             
             # Reduce prompt density

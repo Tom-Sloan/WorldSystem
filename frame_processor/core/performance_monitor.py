@@ -80,14 +80,11 @@ class PerformanceMonitor:
         self._running = False
         self._update_thread = None
         
-        # Check if we're in Docker or non-TTY environment
-        self.is_docker = os.environ.get('IS_DOCKER', 'false').lower() == 'true'
+        # Check if rich terminal is explicitly enabled
         self.enable_rich = os.environ.get('ENABLE_RICH_TERMINAL', 'false').lower() == 'true'
         
-        # Use simple mode if:
-        # 1. We're in Docker AND rich terminal is not explicitly enabled
-        # 2. OR we don't have a TTY available
-        self.simple_mode = (self.is_docker and not self.enable_rich) or not os.isatty(0)
+        # Use simple mode unless rich terminal is explicitly enabled AND we have a TTY
+        self.simple_mode = not (self.enable_rich and os.isatty(0))
         
         # Timing statistics
         self.timings: Dict[str, TimingStats] = {}
@@ -112,8 +109,8 @@ class PerformanceMonitor:
         
         # Component status
         self.component_status = {
-            'detector': {'name': 'Unknown', 'status': '⏸️ Waiting'},
-            'tracker': {'name': 'Unknown', 'status': '⏸️ Waiting'},
+            'sam2': {'name': 'SAM2 Video', 'status': '⏸️ Waiting'},
+            'enhancement': {'status': '⏸️ Disabled'},
             'api': {'status': '⏸️ Waiting'},
             'rabbitmq': {'status': '❌ Disconnected'},
             'rerun': {'status': '❌ Disconnected'},
@@ -136,8 +133,8 @@ class PerformanceMonitor:
         # Log startup mode
         if self.simple_mode:
             logger.info("Performance monitor starting in simple mode (periodic logging)")
-            if self.is_docker and not self.enable_rich:
-                logger.info("To enable rich terminal in Docker, set ENABLE_RICH_TERMINAL=true")
+            if not self.enable_rich:
+                logger.info("To enable rich terminal, set ENABLE_RICH_TERMINAL=true")
         else:
             logger.info("Performance monitor starting with rich terminal display")
         
@@ -205,10 +202,10 @@ class PerformanceMonitor:
             Layout(name="footer", size=12)
         )
         
-        # Split main area
+        # Split main area - make timing section larger
         layout["main"].split_row(
-            Layout(name="stats", ratio=2),
-            Layout(name="timing", ratio=3)
+            Layout(name="stats", ratio=1),
+            Layout(name="timing", ratio=4)
         )
         
         # Split stats area
@@ -248,21 +245,21 @@ class PerformanceMonitor:
         # FPS with color coding
         fps = metrics['fps']
         fps_style = "green" if fps >= 25 else "yellow" if fps >= 15 else "red"
-        content.append(f"📊 FPS: {fps:.1f}\n", style=f"bold {fps_style}")
+        content.append(f"FPS: {fps:.1f}\n", style=f"bold {fps_style}")
         
-        content.append(f"🎯 Frames: {metrics['frames_processed']:,}\n")
-        content.append(f"👥 Active Tracks: {metrics['active_tracks']}\n")
-        content.append(f"🔍 Avg Detections: {metrics['detections_per_frame']:.1f}\n")
+        content.append(f"Frames: {metrics['frames_processed']:,}\n")
+        content.append(f"Act Tracks: {metrics['active_tracks']}\n")
+        content.append(f"Avg Detect: {metrics['detections_per_frame']:.1f}\n")
         
         # API metrics
         total_api = metrics['api_calls'] + metrics['api_cache_hits']
         cache_rate = (metrics['api_cache_hits'] / total_api * 100) if total_api > 0 else 0
-        content.append(f"🌐 API Calls: {metrics['api_calls']:,} ")
-        content.append(f"(Cache: {cache_rate:.0f}%)\n", style="dim")
+        content.append(f"API: {metrics['api_calls']:,} ")
+        content.append(f"({cache_rate:.0f}% cache)\n", style="dim")
         
         # Memory
-        content.append(f"💾 Memory: {metrics['memory_mb']:.0f} MB\n")
-        content.append(f"🎮 GPU: {metrics['gpu_memory_mb']:.0f} MB", style="yellow")
+        content.append(f"Mem: {metrics['memory_mb']:.0f}M\n")
+        content.append(f"GPU: {metrics['gpu_memory_mb']:.0f}M", style="yellow")
         
         return Panel(content, title="Overview", box=ROUNDED)
     
@@ -273,13 +270,13 @@ class PerformanceMonitor:
         
         table = Table(show_header=False, box=None, padding=(0, 1))
         
-        # Detector
-        detector = status['detector']
-        table.add_row("🤖 Detector:", f"{detector['name']} {detector['status']}")
+        # SAM2 (merged detector and tracker)
+        sam2 = status.get('sam2', status.get('detector', {'name': 'Unknown', 'status': '⏸️ Waiting'}))
+        table.add_row("🤖 SAM2:", f"{sam2['name']} {sam2['status']}")
         
-        # Tracker
-        tracker = status['tracker']
-        table.add_row("🎯 Tracker:", f"{tracker['name']} {tracker['status']}")
+        # Enhancement
+        enhancement = status.get('enhancement', {'status': '⏸️ Disabled'})
+        table.add_row("✨ Enhancement:", enhancement['status'])
         
         # API
         table.add_row("🌐 API:", status['api']['status'])
@@ -303,22 +300,22 @@ class PerformanceMonitor:
         # Sort by total time
         timings.sort(key=lambda x: x.total_ms, reverse=True)
         
-        # Create table
-        table = Table(box=None)
-        table.add_column("Operation", style="cyan")
-        table.add_column("Count", justify="right")
-        table.add_column("Avg", justify="right", style="yellow")
-        table.add_column("Min", justify="right", style="green")
-        table.add_column("Max", justify="right", style="red")
-        table.add_column("Recent", justify="right", style="bright_yellow")
+        # Create table with wider operation column
+        table = Table(box=None, expand=True)
+        table.add_column("Operation", style="cyan", ratio=4)
+        table.add_column("Count", justify="right", ratio=1)
+        table.add_column("Avg", justify="right", style="yellow", ratio=1)
+        table.add_column("Min", justify="right", style="green", ratio=1)
+        table.add_column("Max", justify="right", style="red", ratio=1)
+        table.add_column("Recent", justify="right", style="bright_yellow", ratio=1)
         
-        # Add top operations
-        for timing in timings[:10]:
+        # Add top operations - show more items
+        for timing in timings[:15]:
             # Color code average time
             avg_style = "green" if timing.avg_ms < 10 else "yellow" if timing.avg_ms < 50 else "red"
             
             table.add_row(
-                timing.name[:30],
+                timing.name,
                 f"{timing.count:,}",
                 Text(f"{timing.avg_ms:.1f}ms", style=avg_style),
                 f"{timing.min_ms:.1f}ms",
@@ -364,7 +361,16 @@ class PerformanceMonitor:
             else:
                 style = "red"
             
-            content.append(f"{op:15} ", style="cyan")
+            # Prettier operation names
+            display_name = {
+                'sam2_tracking': 'SAM2 Track',
+                'enhancement': 'Enhancement',
+                'api_calls': 'API Calls',
+                'total': 'Total Time',
+                'other': 'Other'
+            }.get(op, op)
+            
+            content.append(f"{display_name:15} ", style="cyan")
             content.append(f"{bar:20} ", style=style)
             content.append(f"{avg_ms:5.1f}ms ({percentage:4.1f}%)\n", style="dim")
         

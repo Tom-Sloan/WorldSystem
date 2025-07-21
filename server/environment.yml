@@ -1,0 +1,25 @@
+name: drone_server
+channels:
+    - pytorch
+    - nvidia
+    - conda-forge
+    - defaults
+dependencies:
+    - python=3.11
+    - numpy
+    - opencv
+    - fastapi
+    - uvicorn
+    - scipy
+    - trimesh
+    - websockets
+    - eigen
+    - aio-pika
+    - ntplib
+    - prometheus-fastapi-instrumentator
+    - opentelemetry-sdk
+    - opentelemetry-instrumentation-fastapi
+    - opentelemetry-exporter-jaeger
+    - opentelemetry-exporter-otlp-proto-http
+    - av>=10.0.0
+prefix: /opt/anaconda3/envs/drone_server

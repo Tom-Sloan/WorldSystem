@@ -1,12 +1,3 @@
 [submodule "android"]
 	path = android
 	url = https://github.com/Tom-Sloan/DJIDroneAndroidApp.git
-[submodule "website"]
-	path = website
-	url = https://github.com/Tom-Sloan/WorldBuilderWebsite.git
-[submodule "server"]
-	path = server
-	url = https://github.com/Tom-Sloan/LidarWorld_Server.git
-[submodule "fantasy"]
-	path = fantasy
-	url = https://github.com/Tom-Sloan/fantasy_world_builder.git

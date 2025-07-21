@@ -1,0 +1,16 @@
+numpy<2.0.0
+transforms3d # A library for 3D transformations
+tqdm # A library for progress bars
+opencv-python # A library for computer vision
+numba # A library for JIT compiling Python code
+tensorboardX # A library for logging PyTorch models in TensorBoard
+scikit-image # A library for image processing
+trimesh # A library for loading and using triangular meshes
+yacs # A library for configuration management
+h5py # A library for interacting with HDF5 files
+pyrender # A library for rendering 3D scenes
+pyglet<2.0.0 # A library for game development and multimedia applications
+torch # A library for deep learning
+torchvision # A library for computer vision tasks
+torchaudio # A library for audio processing
+transformers # hugging face

@@ -1,0 +1,154 @@
+/* src/components/ControlVisualizer.css */
+.control-visualizer-container {
+  width: 100%;
+  padding: 12px;
+}
+
+.control-visualizer-title {
+  color: white;
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  font-weight: normal;
+}
+
+.control-visualizer {
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 8px;
+  padding: 20px;
+  height: 180px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-family: 'Arial', sans-serif;
+  color: white;
+}
+
+.keyboard-layout {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+}
+
+.keyboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: auto auto auto;
+  gap: 10px;
+  width: 100%;
+  max-width: 500px;
+}
+
+.key {
+  background-color: rgba(70, 70, 70, 0.7);
+  border: 1px solid rgba(120, 120, 120, 0.7);
+  border-radius: 5px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: bold;
+  transition: all 0.1s ease;
+}
+
+.key.pressed {
+  background-color: rgba(255, 140, 0, 0.8); /* Orange color */
+  box-shadow: 0 0 8px rgba(255, 140, 0, 0.5); /* Orange glow */
+  transform: translateY(2px);
+}
+
+/* Active state (green) for active controls like camera on or flight mode takeoff */
+.key.active {
+  background-color: rgba(50, 200, 50, 0.8); /* Green color */
+  box-shadow: 0 0 8px rgba(50, 200, 50, 0.5); /* Green glow */
+}
+
+/* Inactive state (red) for inactive controls like camera off or flight mode land */
+.key.inactive {
+  background-color: rgba(200, 50, 50, 0.8); /* Red color */
+  box-shadow: 0 0 8px rgba(200, 50, 50, 0.5); /* Red glow */
+}
+
+/* When a key is both active and pressed, the pressed state should take precedence */
+.key.active.pressed {
+  background-color: rgba(255, 140, 0, 0.8); /* Orange color */
+  box-shadow: 0 0 8px rgba(255, 140, 0, 0.5); /* Orange glow */
+}
+
+/* When a key is both inactive and pressed, the pressed state should take precedence */
+.key.inactive.pressed {
+  background-color: rgba(255, 140, 0, 0.8); /* Orange color */
+  box-shadow: 0 0 8px rgba(255, 140, 0, 0.5); /* Orange glow */
+}
+
+/* WASD Cluster */
+.wasd-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  grid-column: 1;
+}
+
+.wasd-cluster .key {
+  width: 40px;
+}
+
+.wasd-bottom-row {
+  display: flex;
+  gap: 4px;
+}
+
+/* Arrow Keys */
+.arrow-keys-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  grid-column: 3;
+}
+
+.arrow-keys-cluster .key {
+  width: 40px;
+}
+
+.arrow-bottom-row {
+  display: flex;
+  gap: 4px;
+}
+
+/* Middle section with T and P */
+.middle-keys {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  grid-column: 2;
+}
+
+.middle-keys .key {
+  width: 40px;
+  height: 40px;
+}
+
+.middle-keys .key.off {
+  background-color: rgba(200, 50, 50, 0.8);
+}
+
+/* Controller values display */
+.controller-values {
+  grid-column: 1 / span 3;
+  background-color: rgba(40, 40, 40, 0.7);
+  border-radius: 5px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.controller-label {
+  font-family: monospace;
+  font-size: 14px;
+}

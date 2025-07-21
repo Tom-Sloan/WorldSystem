@@ -11,6 +11,7 @@ from typing import Literal, Optional, Dict, Any
 import os
 from pathlib import Path
 from .utils import get_logger
+from model_configs import get_model_config, get_default_model, get_model_by_size
 
 logger = get_logger(__name__)
 
@@ -23,11 +24,13 @@ class Config(BaseSettings):
     """
     
     # ========== Component Selection ==========
-    detector_type: Literal["yolo", "sam", "fastsam", "detectron2", "grounding_dino"] = Field(
-        default="yolo",
-        description="Detection algorithm to use"
+    
+    # Model selection - this is the primary way to select a model
+    model_name: Optional[str] = Field(
+        default=None,
+        description="Specific model name (e.g., 'sam2_tiny', 'sam2_base_plus'). If not set, uses default model."
     )
-    tracker_type: Literal["iou", "sort", "deep_sort", "bytetrack"] = Field(
+    tracker_type: Literal["iou"] = Field(
         default="iou",
         description="Tracking algorithm to use"
     )
@@ -167,10 +170,6 @@ class Config(BaseSettings):
         default="analysis_mode_exchange",
         description="Exchange name for analysis mode control"
     )
-    detection_enabled: bool = Field(
-        default=True,
-        description="Whether detection is enabled (can be toggled at runtime)"
-    )
     
     # ========== Monitoring Configuration ==========
     metrics_port: int = Field(
@@ -180,7 +179,7 @@ class Config(BaseSettings):
         description="Port for Prometheus metrics"
     )
     log_level: str = Field(
-        default="INFO",
+        default="DEBUG",
         pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$",
         description="Logging level"
     )
@@ -239,13 +238,14 @@ class Config(BaseSettings):
     )
     
     # ========== SAM2 Configuration ==========
-    sam_model_cfg: str = Field(
-        default="sam2_hiera_b+.yaml",
-        description="SAM2 model configuration file"
+    # These are now derived from model_name or can be overridden
+    sam_model_cfg: Optional[str] = Field(
+        default=None,
+        description="SAM2 model configuration file (auto-determined from model_name if not set)"
     )
-    sam_checkpoint_path: str = Field(
-        default="/app/models/sam2_hiera_base_plus.pt",
-        description="Path to SAM2 checkpoint file"
+    sam_checkpoint_path: Optional[str] = Field(
+        default=None,
+        description="Path to SAM2 checkpoint file (auto-determined from model_name if not set)"
     )
     sam_points_per_side: int = Field(
         default=24,
@@ -271,10 +271,29 @@ class Config(BaseSettings):
         description="Minimum area for valid masks"
     )
     
+    # Video-specific SAM2 thresholds (can override the defaults for video mode)
+    sam_video_pred_iou_thresh: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="IoU threshold for video mode (lower than image mode)"
+    )
+    sam_video_stability_score_thresh: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="Stability threshold for video mode (lower than image mode)"
+    )
+    sam_video_min_area: int = Field(
+        default=500,
+        ge=0,
+        description="Minimum mask area for video mode"
+    )
+    
     # ========== FastSAM Configuration ==========
-    fastsam_model_path: str = Field(
-        default="/app/models/FastSAM-x.pt",
-        description="Path to FastSAM model"
+    fastsam_model_path: Optional[str] = Field(
+        default=None,
+        description="Path to FastSAM model (auto-determined from model_name if not set)"
     )
     fastsam_conf_threshold: float = Field(
         default=0.4,
@@ -296,11 +315,6 @@ class Config(BaseSettings):
     )
     
     # ========== Video Processing Configuration ==========
-    video_mode: bool = Field(
-        default=False,
-        description="Enable video-aware processing"
-    )
-    
     video_tracker_type: str = Field(
         default="sam2_realtime",
         description="Video tracker to use (sam2_realtime, yolo_track, grounded_sam2)"
@@ -455,14 +469,6 @@ class Config(BaseSettings):
     
     # ========== Validators ==========
     
-    @field_validator('detector_type')
-    def validate_detector(cls, v):
-        """Ensure detector type is supported."""
-        supported = ["yolo", "sam", "fastsam", "detectron2", "grounding_dino"]
-        if v not in supported:
-            raise ValueError(f"Detector must be one of {supported}, got {v}")
-        return v
-    
     @field_validator('tracker_type')
     def validate_tracker(cls, v):
         """Ensure tracker type is supported."""
@@ -519,23 +525,59 @@ class Config(BaseSettings):
         return self
     
     @model_validator(mode='after')
-    def auto_determine_model_path(self):
-        """Automatically determine model path based on detector type if not specified."""
+    def auto_determine_model_config(self):
+        """Automatically determine model configuration based on model_name or detector_type."""
+        # Determine which model to use
+        if self.model_name:
+            # Use specific model if provided
+            try:
+                model_config = get_model_config(self.model_name)
+            except ValueError:
+                # Try to interpret as a size for SAM2
+                try:
+                    model_config = get_model_by_size(self.model_name)
+                except ValueError:
+                    raise ValueError(f"Unknown model: {self.model_name}")
+        else:
+            # Use default SAM2 model
+            model_config = get_default_model("sam2")
+        
+        # Apply model configuration if fields not explicitly set
         if self.detector_model is None:
-            # Default model paths for each detector type
-            model_paths = {
-                "yolo": "/app/models/yolov11l.pt",
-                "sam": "/app/models/sam2_hiera_base_plus.pt",
-                "fastsam": "/app/models/FastSAM-x.pt",
-                "detectron2": "/app/models/detectron2_rcnn.pth",  # Future
-                "grounding_dino": "/app/models/grounding_dino.pth"  # Future
-            }
+            self.detector_model = model_config.checkpoint_path
+            logger.info(f"Using model: {model_config.name} at {self.detector_model}")
+        
+        # Set SAM2-specific configs
+        if model_config.model_type == "sam2":
+            if self.sam_model_cfg is None:
+                self.sam_model_cfg = model_config.config_file
+            if self.sam_checkpoint_path is None:
+                self.sam_checkpoint_path = model_config.checkpoint_path
             
-            if self.detector_type in model_paths:
-                self.detector_model = model_paths[self.detector_type]
-                print(f"Auto-determined model path for {self.detector_type}: {self.detector_model}")
-            else:
-                raise ValueError(f"No default model path for detector type: {self.detector_type}")
+            # Apply recommended parameters if not overridden
+            params = model_config.parameters
+            if hasattr(self, 'sam_points_per_side') and self.sam_points_per_side == 24:  # default
+                self.sam_points_per_side = params.get('points_per_side', 24)
+            if hasattr(self, 'sam_pred_iou_thresh') and self.sam_pred_iou_thresh == 0.86:  # default
+                self.sam_pred_iou_thresh = params.get('pred_iou_thresh', 0.86)
+            if hasattr(self, 'sam_stability_score_thresh') and self.sam_stability_score_thresh == 0.92:  # default
+                self.sam_stability_score_thresh = params.get('stability_score_thresh', 0.92)
+            if hasattr(self, 'sam_min_mask_region_area') and self.sam_min_mask_region_area == 500:  # default
+                self.sam_min_mask_region_area = params.get('min_mask_region_area', 500)
+        
+        # Set FastSAM-specific configs
+        elif model_config.model_type == "fastsam":
+            if self.fastsam_model_path is None:
+                self.fastsam_model_path = model_config.checkpoint_path
+            
+            # Apply recommended parameters if not overridden
+            params = model_config.parameters
+            if hasattr(self, 'fastsam_conf_threshold') and self.fastsam_conf_threshold == 0.4:  # default
+                self.fastsam_conf_threshold = params.get('conf_threshold', 0.4)
+            if hasattr(self, 'fastsam_iou_threshold') and self.fastsam_iou_threshold == 0.9:  # default
+                self.fastsam_iou_threshold = params.get('iou_threshold', 0.9)
+            if hasattr(self, 'fastsam_max_det') and self.fastsam_max_det == 300:  # default
+                self.fastsam_max_det = params.get('max_det', 300)
         
         return self
     

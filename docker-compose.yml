@@ -60,14 +60,13 @@ services:
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - API_RESULTS_EXCHANGE=api_results_exchange
       
-      # ========== Video Mode Configuration (Primary) ==========
-      - VIDEO_MODE=${VIDEO_MODE:-true}
+      # ========== Configuration ==========
       - CONFIG_PROFILE=${CONFIG_PROFILE:-balanced}  # performance, balanced, quality
       
       # Performance settings (auto-configured by profile)
       - TARGET_FPS=${TARGET_FPS:-15}
       - PROCESSING_RESOLUTION=${PROCESSING_RESOLUTION:-720}
-      - SAM2_MODEL_SIZE=${SAM2_MODEL_SIZE:-small}  # tiny, small, base, large
+      - MODEL_NAME=${MODEL_NAME:-sam2_base_plus}  # Options: sam2_tiny, sam2_small, sam2_base_plus, sam2_large, fastsam_x
       
       # ========== System Configuration ==========
       - DEVICE=cuda
@@ -75,11 +74,14 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - METRICS_ENABLED=${METRICS_ENABLED:-true}
       - RERUN_ENABLED=${RERUN_ENABLED:-true}
+      - RERUN_CONNECT_URL=${RERUN_CONNECT_URL:-rerun+http://127.0.0.1:9876/proxy}
       
       # ========== API Configuration ==========
-      - USE_SERPAPI=${USE_SERPAPI:-true}
+      - USE_SERPAPI=${USE_SERPAPI:-false}
       - USE_GCS=${USE_GCS:-true}
-      - SERPAPI_API_KEY=${SERPAPI_API_KEY}
+      - USE_PERPLEXITY=${USE_PERPLEXITY:-false}
+      - SERPAPI_KEY=${SERPAPI_KEY}
+      - PERPLEXITY_KEY=${PERPLEXITY_KEY}
       - GOOGLE_APPLICATION_CREDENTIALS=/app/worldsystem-23f7306a1a75.json
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME:-worldsystem-frame-processor}
       
@@ -89,6 +91,11 @@ services:
       - REPROMPT_INTERVAL=${REPROMPT_INTERVAL:-60}
       - MIN_OBJECT_AREA=${MIN_OBJECT_AREA:-1000}
       - VIDEO_BUFFER_SIZE=${VIDEO_BUFFER_SIZE:-30}
+      
+      # SAM2 Video-Specific Thresholds (for better video quality)
+      - SAM_VIDEO_PRED_IOU_THRESH=${SAM_VIDEO_PRED_IOU_THRESH:-0.7}  # Lower than image mode (0.86)
+      - SAM_VIDEO_STABILITY_SCORE_THRESH=${SAM_VIDEO_STABILITY_SCORE_THRESH:-0.85}  # Lower than image mode (0.92)
+      - SAM_VIDEO_MIN_AREA=${SAM_VIDEO_MIN_AREA:-500}  # Minimum mask area in pixels
       
       # Stream Management
       - STREAM_STALE_TIMEOUT_SECONDS=${STREAM_STALE_TIMEOUT_SECONDS:-30}
@@ -103,13 +110,6 @@ services:
       - ENABLE_DYNAMIC_MODEL_SWITCHING=${ENABLE_DYNAMIC_MODEL_SWITCHING:-true}
       - MODEL_SWITCH_THRESHOLD_MB=${MODEL_SWITCH_THRESHOLD_MB:-3000}
       
-      # ========== Legacy Configuration (For Backward Compatibility) ==========
-      # These are only used when VIDEO_MODE=false
-      - DETECTOR_TYPE=${DETECTOR_TYPE:-sam}
-      - TRACKER_TYPE=iou
-      - DETECTION_ENABLED=${DETECTION_ENABLED:-true}
-      - ENHANCEMENT_ENABLED=true
-      - SAM_CHECKPOINT_PATH=${SAM_CHECKPOINT_PATH:-/app/models/sam2_hiera_large.pt}
       
     volumes:
       - ${WORKSPACE}/frame_processor/models:/app/models:ro
@@ -233,7 +233,9 @@ services:
 
       # Rerun viewer (host‑local)
       - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
-      - RERUN_CONNECT_URL=rerun+http://127.0.0.1:9876/proxy
+      # For SSH reverse tunnel: use localhost
+      # For direct connection: use your MacBook's IP address
+      - RERUN_CONNECT_URL=${RERUN_CONNECT_URL:-rerun+http://127.0.0.1:9876/proxy}
       - RERUN_ENABLED=${RERUN_ENABLED:-true}
 
       # GPU / display
@@ -536,14 +538,10 @@ services:
     image: simulator:latest
     network_mode: host
     restart: "no"  # Don't restart when simulation completes
-    volumes:
-      - ${WORKSPACE}/data:/data  # mount the data folder so the script can access recorded data
-      - ${WORKSPACE}/data_test:/data_test  # mount test data folder
-      - ${USE_FOLDER:-/data_test}:/simulation_data  # mount specific folder for simulation (defaults to /data_test)
     environment:
       - PYTHONUNBUFFERED=1  # Ensures Python output is sent straight to the terminal
       - SERVER_WS_URL=ws://127.0.0.1:5001/ws/video  # WebSocket URL for H.264 streaming
-      - USE_FOLDER=${USE_FOLDER:-/home/sam3/Desktop/Toms_Workspace/WorldSystem/20250617_211214_segments}  # set in .env file!!!
+      - SIMULATION_MODE=${SIMULATION_MODE:-video}  # Set to 'video' or 'segments'
     depends_on:
       - server  # Now depends on server for WebSocket connection
 

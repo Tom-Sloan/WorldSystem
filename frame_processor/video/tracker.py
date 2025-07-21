@@ -14,16 +14,20 @@ from dataclasses import dataclass, field
 import time
 
 try:
-    from sam2.build_sam import build_sam2_video_predictor
+    from sam2.build_sam import build_sam2_video_predictor, build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
+    from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 except ImportError:
     # Placeholder for development
     build_sam2_video_predictor = None
+    build_sam2 = None
     SAM2ImagePredictor = None
+    SAM2AutomaticMaskGenerator = None
 
-from tracking.video_base import VideoTracker, VideoTrackingResult, StreamState
+from .base import VideoTracker, VideoTrackingResult, StreamState
 from core.config import Config
 from core.utils import get_logger, PerformanceTimer
+from model_configs import get_model_config, get_model_by_size, MODEL_SIZE_MAP
 from core.video_buffer import MemoryTree
 
 logger = get_logger(__name__)
@@ -36,7 +40,7 @@ class SAM2StreamState(StreamState):
     object_ids: List[int] = field(default_factory=list)
     memory_tree: MemoryTree = None
     last_good_result: Optional[VideoTrackingResult] = None
-    current_model_size: str = "small"
+    current_model_size: str = "base"
     error_count: int = 0
     last_prompt_frame: int = 0
     
@@ -55,18 +59,31 @@ class SAM2RealtimeTracker(VideoTracker):
     def __init__(self, config: Config):
         self.config = config
         
-        # Model configuration
-        self.model_configs = {
-            "tiny": "sam2_hiera_t.yaml",    # 25+ FPS
-            "small": "sam2_hiera_s.yaml",   # 15-20 FPS
-            "base": "sam2_hiera_b+.yaml",   # 10-15 FPS
-            "large": "sam2_hiera_l.yaml"    # 5-10 FPS
-        }
+        logger.info("Initializing SAM2RealtimeTracker...")
+        
+        # Get model configuration from unified system
+        if hasattr(config, 'model_name') and config.model_name:
+            # Use the same model as detection
+            try:
+                self.model_config = get_model_config(config.model_name)
+                logger.info(f"Using model config from name: {config.model_name}")
+            except ValueError as e:
+                logger.warning(f"Failed to get model config: {e}")
+                # Fallback to size-based selection
+                self.model_config = get_model_by_size(getattr(config, 'sam2_model_size', 'base'))
+        else:
+            # Use size-based selection
+            model_size = getattr(config, 'sam2_model_size', 'base')
+            logger.info(f"Using size-based model selection: {model_size}")
+            self.model_config = get_model_by_size(model_size)
+        
+        logger.info(f"Model config: {self.model_config.name}, checkpoint: {self.model_config.checkpoint_path}")
         
         # Initialize model
-        self.current_model_size = config.sam2_model_size
+        self.current_model_size = self.model_config.name
         self.predictor = None
         self.image_predictor = None
+        self.mask_generator = None
         self._initialize_model()
         
         # Per-stream state management
@@ -90,18 +107,28 @@ class SAM2RealtimeTracker(VideoTracker):
     
     def _initialize_model(self):
         """Initialize SAM2 model with error handling."""
+        logger.info("Starting SAM2 model initialization...")
+        
         if build_sam2_video_predictor is None:
-            logger.warning("SAM2 not installed, using mock predictor")
-            return
+            logger.error("SAM2 not installed! build_sam2_video_predictor is None")
+            logger.error("The frame processor will not work without SAM2")
+            raise RuntimeError("SAM2 is required but not installed. Please install sam-2 package.")
         
         try:
-            model_cfg = self.model_configs.get(self.current_model_size, "sam2_hiera_s.yaml")
-            logger.info(f"Loading SAM2 {self.current_model_size} model...")
+            logger.info(f"Loading SAM2 model: {self.model_config.name} from {self.model_config.checkpoint_path}")
+            logger.info(f"Config file: {self.model_config.config_file}")
+            logger.info(f"CUDA available: {torch.cuda.is_available()}")
+            
+            # Check if model files exist
+            import os
+            if not os.path.exists(self.model_config.checkpoint_path):
+                logger.error(f"Model checkpoint not found: {self.model_config.checkpoint_path}")
+                raise FileNotFoundError(f"SAM2 model checkpoint not found at: {self.model_config.checkpoint_path}")
             
             # Build video predictor
             self.predictor = build_sam2_video_predictor(
-                model_cfg,
-                self.config.sam_checkpoint_path,
+                self.model_config.config_file,
+                self.model_config.checkpoint_path,
                 device='cuda' if torch.cuda.is_available() else 'cpu',
                 vos_optimized=True  # Critical for speed
             )
@@ -112,18 +139,81 @@ class SAM2RealtimeTracker(VideoTracker):
                 self.predictor = torch.compile(self.predictor)
             
             # Initialize image predictor for initial prompting
+            logger.info(f"Predictor type: {type(self.predictor)}")
+            logger.info(f"Predictor attributes: {dir(self.predictor)}")
+            
+            # Try different ways to get the model
+            sam_model = None
             if hasattr(self.predictor, 'model'):
-                self.image_predictor = SAM2ImagePredictor(self.predictor.model)
+                logger.info("Found 'model' attribute")
+                sam_model = self.predictor.model
+                self.image_predictor = SAM2ImagePredictor(sam_model)
+            elif hasattr(self.predictor, 'sam_model'):
+                logger.info("Found 'sam_model' attribute")
+                sam_model = self.predictor.sam_model
+                self.image_predictor = SAM2ImagePredictor(sam_model)
+            elif hasattr(self.predictor, '_model'):
+                logger.info("Found '_model' attribute")
+                sam_model = self.predictor._model
+                self.image_predictor = SAM2ImagePredictor(sam_model)
+            else:
+                # Try to create model and image predictor with the same config
+                logger.warning("Could not find model attribute in predictor, trying alternative approach")
+                try:
+                    # Build the base model
+                    sam_model = build_sam2(
+                        self.model_config.config_file,
+                        self.model_config.checkpoint_path,
+                        device='cuda' if torch.cuda.is_available() else 'cpu'
+                    )
+                    self.image_predictor = SAM2ImagePredictor(sam_model)
+                    logger.info("Created image predictor using build_sam2")
+                except Exception as e:
+                    logger.error(f"Failed to create image predictor: {e}")
+            
+            logger.info(f"Image predictor initialized: {self.image_predictor is not None}")
+            
+            # Try to create automatic mask generator
+            if SAM2AutomaticMaskGenerator:
+                try:
+                    # Use sam_model that we might have already created
+                    if sam_model:
+                        # Configure automatic mask generator with optimized settings
+                        # Use video-specific thresholds for better quality
+                        self.mask_generator = SAM2AutomaticMaskGenerator(
+                            model=sam_model,
+                            points_per_side=self.model_config.parameters.get('points_per_side', 32),  # Higher density for better quality
+                            pred_iou_thresh=self.config.sam_video_pred_iou_thresh,  # Configurable via env var
+                            stability_score_thresh=self.config.sam_video_stability_score_thresh,  # Configurable via env var
+                            min_mask_region_area=self.config.sam_video_min_area,  # Configurable via env var
+                            points_per_batch=64,  # Process in batches for speed
+                            output_mode="binary_mask",  # Use binary masks for compatibility
+                            crop_n_layers=0,  # Disable crop augmentation for speed
+                            crop_overlap_ratio=0.0  # No overlap needed
+                        )
+                        logger.info("Created automatic mask generator successfully")
+                    else:
+                        logger.warning("No model available for automatic mask generator")
+                except Exception as e:
+                    logger.warning(f"Failed to create automatic mask generator: {e}")
             
             logger.info(f"SAM2 {self.current_model_size} model loaded successfully")
             
         except Exception as e:
             logger.error(f"Failed to initialize SAM2 model: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
     async def initialize_stream(self, stream_id: str, first_frame: np.ndarray, 
                                 prompts: Optional[Dict] = None) -> VideoTrackingResult:
         """Initialize tracking for a new stream with automatic object discovery."""
+        logger.info(f"=== SAM2 initialize_stream called for {stream_id} ===")
+        logger.info(f"Frame shape: {first_frame.shape}, dtype: {first_frame.dtype}")
+        logger.info(f"Predictor available: {self.predictor is not None}")
+        logger.info(f"Image predictor available: {self.image_predictor is not None}")
+        
         if stream_id not in self._locks:
             self._locks[stream_id] = asyncio.Lock()
         
@@ -137,29 +227,54 @@ class SAM2RealtimeTracker(VideoTracker):
                     )
                     
                     # Initialize SAM2 state with error handling
+                    # For live streaming, we need to use a different approach
+                    # SAM2 video predictor expects a video file or folder, not live frames
+                    # We'll initialize with the image predictor and handle tracking differently
                     try:
                         if self.predictor:
-                            state.inference_state = self.predictor.init_state(video_path=None)
+                            # Create a temporary state that we'll manage ourselves
+                            # Instead of using init_state which expects video files
+                            state.inference_state = {
+                                'video_predictor': self.predictor,
+                                'frames': [],
+                                'frame_idx': 0,
+                                'initialized': True
+                            }
                     except torch.cuda.OutOfMemoryError:
                         logger.error(f"GPU OOM initializing stream {stream_id}")
                         # Try cleanup and retry once
                         await self._handle_gpu_oom()
                         if self.predictor:
-                            state.inference_state = self.predictor.init_state(video_path=None)
+                            state.inference_state = {
+                                'video_predictor': self.predictor,
+                                'frames': [],
+                                'frame_idx': 0,
+                                'initialized': True
+                            }
                     
                     # Generate prompts if not provided
                     if prompts is None:
+                        logger.info("Generating initial prompts...")
                         prompts = await self._generate_initial_prompts(first_frame)
+                    
+                    logger.info(f"Prompts: {len(prompts.get('points', []))} points")
                     
                     # Add prompts and get initial masks
                     masks = []
                     if state.inference_state:
+                        logger.info("Adding prompts to state...")
                         masks = await self._add_prompts_to_state(
                             state.inference_state, 
                             prompts, 
                             first_frame,
                             frame_idx=0
                         )
+                        logger.info(f"Got {len(masks)} masks from prompts")
+                        # Store initial masks for tracking
+                        if masks:
+                            state.inference_state['previous_masks'] = masks
+                    else:
+                        logger.error("No inference state available!")
                     
                     # Store state
                     self.stream_states[stream_id] = state
@@ -199,11 +314,14 @@ class SAM2RealtimeTracker(VideoTracker):
     async def process_frame(self, stream_id: str, frame: np.ndarray, 
                            timestamp: int) -> VideoTrackingResult:
         """Process frame with memory-aware tracking and comprehensive error handling."""
+        logger.debug(f"=== SAM2 process_frame called for {stream_id}, timestamp: {timestamp} ===")
+        
         if not self.validate_frame(frame):
             logger.error(f"Invalid frame for stream {stream_id}")
             return self._empty_result(stream_id)
         
         if stream_id not in self.stream_states:
+            logger.info(f"Stream {stream_id} not in states, auto-initializing...")
             # Auto-initialize if needed
             return await self.initialize_stream(stream_id, frame)
         
@@ -239,6 +357,10 @@ class SAM2RealtimeTracker(VideoTracker):
                         
                         # Filter small objects for performance
                         masks = [m for m in masks if m.get('area', 0) >= self.min_object_area]
+                        
+                        # Store masks for next frame tracking
+                        if state.inference_state and masks:
+                            state.inference_state['previous_masks'] = masks
                         
                         # Create result
                         result = VideoTrackingResult(
@@ -353,51 +475,148 @@ class SAM2RealtimeTracker(VideoTracker):
         if h > 1080 or w > 1920:
             density = max(8, density // 2)  # Reduce for high res
         
-        # Generate grid points with margin
-        margin = 50
+        # Generate grid points with smaller margin for better coverage
+        margin = 20
         y_coords = np.linspace(margin, h - margin, density)
         x_coords = np.linspace(margin, w - margin, density)
         
         points = []
+        labels = []
+        
+        # Add positive points in a grid
         for y in y_coords:
             for x in x_coords:
                 points.append([int(x), int(y)])
+                labels.append(1)  # Positive point
         
-        logger.debug(f"Generated {len(points)} grid prompts for {w}x{h} frame")
+        # Also add some negative points at the edges to help SAM2
+        # These tell SAM2 where NOT to segment
+        edge_points = [
+            [margin//2, margin//2],  # Top-left corner
+            [w - margin//2, margin//2],  # Top-right corner
+            [margin//2, h - margin//2],  # Bottom-left corner
+            [w - margin//2, h - margin//2],  # Bottom-right corner
+        ]
+        
+        for point in edge_points:
+            points.append(point)
+            labels.append(0)  # Negative point
+        
+        logger.info(f"Generated {len(points)} prompts ({density*density} positive, {len(edge_points)} negative) for {w}x{h} frame")
         
         return {
-            "points": np.array(points),
-            "labels": np.ones(len(points), dtype=np.int32)  # All positive
+            "points": np.array(points, dtype=np.float32),
+            "labels": np.array(labels, dtype=np.int32)
         }
     
     async def _add_prompts_to_state(self, inference_state, prompts, frame, frame_idx):
-        """Add prompts to SAM2 state and get masks."""
-        if not self.predictor:
+        """Add prompts to SAM2 state and get masks using automatic mask generation."""
+        logger.info(f"=== _add_prompts_to_state called, frame_idx: {frame_idx} ===")
+        
+        if not self.image_predictor:
+            logger.error("No image predictor available!")
             return []
         
         try:
-            # Convert to SAM2 format
-            _, out_obj_ids, out_mask_logits = self.predictor.add_new_points(
-                inference_state,
-                frame_idx=frame_idx,
-                obj_id=0,  # Will auto-increment
-                points=prompts["points"],
-                labels=prompts["labels"],
-                clear_old_points=True
-            )
+            # Use automatic mask generation instead of point prompts
+            logger.info("Using automatic mask generation...")
             
-            # Convert logits to masks
-            masks = []
-            for i, obj_id in enumerate(out_obj_ids):
-                mask_data = {
-                    "object_id": int(obj_id),
-                    "segmentation": (out_mask_logits[i] > 0.0).cpu().numpy(),
-                    "area": int((out_mask_logits[i] > 0.0).sum()),
-                    "confidence": float(torch.sigmoid(out_mask_logits[i]).mean())
-                }
-                masks.append(mask_data)
+            # Try automatic mask generation first
+            if self.mask_generator:
+                logger.info("Using automatic mask generation...")
+                try:
+                    masks_result = self.mask_generator.generate(frame)
+                    logger.info(f"Generated {len(masks_result)} masks automatically")
+                    
+                    # Convert to our format
+                    masks_list = []
+                    for i, mask_info in enumerate(masks_result):
+                        # Check for required fields - use configured threshold
+                        if mask_info.get('area', 0) > self.config.sam_video_min_area:
+                            # Handle segmentation format
+                            if 'segmentation' in mask_info:
+                                seg = mask_info['segmentation']
+                                # Ensure it's a numpy array
+                                if not isinstance(seg, np.ndarray):
+                                    logger.warning(f"Unknown segmentation format: {type(seg)}")
+                                    continue
+                            else:
+                                logger.warning("No segmentation in mask_info")
+                                continue
+                            
+                            # Calculate bbox if not provided
+                            if 'bbox' not in mask_info and seg.sum() > 0:
+                                y_coords, x_coords = np.where(seg)
+                                bbox = [int(x_coords.min()), int(y_coords.min()), 
+                                       int(x_coords.max() - x_coords.min()), 
+                                       int(y_coords.max() - y_coords.min())]  # x,y,w,h
+                            else:
+                                bbox = mask_info.get('bbox', [0, 0, 0, 0])
+                            
+                            mask_data = {
+                                "object_id": i,
+                                "segmentation": seg if isinstance(seg, np.ndarray) else seg.astype(bool),
+                                "area": int(mask_info['area']),
+                                "confidence": float(mask_info.get('predicted_iou', 0.9)),
+                                "bbox": bbox,
+                                "stability_score": float(mask_info.get('stability_score', 0.0))
+                            }
+                            masks_list.append(mask_data)
+                    
+                    if masks_list:
+                        return masks_list
+                except Exception as e:
+                    logger.error(f"Automatic mask generation failed: {e}")
             
-            return masks
+            # Fallback: Use grid of individual point prompts
+            logger.info("Using individual point prompts as fallback...")
+            self.image_predictor.set_image(frame)
+            
+            masks_list = []
+            points = prompts["points"]
+            labels = prompts["labels"]
+            
+            # Only process positive points individually
+            positive_points = [(p, l) for p, l in zip(points, labels) if l == 1]
+            
+            for i, (point, label) in enumerate(positive_points[:20]):  # Limit to 20 points for performance
+                try:
+                    # Single point prediction
+                    masks, scores, logits = self.image_predictor.predict(
+                        point_coords=np.array([point]),
+                        point_labels=np.array([label]),
+                        multimask_output=True
+                    )
+                    
+                    # Get best mask
+                    if len(masks) > 0:
+                        best_idx = np.argmax(scores)
+                        best_mask = masks[best_idx]
+                        best_score = scores[best_idx]
+                        
+                        if best_score > 0.8 and best_mask.sum() > 1000:
+                            # Check if this mask overlaps too much with existing ones
+                            is_duplicate = False
+                            for existing in masks_list:
+                                overlap = (existing['segmentation'] & best_mask).sum()
+                                if overlap > 0.5 * min(existing['area'], best_mask.sum()):
+                                    is_duplicate = True
+                                    break
+                            
+                            if not is_duplicate:
+                                mask_data = {
+                                    "object_id": i,
+                                    "segmentation": best_mask.astype(bool),
+                                    "area": int(best_mask.sum()),
+                                    "confidence": float(best_score)
+                                }
+                                masks_list.append(mask_data)
+                except Exception as e:
+                    logger.debug(f"Failed to process point {i}: {e}")
+                    continue
+            
+            logger.info(f"Generated {len(masks_list)} masks from point prompts")
+            return masks_list
             
         except Exception as e:
             logger.error(f"Error adding prompts: {e}")
@@ -405,28 +624,48 @@ class SAM2RealtimeTracker(VideoTracker):
     
     async def _propagate_masks(self, inference_state, frame, frame_idx):
         """Propagate masks to current frame."""
-        if not self.predictor:
+        # For live streaming with image predictor, we can't use video propagation
+        # Instead, we'll use previous masks to guide current frame detection
+        
+        if not self.image_predictor:
+            logger.error("No image predictor available for propagation!")
             return []
         
+        
         try:
-            # Get masks for current frame
-            for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
-                inference_state,
-                start_frame_idx=frame_idx,
-                max_frame_num_to_track=1
-            ):
-                if out_frame_idx == frame_idx:
-                    # Convert to mask format
-                    masks = []
-                    for i, obj_id in enumerate(out_obj_ids):
-                        mask_data = {
-                            "object_id": int(obj_id),
-                            "segmentation": (out_mask_logits[i] > 0.0).cpu().numpy(),
-                            "area": int((out_mask_logits[i] > 0.0).sum()),
-                            "confidence": float(torch.sigmoid(out_mask_logits[i]).mean())
-                        }
-                        masks.append(mask_data)
-                    return masks
+            # Get stored masks from previous frame if available
+            if 'previous_masks' in inference_state and inference_state['previous_masks']:
+                # Set image for current frame
+                self.image_predictor.set_image(frame)
+                
+                masks_list = []
+                for prev_mask in inference_state['previous_masks']:
+                    # Get center of previous mask as prompt
+                    seg = prev_mask['segmentation']
+                    if seg.sum() > 0:
+                        y_coords, x_coords = np.where(seg)
+                        center_y = int(y_coords.mean())
+                        center_x = int(x_coords.mean())
+                        
+                        # Use center as positive prompt
+                        masks, scores, logits = self.image_predictor.predict(
+                            point_coords=np.array([[center_x, center_y]]),
+                            point_labels=np.array([1]),
+                            multimask_output=False
+                        )
+                        
+                        if len(masks) > 0 and scores[0] > 0.5:
+                            mask_data = {
+                                "object_id": prev_mask['object_id'],
+                                "segmentation": masks[0].astype(bool),
+                                "area": int(masks[0].sum()),
+                                "confidence": float(scores[0])
+                            }
+                            masks_list.append(mask_data)
+                
+                # Store for next frame
+                inference_state['previous_masks'] = masks_list
+                return masks_list
             
             return []
             
@@ -534,6 +773,7 @@ class SAM2RealtimeTracker(VideoTracker):
             logger.error(f"Failed to switch model: {e}")
         
         return False
+    
     
     def _empty_result(self, stream_id: str) -> VideoTrackingResult:
         """Create empty result."""

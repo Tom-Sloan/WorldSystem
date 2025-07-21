@@ -1,18 +1,16 @@
 """
 Frame processing pipeline module.
 
-This module contains the core processing components including
-the main processor, scorer, enhancer, and publisher.
+This module contains supporting components for video processing
+including scoring, enhancement, and publishing.
 """
 
-from .processor import FrameProcessor, ComponentFactory, ProcessingResult
 from .scorer import FrameScorer
 from .enhancer import ImageEnhancer
+from .publisher import RabbitMQPublisher
 
 __all__ = [
-    'FrameProcessor',
-    'ComponentFactory', 
-    'ProcessingResult',
     'FrameScorer',
-    'ImageEnhancer'
+    'ImageEnhancer',
+    'RabbitMQPublisher'
 ]

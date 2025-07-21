@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    
+    <!-- HUD Theme Colors -->
+    <color name="hud_background">#FF0A0F1B</color>
+    <color name="hud_primary_cyan">#FF00FFFF</color>
+    <color name="hud_cyan_50">#8000FFFF</color>
+    <color name="hud_cyan_30">#4D00FFFF</color>
+    <color name="hud_cyan_20">#3300FFFF</color>
+    <color name="hud_cyan_10">#1A00FFFF</color>
+    <color name="hud_text_primary">#FFFFFFFF</color>
+    <color name="hud_text_label">#FF00FFFF</color>
+    <color name="hud_grid">#1A00FFFF</color>
+    <color name="hud_border">#8000FFFF</color>
+    
+    <!-- Battery Colors -->
+    <color name="hud_battery_high">#FF00FF00</color>
+    <color name="hud_battery_medium">#FFFFFF00</color>
+    <color name="hud_battery_low">#FFFF0000</color>
+    
+    <!-- Glow Effects -->
+    <color name="hud_glow_intense">#FF00FFFF</color>
+    <color name="hud_glow_medium">#8000FFFF</color>
+    <color name="hud_glow_light">#4000FFFF</color>
+</resources>

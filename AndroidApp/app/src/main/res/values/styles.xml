@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- HUD Button Style -->
+    <style name="HudButton" parent="Widget.AppCompat.Button">
+        <item name="android:background">@drawable/hud_button_background</item>
+        <item name="android:textColor">@color/hud_primary_cyan</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:typeface">monospace</item>
+        <item name="android:letterSpacing">0.1</item>
+        <item name="android:paddingLeft">16dp</item>
+        <item name="android:paddingRight">16dp</item>
+        <item name="android:paddingTop">8dp</item>
+        <item name="android:paddingBottom">8dp</item>
+        <item name="android:minWidth">100dp</item>
+        <item name="android:stateListAnimator">@animator/hud_button_animator</item>
+    </style>
+    
+    <!-- HUD Label Text Style -->
+    <style name="HudLabelText">
+        <item name="android:textColor">@color/hud_text_label</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:typeface">monospace</item>
+        <item name="android:letterSpacing">0.05</item>
+    </style>
+    
+    <!-- HUD Value Text Style -->
+    <style name="HudValueText">
+        <item name="android:textColor">@color/hud_text_primary</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:typeface">monospace</item>
+        <item name="android:letterSpacing">0.05</item>
+    </style>
+    
+    <!-- HUD Telemetry Container Style -->
+    <style name="HudTelemetryContainer">
+        <item name="android:background">@drawable/hud_telemetry_background</item>
+        <item name="android:padding">12dp</item>
+    </style>
+    
+    <!-- HUD SeekBar Style -->
+    <style name="HudSeekBar" parent="Widget.AppCompat.SeekBar">
+        <item name="android:progressDrawable">@drawable/hud_seekbar_track</item>
+        <item name="android:thumb">@drawable/hud_seekbar_thumb</item>
+        <item name="android:thumbOffset">0dp</item>
+        <item name="android:splitTrack">false</item>
+    </style>
+    
+    <!-- HUD FAB Style -->
+    <style name="HudFab" parent="Widget.MaterialComponents.FloatingActionButton">
+        <item name="backgroundTint">@color/hud_background</item>
+        <item name="borderWidth">0dp</item>
+        <item name="elevation">2dp</item>
+        <item name="tint">@color/hud_primary_cyan</item>
+    </style>
+</resources>

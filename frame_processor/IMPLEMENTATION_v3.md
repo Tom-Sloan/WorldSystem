@@ -31,7 +31,20 @@ rtsp_thread = None
 RTSP_PORT = int(os.getenv('RTSP_PORT', 8554))
 ```
 
-### 1.3 Add RTSP Server Functions
+### 1.3 Add Prometheus Metrics
+```python
+# Add after imports section
+from prometheus_client import Counter, Gauge, Histogram, generate_latest
+
+# Prometheus metrics
+rtsp_health_metric = Gauge('rtsp_server_healthy', 'RTSP server health status')
+rtsp_queue_size_metric = Gauge('rtsp_queue_size', 'Current RTSP queue size')
+video_bandwidth_metric = Gauge('video_bandwidth_mbps', 'Current video bandwidth in Mbps')
+frames_dropped_metric = Counter('rtsp_frames_dropped_total', 'Total frames dropped due to queue full')
+rtsp_restarts_metric = Counter('rtsp_server_restarts_total', 'Total RTSP server restarts')
+```
+
+### 1.4 Add RTSP Server Functions with Monitoring
 ```python
 # Add after the global variables section
 
@@ -43,14 +56,14 @@ def check_ffmpeg():
     return True
 
 def start_rtsp_server():
-    """Start FFmpeg RTSP server in a separate thread"""
+    """Start lightweight FFmpeg RTSP server optimized for low latency"""
     global rtsp_process, rtsp_thread
     
     if not check_ffmpeg():
         return False
     
     try:
-        # Create RTSP server using FFmpeg
+        # Optimized FFmpeg command for minimal latency
         cmd = [
             'ffmpeg',
             '-y',  # Overwrite output
@@ -59,6 +72,9 @@ def start_rtsp_server():
             '-c:v', 'copy',  # Copy codec (no re-encoding)
             '-f', 'rtsp',  # Output format
             '-rtsp_transport', 'tcp',  # Use TCP for reliability
+            '-fflags', 'nobuffer',  # Disable buffering
+            '-flags', 'low_delay',  # Low latency mode
+            '-strict', 'experimental',
             f'rtsp://0.0.0.0:{RTSP_PORT}/drone'  # Bind to all interfaces
         ]
         
@@ -66,13 +82,18 @@ def start_rtsp_server():
             cmd,
             stdin=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            stdout=subprocess.PIPE
+            stdout=subprocess.PIPE,
+            bufsize=0  # Unbuffered for low latency
         )
         
         logger.info(f"RTSP server started on rtsp://0.0.0.0:{RTSP_PORT}/drone")
+        rtsp_restarts_metric.inc()
         
         # Process queue in a separate thread
         def process_rtsp_queue():
+            consecutive_errors = 0
+            max_errors = 5
+            
             while True:
                 try:
                     chunk = rtsp_queue.get(timeout=1)
@@ -81,14 +102,19 @@ def start_rtsp_server():
                     if rtsp_process and rtsp_process.stdin and rtsp_process.poll() is None:
                         rtsp_process.stdin.write(chunk)
                         rtsp_process.stdin.flush()
+                        consecutive_errors = 0  # Reset on success
                 except queue.Empty:
                     continue
                 except BrokenPipeError:
-                    logger.error("RTSP server pipe broken, restarting...")
-                    start_rtsp_server()
-                    break
+                    consecutive_errors += 1
+                    logger.error(f"RTSP server pipe broken (error {consecutive_errors}/{max_errors})")
+                    if consecutive_errors >= max_errors:
+                        logger.error("Max errors reached, restarting RTSP server...")
+                        start_rtsp_server()
+                        break
                 except Exception as e:
                     logger.error(f"Error writing to RTSP server: {e}")
+                    consecutive_errors += 1
         
         rtsp_thread = threading.Thread(target=process_rtsp_queue, daemon=True)
         rtsp_thread.start()
@@ -130,6 +156,24 @@ def stop_rtsp_server():
             rtsp_process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             rtsp_process.kill()
+
+# Health check endpoint for RTSP
+@app.get("/health/rtsp")
+async def rtsp_health_check():
+    """Health check endpoint for monitoring systems"""
+    is_healthy = rtsp_process is not None and rtsp_process.poll() is None
+    queue_size = rtsp_queue.qsize() if rtsp_queue else 0
+    
+    # Update Prometheus metrics
+    rtsp_health_metric.set(1 if is_healthy else 0)
+    rtsp_queue_size_metric.set(queue_size)
+    
+    return {
+        "healthy": is_healthy,
+        "queue_size": queue_size,
+        "queue_capacity": 100,
+        "queue_usage_percent": (queue_size / 100) * 100
+    }
 ```
 
 ### 1.4 Modify Lifespan Context Manager
@@ -196,6 +240,16 @@ async def websocket_video_endpoint(websocket: WebSocket):
     bytes_received = 0
     chunks_sent_to_rtsp = 0
     
+    # Network quality monitoring
+    bandwidth_samples = []
+    sample_window = 5.0  # seconds
+    last_sample_time = time.time()
+    bytes_in_window = 0
+    
+    # Track SPS/PPS for RTSP initialization
+    sps_data = None
+    pps_data = None
+    
     try:
         while True:
             data = await websocket.receive()
@@ -204,23 +258,67 @@ async def websocket_video_endpoint(websocket: WebSocket):
                 
             # Handle binary messages (H.264 video streams)
             if "bytes" in data:
-                frame_bytes = data["bytes"]
-                bytes_received += len(frame_bytes)
+                packet = data["bytes"]
+                packet_size = len(packet)
+                bytes_received += packet_size
+                bytes_in_window += packet_size
                 
-                # Send to RTSP server (non-blocking)
-                try:
-                    rtsp_queue.put_nowait(frame_bytes)
-                    chunks_sent_to_rtsp += 1
+                # Parse Android packet header
+                if packet_size >= 5:
+                    packet_type = packet[4]
                     
-                    # Log progress every 100 chunks
-                    if chunks_sent_to_rtsp % 100 == 0:
-                        logger.info(f"[{websocket_id}] Sent {chunks_sent_to_rtsp} chunks to RTSP, {bytes_received/1024/1024:.2f} MB total")
+                    # Extract H.264 NAL units based on packet type
+                    if packet_type == 0x01:  # PACKET_TYPE_SPS
+                        sps_data = packet[13:]  # Skip header
+                        logger.info(f"Received SPS: {len(sps_data)} bytes")
                         
-                except queue.Full:
-                    logger.warning("RTSP queue full, dropping frame")
+                    elif packet_type == 0x02:  # PACKET_TYPE_PPS
+                        pps_data = packet[13:]  # Skip header
+                        logger.info(f"Received PPS: {len(pps_data)} bytes")
+                        
+                    elif packet_type in [0x03, 0x04]:  # KEYFRAME or FRAME
+                        # Extract H.264 data (skip 21-byte header)
+                        h264_data = packet[21:]
+                        
+                        # For RTSP, ensure SPS/PPS are sent with keyframes
+                        if packet_type == 0x03 and sps_data and pps_data:
+                            # Send SPS+PPS before keyframe
+                            try:
+                                rtsp_queue.put_nowait(sps_data)
+                                rtsp_queue.put_nowait(pps_data)
+                            except queue.Full:
+                                logger.warning("RTSP queue full, dropping SPS/PPS")
+                        
+                        # Send H.264 NAL units to RTSP
+                        try:
+                            rtsp_queue.put_nowait(h264_data)
+                            chunks_sent_to_rtsp += 1
+                        except queue.Full:
+                            logger.warning("RTSP queue full, dropping frame")
+                            frames_dropped_metric.inc()
                 
-                # Optional: Still publish to RabbitMQ for recording/analysis
-                # await publish_video_stream_chunk(frame_bytes, websocket_id)
+                # Calculate bandwidth every 5 seconds
+                current_time = time.time()
+                if current_time - last_sample_time >= sample_window:
+                    bandwidth_mbps = (bytes_in_window * 8) / (sample_window * 1_000_000)
+                    bandwidth_samples.append(bandwidth_mbps)
+                    
+                    # Log bandwidth and update metrics
+                    avg_bandwidth = sum(bandwidth_samples[-10:]) / min(len(bandwidth_samples), 10)
+                    logger.info(f"[{websocket_id}] Video bandwidth: {bandwidth_mbps:.2f} Mbps (avg: {avg_bandwidth:.2f} Mbps)")
+                    video_bandwidth_metric.set(bandwidth_mbps)
+                    
+                    # Alert if bandwidth is consistently low
+                    if avg_bandwidth < 3.0 and len(bandwidth_samples) > 5:
+                        logger.warning(f"[{websocket_id}] Low bandwidth detected ({avg_bandwidth:.2f} Mbps), consider reducing bitrate")
+                    
+                    # Reset window
+                    bytes_in_window = 0
+                    last_sample_time = current_time
+                    
+                # Log progress every 100 chunks
+                if chunks_sent_to_rtsp % 100 == 0:
+                    logger.info(f"[{websocket_id}] Sent {chunks_sent_to_rtsp} chunks to RTSP, {bytes_received/1024/1024:.2f} MB total")
                     
             # Handle text messages (control/config)
             elif "text" in data:
@@ -233,7 +331,10 @@ async def websocket_video_endpoint(websocket: WebSocket):
                     
     except WebSocketDisconnect:
         logger.info(f"Video stream disconnected: {websocket.client.host}")
-        logger.info(f"[{websocket_id}] Total: {bytes_received/1024/1024:.2f} MB received, {chunks_sent_to_rtsp} chunks sent to RTSP")
+        logger.info(f"[{websocket_id}] Final stats: {bytes_received/1024/1024:.2f} MB received, {chunks_sent_to_rtsp} chunks sent")
+        if bandwidth_samples:
+            final_avg = sum(bandwidth_samples) / len(bandwidth_samples)
+            logger.info(f"[{websocket_id}] Average bandwidth: {final_avg:.2f} Mbps")
     except Exception as e:
         logger.error(f"Error in video websocket: {e}")
     finally:
@@ -252,6 +353,12 @@ async def rtsp_status():
         "queue_size": rtsp_queue.qsize() if rtsp_queue else 0,
         "thread_alive": rtsp_thread.is_alive() if rtsp_thread else False
     }
+
+# Prometheus metrics endpoint
+@app.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics"""
+    return Response(generate_latest(), media_type="text/plain")
 ```
 
 ## Phase 2: Create Base RTSP Consumer Class
@@ -271,15 +378,17 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 class RTSPConsumer(ABC):
-    """Base class for services that consume RTSP streams"""
+    """Base class for services that consume RTSP streams with configurable frame skipping"""
     
-    def __init__(self, rtsp_url: str, service_name: str):
+    def __init__(self, rtsp_url: str, service_name: str, frame_skip: int = 0):
         self.rtsp_url = rtsp_url
         self.service_name = service_name
         self.cap: Optional[cv2.VideoCapture] = None
         self.is_running = False
         self.reconnect_delay = 2
         self.frame_count = 0
+        self.frame_skip = frame_skip  # Process every Nth frame (0 = no skip)
+        self.frames_processed = 0
         
     def connect(self) -> bool:
         """Connect to RTSP stream"""
@@ -327,12 +436,18 @@ class RTSPConsumer(ABC):
                 
                 self.frame_count += 1
                 
+                # Apply frame skipping
+                if self.frame_skip > 0 and self.frame_count % self.frame_skip != 0:
+                    continue
+                
                 # Process frame
                 self.process_frame(frame, self.frame_count)
+                self.frames_processed += 1
                 
                 # Log progress
-                if self.frame_count % 100 == 0:
-                    logger.info(f"[{self.service_name}] Processed {self.frame_count} frames")
+                if self.frames_processed % 100 == 0:
+                    skip_ratio = f" (skipping {self.frame_skip-1} of {self.frame_skip})" if self.frame_skip > 1 else ""
+                    logger.info(f"[{self.service_name}] Processed {self.frames_processed} frames{skip_ratio}")
                     
             except Exception as e:
                 logger.error(f"[{self.service_name}] Error processing frame: {e}")
@@ -393,7 +508,9 @@ logger = logging.getLogger(__name__)
 
 class GroundedSAM2Processor(RTSPConsumer):
     def __init__(self, rtsp_url: str):
-        super().__init__(rtsp_url, "FrameProcessor")
+        # Frame processor: process every frame for best tracking
+        frame_skip = int(os.getenv('FRAME_PROCESSOR_SKIP', '1'))
+        super().__init__(rtsp_url, "FrameProcessor", frame_skip)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Initialize models
@@ -704,14 +821,13 @@ from shared_memory_writer import SharedMemoryWriter
 
 class SLAM3RProcessor(RTSPConsumer):
     def __init__(self, rtsp_url: str):
-        super().__init__(rtsp_url, "SLAM3R")
+        # SLAM: process every 3rd frame by default (10fps from 30fps)
+        frame_skip = int(os.getenv('SLAM_FRAME_SKIP', '3'))
+        super().__init__(rtsp_url, "SLAM3R", frame_skip)
         
         # Initialize SLAM3R
         self.slam = SLAM3RCore()
         self.shared_memory = SharedMemoryWriter()
-        
-        # Frame skipping for SLAM (process every Nth frame)
-        self.frame_skip = 3  # Process every 3rd frame
         
         # RabbitMQ setup
         self.rabbitmq_url = os.getenv('RABBITMQ_URL', 'amqp://admin:admin@rabbitmq:5672/')
@@ -739,11 +855,6 @@ class SLAM3RProcessor(RTSPConsumer):
     
     def process_frame(self, frame: np.ndarray, frame_number: int):
         """Process frame through SLAM"""
-        
-        # Skip frames for performance
-        if frame_number % self.frame_skip != 0:
-            return
-        
         try:
             # Convert to grayscale for SLAM
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -843,7 +954,9 @@ from rtsp_consumer import RTSPConsumer
 
 class StorageProcessor(RTSPConsumer):
     def __init__(self, rtsp_url: str):
-        super().__init__(rtsp_url, "Storage")
+        # Storage: record every frame by default (no skipping)
+        frame_skip = int(os.getenv('STORAGE_FRAME_SKIP', '1'))
+        super().__init__(rtsp_url, "Storage", frame_skip)
         
         # Storage configuration
         self.storage_path = os.getenv('STORAGE_PATH', '/app/recordings')
@@ -1114,6 +1227,16 @@ services:
     volumes:
       - ./server:/app
       - ./models:/app/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health/rtsp"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=5001"
+      - "prometheus.io/path=/metrics"
 
   frame_processor:
     build: 
@@ -1124,6 +1247,7 @@ services:
       - RTSP_PORT=8554
       - RABBITMQ_URL=amqp://admin:admin@rabbitmq:5672/
       - PYTHONUNBUFFERED=1
+      - FRAME_PROCESSOR_SKIP=1  # Process every frame
     depends_on:
       - server
       - rabbitmq
@@ -1137,6 +1261,12 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import cv2; cv2.VideoCapture('rtsp://server:8554/drone').isOpened()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   slam3r:
     build:
@@ -1147,6 +1277,7 @@ services:
       - RTSP_PORT=8554
       - RABBITMQ_URL=amqp://admin:admin@rabbitmq:5672/
       - PYTHONUNBUFFERED=1
+      - SLAM_FRAME_SKIP=3  # Process every 3rd frame (10fps)
     depends_on:
       - server
       - rabbitmq
@@ -1161,6 +1292,11 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os; exit(0 if os.path.exists('/dev/shm/slam3r_keyframes') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   storage:
     build:
@@ -1172,16 +1308,48 @@ services:
       - RABBITMQ_URL=amqp://admin:admin@rabbitmq:5672/
       - STORAGE_PATH=/app/recordings
       - PYTHONUNBUFFERED=1
+      - STORAGE_FRAME_SKIP=1  # Record every frame
     depends_on:
       - server
       - rabbitmq
     volumes:
       - ./recordings:/app/recordings
       - ./common:/app/common
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('/app/recordings') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   rabbitmq_data:
   slam3r_shared_memory:
+```
+
+### 7.2 Add Prometheus Configuration
+```yaml
+# prometheus.yml - Add server metrics scraping
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'worldsystem-server'
+    static_configs:
+      - targets: ['server:5001']
+    metrics_path: '/metrics'
+    
+  # Existing scrape configs...
+```
+
+### 7.3 Grafana Dashboard Configuration
+Create a dashboard to monitor:
+- RTSP server health status
+- Video bandwidth (current and average)
+- RTSP queue size and usage
+- Frames dropped count
+- RTSP server restart count
+- Frame processing rates per service
 ```
 
 ## Phase 8: Testing & Verification
@@ -1306,10 +1474,29 @@ if self.frame_count % 2 != 0:  # Process every other frame
 
 ## Summary
 
-This implementation provides a clean, scalable architecture where:
+This implementation provides a clean, scalable architecture with:
 
-1. The server streams H.264 video via RTSP
-2. Three specialized services consume the stream independently
-3. Each service processes frames at its optimal rate
-4. All services integrate through RabbitMQ for coordination
-5. The system is fault-tolerant and scalable
+### Core Features
+1. **Lightweight RTSP streaming** using optimized FFmpeg with low-latency settings
+2. **Three specialized services** consuming the stream independently
+3. **Configurable frame skipping** per service via environment variables
+4. **Comprehensive monitoring** with Prometheus metrics and health checks
+5. **Real-time bandwidth monitoring** with alerts for network issues
+
+### Key Improvements Added
+- **Bandwidth Monitoring**: Tracks video bandwidth in real-time with 5-second windows
+- **Prometheus Metrics**: Exposes RTSP health, queue size, bandwidth, and dropped frames
+- **Health Checks**: Docker health checks for all services
+- **Frame Skip Configuration**: 
+  - Frame Processor: Every frame (FRAME_PROCESSOR_SKIP=1)
+  - SLAM: Every 3rd frame (SLAM_FRAME_SKIP=3) 
+  - Storage: Every frame (STORAGE_FRAME_SKIP=1)
+- **Error Recovery**: Automatic RTSP restart with exponential backoff
+
+### Monitoring Integration
+The system integrates with your existing Grafana/Prometheus stack to provide:
+- Real-time video bandwidth graphs
+- RTSP server uptime and health status
+- Queue utilization and dropped frame alerts
+- Per-service frame processing rates
+- Network quality indicators

@@ -1,15 +1,20 @@
-# Grounded-SAM-2 with RTSP Streaming Implementation Plan
+# Grounded-SAM-2 with MediaMTX RTSP Streaming Implementation Plan
 
 ## Overview
-This plan modifies your drone server to stream H.264 video via RTSP to three specialized services: frame_processor (Grounded-SAM-2), slam3r, and storage for parallel processing.
+This plan modifies your drone server to stream H.264 video via MediaMTX RTSP server to three specialized services: frame_processor (Grounded-SAM-2), slam3r, and storage for parallel processing.
 
 ## Architecture
 ```
-Drone → WebSocket → server/main.py → RTSP Server ├─→ frame_processor (Grounded-SAM-2)
-                            ↓                     ├─→ slam3r (SLAM processing)
-                        RabbitMQ                  └─→ storage (Recording/archival)
+Drone → WebSocket → server/main.py → FFmpeg → MediaMTX RTSP Server ├─→ frame_processor (Grounded-SAM-2)
+                            ↓                                       ├─→ slam3r (SLAM processing)
+                        RabbitMQ                                    └─→ storage (Recording/archival)
                     (IMU/telemetry data)
 ```
+
+MediaMTX acts as a proper RTSP server that:
+- Accepts H.264 stream pushed from FFmpeg
+- Serves multiple RTSP clients concurrently
+- Handles RTSP protocol negotiation and transport
 
 ## Phase 1: Modify server/main.py
 
@@ -56,14 +61,14 @@ def check_ffmpeg():
     return True
 
 def start_rtsp_server():
-    """Start lightweight FFmpeg RTSP server optimized for low latency"""
+    """Start FFmpeg to push H.264 stream to MediaMTX RTSP server"""
     global rtsp_process, rtsp_thread
     
     if not check_ffmpeg():
         return False
     
     try:
-        # Optimized FFmpeg command for minimal latency
+        # FFmpeg command to push to MediaMTX
         cmd = [
             'ffmpeg',
             '-y',  # Overwrite output
@@ -75,7 +80,7 @@ def start_rtsp_server():
             '-fflags', 'nobuffer',  # Disable buffering
             '-flags', 'low_delay',  # Low latency mode
             '-strict', 'experimental',
-            f'rtsp://0.0.0.0:{RTSP_PORT}/drone'  # Bind to all interfaces
+            f'rtsp://127.0.0.1:{RTSP_PORT}/drone'  # Push to MediaMTX on localhost
         ]
         
         rtsp_process = subprocess.Popen(
@@ -86,7 +91,7 @@ def start_rtsp_server():
             bufsize=0  # Unbuffered for low latency
         )
         
-        logger.info(f"RTSP server started on rtsp://0.0.0.0:{RTSP_PORT}/drone")
+        logger.info(f"FFmpeg started, pushing to MediaMTX at rtsp://127.0.0.1:{RTSP_PORT}/drone")
         rtsp_restarts_metric.inc()
         
         # Process queue in a separate thread
@@ -107,13 +112,13 @@ def start_rtsp_server():
                     continue
                 except BrokenPipeError:
                     consecutive_errors += 1
-                    logger.error(f"RTSP server pipe broken (error {consecutive_errors}/{max_errors})")
+                    logger.error(f"FFmpeg pipe broken (error {consecutive_errors}/{max_errors})")
                     if consecutive_errors >= max_errors:
                         logger.error("Max errors reached, restarting RTSP server...")
                         start_rtsp_server()
                         break
                 except Exception as e:
-                    logger.error(f"Error writing to RTSP server: {e}")
+                    logger.error(f"Error writing to FFmpeg: {e}")
                     consecutive_errors += 1
         
         rtsp_thread = threading.Thread(target=process_rtsp_queue, daemon=True)
@@ -132,14 +137,14 @@ def start_rtsp_server():
         return True
         
     except Exception as e:
-        logger.error(f"Failed to start RTSP server: {e}")
+        logger.error(f"Failed to start FFmpeg: {e}")
         return False
 
 def stop_rtsp_server():
-    """Stop the RTSP server gracefully"""
+    """Stop FFmpeg gracefully"""
     global rtsp_process, rtsp_thread
     
-    logger.info("Stopping RTSP server...")
+    logger.info("Stopping FFmpeg...")
     
     # Signal thread to stop
     if rtsp_queue:
@@ -157,19 +162,19 @@ def stop_rtsp_server():
         except subprocess.TimeoutExpired:
             rtsp_process.kill()
 
-# Health check endpoint for RTSP
+# Health check endpoint for FFmpeg/RTSP
 @app.get("/health/rtsp")
 async def rtsp_health_check():
     """Health check endpoint for monitoring systems"""
-    is_healthy = rtsp_process is not None and rtsp_process.poll() is None
+    ffmpeg_healthy = rtsp_process is not None and rtsp_process.poll() is None
     queue_size = rtsp_queue.qsize() if rtsp_queue else 0
     
     # Update Prometheus metrics
-    rtsp_health_metric.set(1 if is_healthy else 0)
+    rtsp_health_metric.set(1 if ffmpeg_healthy else 0)
     rtsp_queue_size_metric.set(queue_size)
     
     return {
-        "healthy": is_healthy,
+        "ffmpeg_healthy": ffmpeg_healthy,
         "queue_size": queue_size,
         "queue_capacity": 100,
         "queue_usage_percent": (queue_size / 100) * 100
@@ -190,9 +195,9 @@ async def lifespan(app: FastAPI):
     # RabbitMQ & exchanges
     await setup_amqp()
     
-    # Start RTSP server
+    # Start FFmpeg to push to MediaMTX
     if not start_rtsp_server():
-        logger.warning("RTSP server failed to start, video streaming will not work")
+        logger.warning("FFmpeg failed to start, video streaming will not work")
 
     # background tasks we need to cancel on shutdown
     bg_tasks = [
@@ -206,7 +211,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Server shutdown...")
     
-    # Stop RTSP server
+    # Stop FFmpeg
     stop_rtsp_server()
     
     # Cancel background tasks
@@ -346,9 +351,9 @@ async def websocket_video_endpoint(websocket: WebSocket):
 # Add after the H.264 test endpoint (~line 570)
 @app.get("/rtsp/status")
 async def rtsp_status():
-    """Check RTSP server status"""
+    """Check FFmpeg and RTSP status"""
     return {
-        "rtsp_running": rtsp_process is not None and rtsp_process.poll() is None,
+        "ffmpeg_running": rtsp_process is not None and rtsp_process.poll() is None,
         "rtsp_url": f"rtsp://localhost:{RTSP_PORT}/drone",
         "queue_size": rtsp_queue.qsize() if rtsp_queue else 0,
         "thread_alive": rtsp_thread.is_alive() if rtsp_thread else False
@@ -1198,6 +1203,20 @@ transformers==4.35.2
 version: '3.8'
 
 services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest-ffmpeg
+    container_name: mediamtx
+    network_mode: host
+    environment:
+      - MTX_PROTOCOLS=tcp
+      - MTX_RTSPADDRESS=:8554
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8554"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   rabbitmq:
     image: rabbitmq:3-management
     ports:
@@ -1224,6 +1243,7 @@ services:
       - PYTHONUNBUFFERED=1
     depends_on:
       - rabbitmq
+      - mediamtx
     volumes:
       - ./server:/app
       - ./models:/app/models
@@ -1251,6 +1271,7 @@ services:
     depends_on:
       - server
       - rabbitmq
+      - mediamtx
     volumes:
       - ./enhanced_objects:/app/enhanced_objects
       - ./common:/app/common
@@ -1281,6 +1302,7 @@ services:
     depends_on:
       - server
       - rabbitmq
+      - mediamtx
     volumes:
       - ./slam3r/data:/app/data
       - slam3r_shared_memory:/dev/shm
@@ -1312,6 +1334,7 @@ services:
     depends_on:
       - server
       - rabbitmq
+      - mediamtx
     volumes:
       - ./recordings:/app/recordings
       - ./common:/app/common
@@ -1354,9 +1377,12 @@ Create a dashboard to monitor:
 
 ## Phase 8: Testing & Verification
 
-### 8.1 Test RTSP Server
+### 8.1 Test MediaMTX RTSP Server
 ```bash
-# Check if RTSP server is running
+# Check if MediaMTX is running
+docker logs mediamtx
+
+# Check if FFmpeg is pushing to MediaMTX
 curl http://localhost:5001/rtsp/status
 
 # Test RTSP stream with ffplay
@@ -1364,6 +1390,9 @@ ffplay rtsp://localhost:8554/drone
 
 # Or with VLC
 vlc rtsp://localhost:8554/drone
+
+# Check MediaMTX stats
+curl http://localhost:9997/v3/stats
 ```
 
 ### 8.2 Monitor Logs
@@ -1383,10 +1412,12 @@ docker-compose logs -f storage
 
 ### 8.3 Debug Connection Issues
 If processors can't connect to RTSP:
-1. Check if server started RTSP successfully
-2. Verify port 8554 is exposed
-3. Try using IP address instead of hostname
-4. Check firewall rules
+1. Check if MediaMTX is running: `docker ps | grep mediamtx`
+2. Check if FFmpeg is pushing data: `curl http://localhost:5001/rtsp/status`
+3. Verify MediaMTX is listening on port 8554: `netstat -an | grep 8554`
+4. Try connecting directly to MediaMTX: `ffplay rtsp://localhost:8554/drone`
+5. Check MediaMTX logs: `docker logs mediamtx`
+6. Ensure FFmpeg has data to push (simulator/app is sending video)
 
 ## Key Architecture Benefits
 
@@ -1474,29 +1505,36 @@ if self.frame_count % 2 != 0:  # Process every other frame
 
 ## Summary
 
-This implementation provides a clean, scalable architecture with:
+This implementation provides a clean, scalable architecture with MediaMTX as the RTSP server:
 
 ### Core Features
-1. **Lightweight RTSP streaming** using optimized FFmpeg with low-latency settings
-2. **Three specialized services** consuming the stream independently
-3. **Configurable frame skipping** per service via environment variables
-4. **Comprehensive monitoring** with Prometheus metrics and health checks
-5. **Real-time bandwidth monitoring** with alerts for network issues
+1. **MediaMTX RTSP Server** - A proper RTSP server that handles multiple clients
+2. **FFmpeg Push Architecture** - Server uses FFmpeg to push H.264 stream to MediaMTX
+3. **Three specialized services** consuming the RTSP stream independently:
+   - **frame_processor**: Grounded-SAM-2 for object detection and tracking
+   - **slam3r**: SLAM processing for camera pose estimation  
+   - **storage**: Video recording and archival
+4. **Configurable frame skipping** per service via environment variables
+5. **Comprehensive monitoring** with Prometheus metrics and health checks
 
-### Key Improvements Added
-- **Bandwidth Monitoring**: Tracks video bandwidth in real-time with 5-second windows
-- **Prometheus Metrics**: Exposes RTSP health, queue size, bandwidth, and dropped frames
-- **Health Checks**: Docker health checks for all services
-- **Frame Skip Configuration**: 
-  - Frame Processor: Every frame (FRAME_PROCESSOR_SKIP=1)
-  - SLAM: Every 3rd frame (SLAM_FRAME_SKIP=3) 
-  - Storage: Every frame (STORAGE_FRAME_SKIP=1)
-- **Error Recovery**: Automatic RTSP restart with exponential backoff
+### Key Improvements with MediaMTX
+- **Proper RTSP Server**: MediaMTX handles RTSP protocol correctly (FFmpeg cannot act as RTSP server)
+- **Multiple Concurrent Clients**: All services can connect simultaneously
+- **Reliable Stream Distribution**: MediaMTX buffers and distributes the stream efficiently
+- **Standard RTSP URLs**: Services connect to `rtsp://mediamtx:8554/drone`
+- **Health Monitoring**: Built-in health checks for MediaMTX container
+
+### Architecture Flow
+1. Android/Simulator sends custom packet format via WebSocket to server
+2. Server extracts H.264 NAL units from packets (strips headers)
+3. FFmpeg receives H.264 via stdin and pushes to MediaMTX RTSP server
+4. MediaMTX serves RTSP stream to all consumers (frame_processor, slam3r, storage)
+5. Each service processes frames at its own rate using the RTSPConsumer base class
 
 ### Monitoring Integration
 The system integrates with your existing Grafana/Prometheus stack to provide:
-- Real-time video bandwidth graphs
-- RTSP server uptime and health status
-- Queue utilization and dropped frame alerts
+- FFmpeg health status and queue metrics
+- MediaMTX connection statistics  
+- Real-time video bandwidth monitoring
 - Per-service frame processing rates
 - Network quality indicators

@@ -48,12 +48,14 @@ Key services:
 - Website: `cd website && npm run dev`
 - Website build: `cd website && npm run build`
 - Website lint: `cd website && npm run lint`
+- Mesh Service build: `cd mesh_service && mkdir build && cd build && cmake .. && make`
 
 ### Testing Commands
 - Website: `cd website && npm run lint`
 - Mesh Service: `cd mesh_service && python3 test_mesh_service.py`
 - Frame Processor: `cd frame_processor && ./test_integration.sh`
 - Integration tests: `cd tests && python test_*.py`
+- Full test suite: `python run_tests.py`
 
 ### Monitoring URLs (when running)
 - RabbitMQ: http://localhost:15672
@@ -107,3 +109,23 @@ Only modify code in:
 - Services use environment variables for configuration
 - Docker networks: backend_network (internal), monitoring
 - Mesh Service configuration: All env vars prefixed with MESH_ (see mesh_service/CONFIG.md)
+
+### RabbitMQ Exchanges
+- `video_frames_exchange` - Raw video frames from Android
+- `imu_data_exchange` - IMU sensor data
+- `slam3r_keyframe_exchange` - Camera poses from SLAM
+- `processed_frames_exchange` - Video with detections
+- `scene_scaling_exchange` - Real-world scale information
+
+### Environment Setup
+Create a `.env` file with:
+```bash
+USERNAME=$(whoami)
+WORKSPACE=/path/to/WorldSystem
+X11SOCKET=/tmp/.X11-unix
+XAUTHORITY=${HOME}/.Xauthority
+UID=$(id -u)
+GID=$(id -g)
+CUDA_PATH=/usr/local/cuda
+DISPLAY=$DISPLAY
+```

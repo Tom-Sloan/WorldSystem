@@ -1,49 +1,81 @@
 # Core dependencies
-ultralytics>=8.0.230
-numpy
-opencv-python-headless
-aio-pika
-ntplib
-rerun-sdk==0.24.0
-prometheus_client
-av>=10.0.0  # PyAV for H.264 video decoding
+numpy>=1.24.4,<2.0.0  # Grounded-SAM-2 compatibility 
+opencv-python>=4.7.0,<4.9.0  # Compatible with numpy 1.x
+aio-pika>=9.4.0
+ntplib>=0.4.0
+rerun-sdk==0.18.2  # Last version compatible with numpy 1.x
+prometheus_client>=0.22.0
+av>=15.0.0  # PyAV for H.264 video decoding
 
-# PyTorch for YOLO
-torch
-torchvision
-torchaudio
+# PyTorch - matching Grounded-SAM-2 requirements (CUDA 12.1+)
+torch>=2.3.1
+torchvision>=0.18.1
+torchaudio>=2.3.1
+
+# Grounded-SAM-2 core dependencies
+tqdm>=4.66.1
+hydra-core>=1.3.2
+iopath>=0.1.10
+timm>=0.9.0  # This was missing and causing the error
+setuptools>=62.3.0,<75.9
+wheel
 
 # Configuration and utilities
-python-dotenv
-pydantic>=2.0
-pydantic-settings>=2.0
-colorama  # For colored logging
-rich>=13.7.0  # For beautiful terminal output and dashboard
+python-dotenv>=1.0.0
+pydantic>=2.11
+pydantic-settings>=2.10
+colorama>=0.4.6  # For colored logging
+rich>=14.0.0  # For beautiful terminal output and dashboard
+fvcore>=0.1.5  # Required by Grounded-SAM-2
 
 # External API integrations
-google-cloud-storage
-google-api-python-client
-google-search-results  # For SerpAPI/Google Lens
-requests
+google-cloud-storage>=2.10.0
+google-api-python-client>=2.176.0
+google-search-results>=2.4.2  # For SerpAPI/Google Lens
+requests>=2.32.0
 
 # Image processing
-pillow
-scipy
-scikit-image
+pillow>=9.4.0  # Grounded-SAM-2 compatibility
+scipy>=1.10.0,<1.16.0  # Python 3.10 compatibility
+scikit-image>=0.24.0
 
 # Async support
-aiofiles  # For async file operations if needed
-aiohttp  # For async HTTP requests
-asyncio  # Built-in, but listing for clarity
-
-# Segment Anything Model 2 (SAM2)
-sam-2 @ git+https://github.com/facebookresearch/sam2.git
-
-# FastSAM dependencies
-fastsam @ git+https://github.com/CASIA-IVA-Lab/FastSAM.git
+aiofiles>=24.1.0  # For async file operations if needed
+aiohttp>=3.12.0  # For async HTTP requests
 
 # Additional dependencies for SAM/FastSAM
-matplotlib>=3.7.1
-pycocotools>=2.0.7
-onnx>=1.14.1
-onnxruntime-gpu>=1.16.0
+matplotlib>=3.9.1
+pycocotools>=2.0.8
+onnx>=1.16.0
+onnxruntime-gpu>=1.18.0
+
+# Grounding DINO dependencies
+addict>=2.4.0
+yapf>=0.43.0
+
+# Grounded-SAM-2 specific dependencies
+supervision>=0.26.0
+transformers>=4.40.0  # Updated for better compatibility
+
+# Additional dependencies for model loading
+tensorboard>=2.17.0
+tensordict>=0.5.0
+
+# Optional but useful for development
+pandas>=2.2.2
+eva-decord>=0.6.1  # For video processing
+black==24.2.0  # Code formatting
+usort==1.0.2  # Import sorting
+ufmt==2.0.0b2  # Code formatting
+submitit>=1.5.1  # Job submission
+
+# Interactive demo dependencies (optional)
+Flask>=3.0.3
+Flask-Cors>=5.0.0
+gunicorn>=23.0.0
+imagesize>=1.4.1
+
+# Note: SAM2 and Grounding DINO are installed in Dockerfile with special flags:
+# - SAM2: pip install -e .
+# - Grounding DINO: pip install --no-build-isolation -e grounding_dino
+# These cannot be installed via requirements.txt due to their special installation needs

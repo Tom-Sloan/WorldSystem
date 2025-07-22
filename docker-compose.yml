@@ -14,6 +14,25 @@ services:
       - rabbitmq-data:/var/lib/rabbitmq   # persist queues/users
     networks:
       - default
+  
+  mediamtx:
+    image: bluenviron/mediamtx:latest-ffmpeg
+    container_name: mediamtx
+    network_mode: host
+    environment:
+      - MTX_PROTOCOLS=tcp
+      - MTX_RTSPADDRESS=:8554
+      - MTX_RTPADDRESS=:8000
+      - MTX_RTCPADDRESS=:8001
+      - MTX_WEBRTCADDRESS=:8889
+      - MTX_LOGLEVEL=info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9997/v3/config/get"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     
   nginx:
     build: ./nginx
@@ -42,23 +61,39 @@ services:
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
       - RESTART_EXCHANGE=restart_exchange
+      - RTSP_PORT=8554
+      - BIND_HOST=0.0.0.0
+      - API_PORT=5001
+      - PYTHONUNBUFFERED=1
     ports:
-      - "5001:5001"
+      - "5001:5001"  # API/WebSocket
     depends_on:
       - rabbitmq
+      - mediamtx
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health/rtsp"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   frame_processor:
-    build: ./frame_processor
+    build:
+      context: .
+      dockerfile: ./frame_processor/Dockerfile
     image: frame_processor:latest
     runtime: nvidia
     profiles: ["frame_processor"]
     network_mode: host
     environment:
+      # ========== RTSP Configuration ==========
+      - RTSP_HOST=127.0.0.1
+      - RTSP_PORT=8554
       # ========== Core RabbitMQ Configuration ==========
       - RABBITMQ_URL=amqp://127.0.0.1:5672
-      - VIDEO_STREAM_EXCHANGE=video_stream_exchange
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - API_RESULTS_EXCHANGE=api_results_exchange
+      - FRAME_PROCESSOR_SKIP=1  # Process every frame
       
       # ========== Configuration ==========
       - CONFIG_PROFILE=${CONFIG_PROFILE:-balanced}  # performance, balanced, quality
@@ -120,6 +155,7 @@ services:
       - ${WORKSPACE}/frame_processor/models:/app/models:ro
       - ${WORKSPACE}/frame_processor/credentials/worldsystem-23f7306a1a75.json:/app/worldsystem-23f7306a1a75.json:ro
       - ${WORKSPACE}/frame_processor/logs:/app/logs
+      - ${WORKSPACE}/common:/app/common:ro
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
     deploy:
@@ -131,33 +167,18 @@ services:
               capabilities: [gpu]
     depends_on:
       - rabbitmq
+      - server
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import cv2; cv2.VideoCapture('rtsp://127.0.0.1:8554/drone').isOpened()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     
     # TTY configuration for rich terminal display
     # Set ENABLE_RICH_TERMINAL=true and run with -t flag for interactive terminal
     tty: ${ENABLE_RICH_TERMINAL:-false}
     stdin_open: ${ENABLE_RICH_TERMINAL:-false}
-
-  data_storage:
-    image: data_storage:latest
-    build: ./storage
-    volumes:
-      - ${WORKSPACE}/storage:/app
-      - ${WORKSPACE}/data:/data
-    network_mode: host
-    # RabbitMQ now reached on the host‑published port
-    environment:
-      RABBITMQ_URL: amqp://127.0.0.1:5672
-      VIDEO_FRAMES_EXCHANGE: video_frames_exchange
-      IMU_DATA_EXCHANGE: imu_data_exchange
-      TRAJECTORY_DATA_EXCHANGE: trajectory_data_exchange
-      PLY_FANOUT_EXCHANGE: ply_fanout_exchange
-      RESTART_EXCHANGE: restart_exchange
-      PROCESSED_IMU_EXCHANGE: processed_imu_exchange
-      # Video storage configuration
-      SAVE_SIMULATION_DATA: ${SAVE_SIMULATION_DATA:-false}
-      SAVE_INDIVIDUAL_FRAMES: ${SAVE_INDIVIDUAL_FRAMES:-false}
-    depends_on:
-      - rabbitmq
 
   slam3r:
     image: slam3r:latest
@@ -547,8 +568,7 @@ services:
       - PYTHONUNBUFFERED=1  # Ensures Python output is sent straight to the terminal
       - SERVER_WS_URL=ws://127.0.0.1:5001/ws/video  # WebSocket URL for H.264 streaming
       - SIMULATION_MODE=${SIMULATION_MODE:-video}  # Set to 'video' or 'segments'
-    depends_on:
-      - server  # Now depends on server for WebSocket connection
+    # NOTE: Can't use depends_on with network_mode: host
 
   website:
     image: website:latest
@@ -647,6 +667,47 @@ services:
 
     networks:
       - default
+
+  storage:
+    build:
+      context: .
+      dockerfile: ./storage/Dockerfile
+    image: storage:latest
+    container_name: worldsystem-storage
+    network_mode: host
+    environment:
+      # ========== RTSP Configuration ==========
+      - RTSP_HOST=127.0.0.1
+      - RTSP_PORT=8554
+      # ========== RabbitMQ Configuration ==========
+      - RABBITMQ_URL=amqp://127.0.0.1:5672
+      - FRAME_PROCESSOR_SKIP=1  # Record every frame
+      
+      # ========== Storage Configuration ==========
+      - STORAGE_PATH=/app/recordings
+      - VIDEO_CHUNK_DURATION_SECONDS=${VIDEO_CHUNK_DURATION_SECONDS:-60}  # 1 minute chunks by default
+      
+      # ========== System Configuration ==========
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - METRICS_PORT=8005
+      - PYTHONUNBUFFERED=1
+      
+    volumes:
+      - ${WORKSPACE}/storage:/app/storage:ro
+      - ${WORKSPACE}/common:/app/common:ro
+      - ${WORKSPACE}/recordings:/app/recordings
+      - ${WORKSPACE}/data:/data  # Legacy compatibility
+      
+    depends_on:
+      - mediamtx
+      - rabbitmq
+      
+    healthcheck:
+      test: ["CMD", "python", "-c", "import cv2; cv2.VideoCapture('rtsp://127.0.0.1:8554/drone').isOpened()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 networks:
   default:

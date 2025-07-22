@@ -12,11 +12,12 @@ import base64
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Counter, Gauge, Histogram, generate_latest
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -33,8 +34,38 @@ import threading
 from contextlib import asynccontextmanager
 import av  # For H.264 testing endpoint
 
+# RTSP imports
+import subprocess
+import queue
+import shutil  # For checking if ffmpeg is installed
+
 from src.config.settings import logger, API_PORT, BIND_HOST, AnalysisMode
 from src.api.routes import router
+
+# ------------- Prometheus metrics for RTSP -------------
+# Use a try-except block to handle metric re-registration during hot reload
+from prometheus_client import CollectorRegistry, REGISTRY
+
+try:
+    rtsp_health_metric = Gauge('rtsp_server_healthy', 'RTSP server health status')
+    rtsp_queue_size_metric = Gauge('rtsp_queue_size', 'Current RTSP queue size')
+    video_bandwidth_metric = Gauge('video_bandwidth_mbps', 'Current video bandwidth in Mbps')
+    frames_dropped_metric = Counter('rtsp_frames_dropped_total', 'Total frames dropped due to queue full')
+    rtsp_restarts_metric = Counter('rtsp_server_restarts_total', 'Total RTSP server restarts')
+except ValueError as e:
+    # Metrics already registered - get existing ones
+    for collector in REGISTRY._collector_to_names:
+        if hasattr(collector, '_name'):
+            if collector._name == 'rtsp_server_healthy':
+                rtsp_health_metric = collector
+            elif collector._name == 'rtsp_queue_size':
+                rtsp_queue_size_metric = collector
+            elif collector._name == 'video_bandwidth_mbps':
+                video_bandwidth_metric = collector
+            elif collector._name == 'rtsp_frames_dropped_total':
+                frames_dropped_metric = collector
+            elif collector._name == 'rtsp_server_restarts_total':
+                rtsp_restarts_metric = collector
 
 # ------------- OTLP / Tracing -------------
 resource = Resource(attributes={
@@ -57,6 +88,10 @@ async def lifespan(app: FastAPI):
 
     # RabbitMQ & exchanges
     await setup_amqp()
+    
+    # Start RTSP server
+    if not start_rtsp_server():
+        logger.warning("RTSP server failed to start, video streaming will not work")
 
     # background tasks we need to cancel on shutdown
     bg_tasks = [
@@ -83,6 +118,9 @@ async def lifespan(app: FastAPI):
 
     # ---------- graceful shutdown ----------
     logger.info("Server shutting down…")
+    
+    # Stop RTSP server
+    stop_rtsp_server()
     
     # Clean up tasks
     for task in bg_tasks:
@@ -154,6 +192,12 @@ NTP_SERVERS = [
     os.getenv("NTP_SERVER", "0.pool.ntp.org")  # Use custom server if specified
 ]
 
+# RTSP global variables
+rtsp_process = None
+rtsp_queue = queue.Queue(maxsize=100)
+rtsp_thread = None
+RTSP_PORT = int(os.getenv('RTSP_PORT', 8554))
+
 def sync_ntp_time():
     """Update the NTP time offset by querying NTP servers."""
     global ntp_time_offset, last_ntp_sync
@@ -181,6 +225,136 @@ def get_ntp_time_ns():
         # Start a thread to sync NTP time without blocking
         threading.Thread(target=sync_ntp_time, daemon=True).start()
     return int(current_time * 1e9)  # Convert to nanoseconds
+
+def check_ffmpeg():
+    """Check if FFmpeg is installed"""
+    if not shutil.which('ffmpeg'):
+        logger.error("FFmpeg not found! Please install FFmpeg in the container.")
+        return False
+    return True
+
+def start_rtsp_server():
+    """Start lightweight FFmpeg RTSP server optimized for low latency"""
+    global rtsp_process, rtsp_thread, rtsp_restarts_metric
+    
+    if not check_ffmpeg():
+        return False
+    
+    try:
+        # FFmpeg command to push H.264 stream to MediaMTX
+        cmd = [
+            'ffmpeg',
+            '-y',  # Overwrite output
+            '-f', 'h264',  # Input format
+            '-i', '-',  # Read from stdin
+            '-c:v', 'copy',  # Copy codec (no re-encoding)
+            '-f', 'rtsp',  # Output format
+            '-rtsp_transport', 'tcp',  # Use TCP for reliability
+            '-fflags', 'nobuffer',  # Disable buffering
+            '-flags', 'low_delay',  # Low latency mode
+            f'rtsp://127.0.0.1:{RTSP_PORT}/drone'  # Push to MediaMTX
+        ]
+        
+        rtsp_process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            bufsize=0  # Unbuffered for low latency
+        )
+        
+        # Check if process started successfully
+        time.sleep(0.5)  # Give it a moment to start
+        if rtsp_process.poll() is not None:
+            # Process already terminated
+            stderr_output = rtsp_process.stderr.read().decode() if rtsp_process.stderr else "No stderr"
+            logger.error(f"FFmpeg process terminated immediately with code {rtsp_process.returncode}")
+            logger.error(f"FFmpeg stderr: {stderr_output}")
+            return False
+        
+        logger.info(f"FFmpeg pushing to MediaMTX at rtsp://127.0.0.1:{RTSP_PORT}/drone")
+        try:
+            rtsp_restarts_metric.inc()
+        except Exception:
+            pass  # Metric might not be initialized yet
+        
+        # Process queue in a separate thread
+        def process_rtsp_queue():
+            consecutive_errors = 0
+            max_errors = 5
+            
+            while True:
+                try:
+                    chunk = rtsp_queue.get(timeout=1)
+                    if chunk is None:  # Shutdown signal
+                        break
+                    if rtsp_process and rtsp_process.stdin and rtsp_process.poll() is None:
+                        rtsp_process.stdin.write(chunk)
+                        rtsp_process.stdin.flush()
+                        consecutive_errors = 0  # Reset on success
+                except queue.Empty:
+                    continue
+                except BrokenPipeError:
+                    consecutive_errors += 1
+                    logger.error(f"RTSP server pipe broken (error {consecutive_errors}/{max_errors})")
+                    if consecutive_errors >= max_errors:
+                        logger.error("Max errors reached, restarting RTSP server...")
+                        start_rtsp_server()
+                        break
+                except Exception as e:
+                    logger.error(f"Error writing to RTSP server: {e}")
+                    consecutive_errors += 1
+        
+        rtsp_thread = threading.Thread(target=process_rtsp_queue, daemon=True)
+        rtsp_thread.start()
+        
+        # Monitor FFmpeg stderr in another thread
+        def monitor_ffmpeg():
+            global rtsp_process
+            while rtsp_process and rtsp_process.poll() is None:
+                line = rtsp_process.stderr.readline()
+                if line:
+                    line_str = line.decode().strip()
+                    if "error" in line_str.lower() or "fail" in line_str.lower():
+                        logger.error(f"FFmpeg ERROR: {line_str}")
+                    else:
+                        logger.info(f"FFmpeg: {line_str}")
+            
+            # Process terminated
+            if rtsp_process:
+                exit_code = rtsp_process.poll()
+                logger.error(f"FFmpeg process terminated with code {exit_code}")
+        
+        monitor_thread = threading.Thread(target=monitor_ffmpeg, daemon=True)
+        monitor_thread.start()
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to start RTSP server: {e}")
+        return False
+
+def stop_rtsp_server():
+    """Stop the RTSP server gracefully"""
+    global rtsp_process, rtsp_thread
+    
+    logger.info("Stopping RTSP server...")
+    
+    # Signal thread to stop
+    if rtsp_queue:
+        rtsp_queue.put(None)
+    
+    # Wait for thread
+    if rtsp_thread and rtsp_thread.is_alive():
+        rtsp_thread.join(timeout=5)
+    
+    # Terminate FFmpeg
+    if rtsp_process:
+        rtsp_process.terminate()
+        try:
+            rtsp_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            rtsp_process.kill()
 
 async def setup_amqp():
     """
@@ -269,6 +443,43 @@ async def test_h264_decoder():
             "suggestion": "Make sure PyAV is installed with: conda install av>=10.0.0"
         }
 
+# Health check endpoint for RTSP
+@app.get("/health/rtsp")
+async def rtsp_health_check():
+    """Health check endpoint for monitoring systems"""
+    is_healthy = rtsp_process is not None and rtsp_process.poll() is None
+    queue_size = rtsp_queue.qsize() if rtsp_queue else 0
+    
+    # Update Prometheus metrics
+    try:
+        rtsp_health_metric.set(1 if is_healthy else 0)
+        rtsp_queue_size_metric.set(queue_size)
+    except Exception:
+        pass  # Metrics might not be initialized
+    
+    return {
+        "healthy": is_healthy,
+        "queue_size": queue_size,
+        "queue_capacity": 100,
+        "queue_usage_percent": (queue_size / 100) * 100
+    }
+
+@app.get("/rtsp/status")
+async def rtsp_status():
+    """Check RTSP server status"""
+    return {
+        "rtsp_running": rtsp_process is not None and rtsp_process.poll() is None,
+        "rtsp_url": f"rtsp://localhost:{RTSP_PORT}/drone",
+        "queue_size": rtsp_queue.qsize() if rtsp_queue else 0,
+        "thread_alive": rtsp_thread.is_alive() if rtsp_thread else False
+    }
+
+# Prometheus metrics endpoint
+@app.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics"""
+    return Response(generate_latest(), media_type="text/plain")
+
 # ------------- WebSocket: VIDEO STREAMING -> /ws/video -------------
 @app.websocket("/ws/video")
 async def websocket_video_endpoint(websocket: WebSocket):
@@ -278,31 +489,115 @@ async def websocket_video_endpoint(websocket: WebSocket):
     connected_phones.add(websocket)
     logger.info(f"New video stream connected: {websocket.client.host} (ID: {websocket_id})")
     
+    # Track statistics
+    bytes_received = 0
+    chunks_sent_to_rtsp = 0
+    
+    # Network quality monitoring
+    bandwidth_samples = []
+    sample_window = 5.0  # seconds
+    last_sample_time = time.time()
+    bytes_in_window = 0
+    
+    # Track SPS/PPS for RTSP initialization
+    sps_data = None
+    pps_data = None
+    
     try:
         while True:
             data = await websocket.receive()
             if data["type"] == "websocket.disconnect":
                 raise WebSocketDisconnect()
                 
-            # Handle binary messages (H.264 video streams only)
+            # Handle binary messages (H.264 video streams)
             if "bytes" in data:
-                frame_bytes = data["bytes"]
+                packet = data["bytes"]
+                packet_size = len(packet)
+                bytes_received += packet_size
+                bytes_in_window += packet_size
                 
-                # Forward raw H.264 stream chunks to frame_processor
-                await publish_video_stream_chunk(frame_bytes, websocket_id)
+                # Parse Android packet header
+                if packet_size >= 5:
+                    packet_type = packet[4]
                     
-            # Handle text messages (control)
+                    # Log packet type for debugging
+                    if chunks_sent_to_rtsp < 10 or chunks_sent_to_rtsp % 100 == 0:
+                        logger.info(f"Packet type: 0x{packet_type:02X}, size: {packet_size}")
+                    
+                    # Extract H.264 NAL units based on packet type
+                    if packet_type == 0x01:  # PACKET_TYPE_SPS
+                        sps_data = packet[13:]  # Skip header
+                        logger.info(f"Received SPS: {len(sps_data)} bytes")
+                        
+                    elif packet_type == 0x02:  # PACKET_TYPE_PPS
+                        pps_data = packet[13:]  # Skip header
+                        logger.info(f"Received PPS: {len(pps_data)} bytes")
+                        
+                    elif packet_type in [0x03, 0x04]:  # KEYFRAME or FRAME
+                        # Extract H.264 data (skip 21-byte header)
+                        h264_data = packet[21:]
+                        
+                        # For RTSP, ensure SPS/PPS are sent with keyframes
+                        if packet_type == 0x03 and sps_data and pps_data:
+                            # Send SPS+PPS before keyframe
+                            try:
+                                rtsp_queue.put_nowait(sps_data)
+                                rtsp_queue.put_nowait(pps_data)
+                            except queue.Full:
+                                logger.warning("RTSP queue full, dropping SPS/PPS")
+                        
+                        # Send H.264 NAL units to RTSP
+                        try:
+                            rtsp_queue.put_nowait(h264_data)
+                            chunks_sent_to_rtsp += 1
+                        except queue.Full:
+                            logger.warning("RTSP queue full, dropping frame")
+                            try:
+                                frames_dropped_metric.inc()
+                            except Exception:
+                                pass
+                
+                # Calculate bandwidth every 5 seconds
+                current_time = time.time()
+                if current_time - last_sample_time >= sample_window:
+                    bandwidth_mbps = (bytes_in_window * 8) / (sample_window * 1_000_000)
+                    bandwidth_samples.append(bandwidth_mbps)
+                    
+                    # Log bandwidth and update metrics
+                    avg_bandwidth = sum(bandwidth_samples[-10:]) / min(len(bandwidth_samples), 10)
+                    logger.info(f"[{websocket_id}] Video bandwidth: {bandwidth_mbps:.2f} Mbps (avg: {avg_bandwidth:.2f} Mbps)")
+                    try:
+                        video_bandwidth_metric.set(bandwidth_mbps)
+                    except Exception:
+                        pass
+                    
+                    # Alert if bandwidth is consistently low
+                    if avg_bandwidth < 3.0 and len(bandwidth_samples) > 5:
+                        logger.warning(f"[{websocket_id}] Low bandwidth detected ({avg_bandwidth:.2f} Mbps), consider reducing bitrate")
+                    
+                    # Reset window
+                    bytes_in_window = 0
+                    last_sample_time = current_time
+                    
+                # Log progress every 100 chunks
+                if chunks_sent_to_rtsp % 100 == 0:
+                    logger.info(f"[{websocket_id}] Sent {chunks_sent_to_rtsp} chunks to RTSP, {bytes_received/1024/1024:.2f} MB total")
+                    
+            # Handle text messages (control/config)
             elif "text" in data:
                 try:
                     msg = json.loads(data["text"])
                     if msg.get("type") == "video_config":
-                        # Handle video configuration messages
                         logger.info(f"Video config received: {msg}")
                 except json.JSONDecodeError:
                     logger.warning(f"Invalid JSON from video stream: {data['text']}")
                     
     except WebSocketDisconnect:
         logger.info(f"Video stream disconnected: {websocket.client.host}")
+        logger.info(f"[{websocket_id}] Final stats: {bytes_received/1024/1024:.2f} MB received, {chunks_sent_to_rtsp} chunks sent")
+        if bandwidth_samples:
+            final_avg = sum(bandwidth_samples) / len(bandwidth_samples)
+            logger.info(f"[{websocket_id}] Average bandwidth: {final_avg:.2f} Mbps")
     except Exception as e:
         logger.error(f"Error in video websocket: {e}")
     finally:

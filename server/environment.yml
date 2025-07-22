@@ -17,6 +17,7 @@ dependencies:
     - aio-pika
     - ntplib
     - prometheus-fastapi-instrumentator
+    - prometheus_client
     - opentelemetry-sdk
     - opentelemetry-instrumentation-fastapi
     - opentelemetry-exporter-jaeger

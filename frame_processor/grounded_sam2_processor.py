@@ -20,7 +20,7 @@ from typing import Dict, List, Tuple, Optional
 
 # Add common to path
 sys.path.append('/app/common')
-from rtsp_consumer import RTSPConsumer
+from websocket_video_consumer import WebSocketVideoConsumer
 
 # Grounded-SAM-2 imports
 sys.path.append('./Grounded-SAM-2')
@@ -39,11 +39,11 @@ from visualization.rerun_client import RerunClient
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class GroundedSAM2Processor(RTSPConsumer):
-    def __init__(self, rtsp_url: str):
+class GroundedSAM2Processor(WebSocketVideoConsumer):
+    def __init__(self, ws_url: str):
         # Frame processor: process every frame for best tracking
         frame_skip = int(os.getenv('FRAME_PROCESSOR_SKIP', '1'))
-        super().__init__(rtsp_url, "FrameProcessor", frame_skip)
+        super().__init__(ws_url, "FrameProcessor", frame_skip)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Initialize models
@@ -342,15 +342,13 @@ class GroundedSAM2Processor(RTSPConsumer):
 
 def main():
     """Main entry point"""
-    # RTSP URL
-    rtsp_host = os.getenv('RTSP_HOST', '127.0.0.1')
-    rtsp_port = os.getenv('RTSP_PORT', 8554)
-    rtsp_url = f"rtsp://{rtsp_host}:{rtsp_port}/drone"
+    # WebSocket URL
+    ws_url = os.getenv('VIDEO_STREAM_URL', 'ws://server:5001/ws/video/consume')
     
-    logger.info(f"Connecting to RTSP stream at {rtsp_url}")
+    logger.info(f"Connecting to WebSocket stream at {ws_url}")
     
     # Create processor
-    processor = GroundedSAM2Processor(rtsp_url)
+    processor = GroundedSAM2Processor(ws_url)
     
     try:
         # Run processing loop

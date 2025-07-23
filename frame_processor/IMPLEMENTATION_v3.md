@@ -1,39 +1,42 @@
-# Grounded-SAM-2 with MediaMTX RTSP Streaming Implementation Plan
+# Grounded-SAM-2 with WebSocket Streaming Implementation Plan
 
 ## Overview
-This plan modifies your drone server to stream H.264 video via MediaMTX RTSP server to three specialized services: frame_processor (Grounded-SAM-2), slam3r, and storage for parallel processing.
+This plan simplifies the video streaming architecture by using WebSocket connections directly between the server and consumers, eliminating the need for FFmpeg, MediaMTX, and RTSP protocol complexity.
 
 ## Architecture
 ```
-Drone → WebSocket → server/main.py → FFmpeg → MediaMTX RTSP Server ├─→ frame_processor (Grounded-SAM-2)
-                            ↓                                       ├─→ slam3r (SLAM processing)
-                        RabbitMQ                                    └─→ storage (Recording/archival)
-                    (IMU/telemetry data)
+Drone/Simulator → WebSocket → server/main.py → WebSocket ├─→ frame_processor (Grounded-SAM-2)
+                     ↓              ↓           (H.264)   ├─→ slam3r (SLAM processing)
+                (custom headers)  (strip headers)         └─→ storage (Recording/archival)
+                     ↓              ↓
+                  /ws/video      /ws/h264_stream
+
+Separate data path:
+Phone → WebSocket → /ws/phone → RabbitMQ (IMU/telemetry data)
 ```
 
-MediaMTX acts as a proper RTSP server that:
-- Accepts H.264 stream pushed from FFmpeg
-- Serves multiple RTSP clients concurrently
-- Handles RTSP protocol negotiation and transport
+Key points:
+- Server receives custom header packets from Android/Simulator
+- Server strips headers and relays pure H.264 to consumers
+- Each consumer connects via WebSocket and receives raw H.264 stream
+- OpenCV can directly consume WebSocket H.264 streams
 
 ## Phase 1: Modify server/main.py
 
 ### 1.1 Add Required Imports
 ```python
 # Add these imports at the top of server/main.py
-import subprocess
-import queue
-import threading
-import shutil  # For checking if ffmpeg is installed
+import asyncio
+from typing import Set, Dict
+import weakref
 ```
 
-### 1.2 Add Global Variables
+### 1.2 Add Global Variables for WebSocket Broadcasting
 ```python
 # Add near other global variables (after line ~90)
-rtsp_process = None
-rtsp_queue = queue.Queue(maxsize=100)
-rtsp_thread = None
-RTSP_PORT = int(os.getenv('RTSP_PORT', 8554))
+# Store WebSocket connections for H.264 consumers
+h264_consumers: Set[weakref.ref] = set()
+consumer_queues: Dict[int, asyncio.Queue] = {}
 ```
 
 ### 1.3 Add Prometheus Metrics
@@ -42,23 +45,47 @@ RTSP_PORT = int(os.getenv('RTSP_PORT', 8554))
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
 
 # Prometheus metrics
-rtsp_health_metric = Gauge('rtsp_server_healthy', 'RTSP server health status')
-rtsp_queue_size_metric = Gauge('rtsp_queue_size', 'Current RTSP queue size')
+h264_consumers_count = Gauge('h264_consumers_connected', 'Number of connected H.264 consumers')
+h264_frames_relayed = Counter('h264_frames_relayed_total', 'Total H.264 frames relayed to consumers')
+h264_bytes_relayed = Counter('h264_bytes_relayed_total', 'Total H.264 bytes relayed to consumers')
 video_bandwidth_metric = Gauge('video_bandwidth_mbps', 'Current video bandwidth in Mbps')
-frames_dropped_metric = Counter('rtsp_frames_dropped_total', 'Total frames dropped due to queue full')
-rtsp_restarts_metric = Counter('rtsp_server_restarts_total', 'Total RTSP server restarts')
+consumer_queue_size = Gauge('consumer_queue_size', 'Average consumer queue size')
 ```
 
-### 1.4 Add RTSP Server Functions with Monitoring
+### 1.4 Add WebSocket Broadcasting Functions
 ```python
 # Add after the global variables section
 
-def check_ffmpeg():
-    """Check if FFmpeg is installed"""
-    if not shutil.which('ffmpeg'):
-        logger.error("FFmpeg not found! Please install FFmpeg in the container.")
-        return False
-    return True
+async def broadcast_h264_to_consumers(h264_data: bytes):
+    """Broadcast H.264 data to all connected consumers"""
+    if not h264_data:
+        return
+    
+    # Update metrics
+    h264_frames_relayed.inc()
+    h264_bytes_relayed.inc(len(h264_data))
+    
+    # Send to all consumer queues
+    dead_queues = []
+    for queue_id, queue in consumer_queues.items():
+        try:
+            # Non-blocking put with small queue to prevent memory issues
+            queue.put_nowait(h264_data)
+        except asyncio.QueueFull:
+            logger.warning(f"Consumer {queue_id} queue full, dropping frame")
+            dead_queues.append(queue_id)
+    
+    # Clean up dead queues
+    for queue_id in dead_queues:
+        consumer_queues.pop(queue_id, None)
+    
+    # Update consumer count metric
+    h264_consumers_count.set(len(consumer_queues))
+    
+    # Update average queue size
+    if consumer_queues:
+        avg_size = sum(q.qsize() for q in consumer_queues.values()) / len(consumer_queues)
+        consumer_queue_size.set(avg_size)
 
 def start_rtsp_server():
     """Start FFmpeg to push H.264 stream to MediaMTX RTSP server"""

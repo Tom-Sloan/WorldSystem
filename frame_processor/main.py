@@ -21,12 +21,14 @@ import torch
 import os
 import threading
 import queue
+from datetime import datetime
 
 from core.config import Config
 from core.utils import get_logger, sync_ntp_time, get_ntp_time_ns, async_sync_ntp_time
 from core.performance_monitor import get_performance_monitor, DetailedTimer
 from core.h264_decoder import H264StreamDecoder
 from pipeline.publisher import RabbitMQPublisher
+from pipeline.output_manager import LocalOutputManager, MaskData
 from video.processor import VideoProcessor
 from external.lens_identifier import LensIdentifier
 
@@ -50,48 +52,34 @@ class WebSocketVideoAdapter(WebSocketVideoConsumer):
         frame_skip = int(os.getenv('FRAME_PROCESSOR_SKIP', '1'))
         super().__init__(ws_url, "FrameProcessor", frame_skip)
         self.service = frame_processor_service
-        self.frame_queue = asyncio.Queue(maxsize=30)
-        self.processing_task = None
+        self._frame_timestamps = {}  # Store timestamps for frames
         
     def process_frame(self, frame: np.ndarray, frame_number: int):
         """Process frame from WebSocket - called by base class in sync context"""
-        try:
-            # Put frame in async queue for processing
-            # Use nowait since we're in sync context
-            self.frame_queue.put_nowait((frame, frame_number, time.time()))
-        except asyncio.QueueFull:
-            logger.warning(f"Frame queue full, dropping frame {frame_number}")
-            
-    async def start_processing(self):
-        """Start async processing of frames from queue"""
-        self.processing_task = asyncio.create_task(self._process_frames())
+        # Store timestamp for this frame
+        timestamp = time.time()
+        self._frame_timestamps[frame_number] = timestamp
         
-    async def _process_frames(self):
-        """Async task to process frames from the queue"""
+        # Run async processing in a thread-safe way
         websocket_id = "websocket_stream"
         
-        while self.is_running:
+        # Schedule the coroutine to run on the main event loop
+        future = asyncio.run_coroutine_threadsafe(
+            self.service._process_websocket_frame(
+                websocket_id, frame, frame_number, timestamp
+            ),
+            self.service._event_loop
+        )
+        
+        # Don't wait for result to avoid blocking
+        # Log any exceptions that occur
+        def handle_result(fut):
             try:
-                # Get frame from queue
-                frame, frame_number, timestamp = await asyncio.wait_for(
-                    self.frame_queue.get(), timeout=1.0
-                )
-                
-                # Process through existing pipeline
-                await self.service._process_websocket_frame(
-                    websocket_id, frame, frame_number, timestamp
-                )
-                
-            except asyncio.TimeoutError:
-                continue
+                fut.result()
             except Exception as e:
-                logger.error(f"Error processing frame: {e}")
-                
-    async def stop_async(self):
-        """Stop async processing"""
-        self.is_running = False
-        if self.processing_task:
-            await self.processing_task
+                logger.error(f"Error in async frame processing: {e}")
+        
+        future.add_done_callback(handle_result)
 
 
 # Prometheus metrics
@@ -131,11 +119,11 @@ class FrameProcessorService:
         self.video_processor = None
         self.lens_identifier = None
         self.lens_batch_processor = None
-        self.rerun_client = None
+        self.output_manager = None  # Replaces rerun_client
         
         # WebSocket video consumer
         self.websocket_consumer = None
-        self.websocket_task = None
+        self._event_loop = None  # Store event loop for WebSocket adapter
         
         # Initialize performance monitor
         self.monitor = get_performance_monitor()
@@ -366,16 +354,15 @@ class FrameProcessorService:
         if result.tracking_result.frame_number % 30 == 0:
             logger.info(f"Video processing FPS: {result.fps:.1f}")
         
-        # Publish to Rerun if enabled
-        if self.config.rerun_enabled and self.rerun_client:
-            # Convert masks to Detection format for visualization
-            from visualization.rerun_client import Detection
-            detections = []
-            for mask_data in result.tracking_result.masks:
-                if 'segmentation' in mask_data and mask_data['segmentation'] is not None:
-                    # Get bounding box from segmentation
-                    seg = mask_data['segmentation']
+        # Save outputs locally
+        if self.output_manager:
+            # Convert tracking results to MaskData format
+            mask_data_list = []
+            for mask_info in result.tracking_result.masks:
+                if 'segmentation' in mask_info and mask_info['segmentation'] is not None:
+                    seg = mask_info['segmentation']
                     if seg.sum() > 0:
+                        # Get bounding box from segmentation
                         y_coords, x_coords = np.where(seg)
                         bbox = [
                             int(x_coords.min()),
@@ -383,52 +370,24 @@ class FrameProcessorService:
                             int(x_coords.max()),
                             int(y_coords.max())
                         ]
-                        detection = Detection(
+                        
+                        mask_data = MaskData(
+                            instance_id=mask_info.get('object_id', 0),
+                            mask=seg,
+                            class_name=f"Object_{mask_info.get('object_id', 0)}",
                             bbox=bbox,
-                            class_name=f"Object_{mask_data.get('object_id', 0)}",
-                            confidence=mask_data.get('confidence', 0.9),
-                            mask=seg
+                            confidence=mask_info.get('confidence', 0.9),
+                            area=int(seg.sum())
                         )
-                        detections.append(detection)
+                        mask_data_list.append(mask_data)
             
-            # Convert tracks to TrackedObject format
-            from visualization.rerun_client import TrackedObject
-            tracked_objects = []
-            for track in result.tracking_result.tracks:
-                tracked = TrackedObject(
-                    id=track.get('object_id', 0),
-                    bbox=track.get('bbox', [0, 0, 0, 0]),
-                    class_name=f"Track_{track.get('object_id', 0)}"
-                )
-                tracked_objects.append(tracked)
-            
-            # Log the frame with segmentation overlay
-            self.rerun_client.log_frame(
+            # Save frame outputs
+            self.output_manager.save_frame_outputs(
                 frame=frame,
-                detections=detections,
-                active_tracks=tracked_objects,
+                masks=mask_data_list,
                 frame_number=result.tracking_result.frame_number,
-                timestamp_ns=timestamp_ns,
-                websocket_id=websocket_id
+                timestamp=timestamp_ns / 1e9 if timestamp_ns else None
             )
-            
-            # Log enhanced objects to Rerun grid only if enhancement is enabled
-            if (hasattr(result, 'enhanced_crops') and result.enhanced_crops and 
-                hasattr(self.config, 'enhancement_enabled') and self.config.enhancement_enabled):
-                for crop_data in result.enhanced_crops:
-                    # Create a TrackedObject-like structure for the enhanced object
-                    tracked = TrackedObject(
-                        id=crop_data.get('object_id', 0),
-                        bbox=crop_data.get('bbox', [0, 0, 0, 0]),
-                        class_name=f"Object_{crop_data.get('object_id', 0)}"
-                    )
-                    # Add the enhanced image
-                    tracked.best_frame = crop_data.get('enhanced_crop', crop_data.get('original_crop'))
-                    tracked.created_at = timestamp_ns
-                    tracked.confidence = crop_data.get('confidence', 0.9)
-                    
-                    # Log to Rerun enhanced objects grid
-                    self.rerun_client.log_enhanced_object(tracked)
         
         # Convert video tracks to detection format for publishing
         if result.tracking_result.tracks:
@@ -584,19 +543,12 @@ class FrameProcessorService:
             import traceback
             traceback.print_exc()
     
-    async def _run_websocket_consumer(self):
-        """Run WebSocket consumer in background task"""
-        try:
-            # Run the WebSocket consumer
-            await asyncio.to_thread(self.websocket_consumer.run)
-        except Exception as e:
-            logger.error(f"WebSocket consumer error: {e}")
-            # If WebSocket fails, the service should probably stop
-            self.running = False
+    # Removed _run_websocket_consumer method - no longer needed
     
     async def run(self):
         """Main run loop."""
         self.running = True
+        self._event_loop = asyncio.get_event_loop()  # Store event loop
         
         try:
             # Update component status
@@ -618,15 +570,12 @@ class FrameProcessorService:
             logger.info("Initializing video processing components...")
             self.video_processor = VideoProcessor(self.config)
             
-            # Initialize Rerun client if enabled
-            if self.config.rerun_enabled:
-                try:
-                    from visualization.rerun_client import RerunClient
-                    self.rerun_client = RerunClient(self.config)
-                    logger.info("Rerun client initialized successfully")
-                except Exception as e:
-                    logger.warning(f"Failed to initialize Rerun client: {e}")
-                    self.rerun_client = None
+            # Initialize output manager for local saving
+            self.output_manager = LocalOutputManager(
+                output_dir=os.getenv('OUTPUT_DIR', '/app/outputs'),
+                session_id=datetime.now().strftime('%Y%m%d_%H%M%S')
+            )
+            logger.info("Local output manager initialized successfully")
             
             # Initialize API client for lens identifier
             from external.api_client import APIClient
@@ -684,25 +633,26 @@ class FrameProcessorService:
             else:
                 self.monitor.update_component_status('api', status='⏸️ Disabled')
             
-            # Update Rerun status
-            if self.config.rerun_enabled:
-                self.monitor.update_component_status('rerun', status='✅ Connected')
-            else:
-                self.monitor.update_component_status('rerun', status='⏸️ Disabled')
+            # Update output status
+            self.monitor.update_component_status('output', name='Local Output', status='✅ Ready')
             
             # Initialize WebSocket video consumer
-            ws_host = os.getenv('WS_HOST', 'server')
-            ws_port = os.getenv('WS_PORT', '5001')
-            ws_url = f"ws://{ws_host}:{ws_port}/ws/video/consume"
+            # Use VIDEO_STREAM_URL if set, otherwise construct from host/port
+            ws_url = os.getenv('VIDEO_STREAM_URL')
+            if not ws_url:
+                ws_host = os.getenv('WS_HOST', '127.0.0.1')
+                ws_port = os.getenv('WS_PORT', '5001')
+                ws_url = f"ws://{ws_host}:{ws_port}/ws/video/consume"
             
             logger.info(f"Connecting to WebSocket video stream at {ws_url}")
             self.websocket_consumer = WebSocketVideoAdapter(self, ws_url)
             
-            # Start WebSocket processing
-            await self.websocket_consumer.start_processing()
-            
-            # Start WebSocket consumer in background task
-            self.websocket_task = asyncio.create_task(self._run_websocket_consumer())
+            # Start WebSocket consumer in background thread (it runs its own loop)
+            websocket_thread = threading.Thread(
+                target=self.websocket_consumer.run,
+                daemon=True
+            )
+            websocket_thread.start()
             
             # Setup RabbitMQ consumers (only for mode messages now)
             await self.mode_queue.consume(self.process_mode_message)
@@ -727,13 +677,6 @@ class FrameProcessorService:
             if self.websocket_consumer:
                 logger.info("Stopping WebSocket consumer...")
                 self.websocket_consumer.stop()
-                if self.websocket_task:
-                    self.websocket_task.cancel()
-                    try:
-                        await self.websocket_task
-                    except asyncio.CancelledError:
-                        pass
-                await self.websocket_consumer.stop_async()
             
             # Cleanup video processor streams
             if self.video_processor:
@@ -741,11 +684,10 @@ class FrameProcessorService:
                 for stream_id in list(self.video_processor.active_streams.keys()):
                     await self.video_processor.cleanup_stream(stream_id)
             
-            # Cleanup Rerun video streams
-            if self.rerun_client:
-                logger.info("Cleaning up Rerun video streams...")
-                for websocket_id in list(self.rerun_client.video_streams.keys()):
-                    self.rerun_client.cleanup_video_stream(websocket_id)
+            # Cleanup output manager
+            if self.output_manager:
+                logger.info("Finalizing local outputs...")
+                self.output_manager.cleanup()
             
             # Stop batch processor
             if hasattr(self, 'lens_batch_processor') and self.lens_batch_processor:

@@ -69,7 +69,7 @@ DIMENSION_CACHE_EXPIRY_DAYS=30
 
 ## How It Works
 
-1. **Detection & Tracking**: YOLO detects objects, tracker maintains their history
+1. **Detection & Tracking**: SAM2 segments objects, tracker maintains their history
 2. **Quality Assessment**: Each frame is scored for quality (sharpness, exposure, etc.)
 3. **Timed Processing**: After 1.5s of tracking, best frame is selected
 4. **Enhancement**: Image is enhanced for better API recognition
@@ -106,7 +106,7 @@ tracker = ObjectTracker()
 
 ## Performance
 
-- GPU acceleration for YOLO and enhancement
+- GPU acceleration for SAM2 and enhancement
 - Caching for API responses (30 days)
 - Efficient frame selection reduces API calls
 - Prometheus metrics on port 8003

@@ -74,9 +74,16 @@ class WebSocketVideoConsumer(ABC):
                 img = frame.to_ndarray(format='bgr24')
                 return img
                 
-        except av.AVError as e:
-            # Normal for partial frames or when waiting for keyframe
-            self.logger.debug(f"[{self.service_name}] Decode error (normal during init): {e}")
+        except Exception as e:
+            # Check if it's an AV error - normal for partial frames or when waiting for keyframe
+            if hasattr(av, 'AVError') and isinstance(e, av.AVError):
+                self.logger.debug(f"[{self.service_name}] Decode error (normal during init): {e}")
+            elif 'no frame' in str(e).lower():
+                # Common error when waiting for keyframe
+                self.logger.debug(f"[{self.service_name}] Waiting for keyframe: {e}")
+            else:
+                # Re-raise unexpected errors
+                raise
         except Exception as e:
             self.logger.error(f"[{self.service_name}] Unexpected decode error: {e}")
         return None

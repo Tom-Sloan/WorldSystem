@@ -72,7 +72,7 @@ services:
       - RABBITMQ_URL=amqp://127.0.0.1:5672
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - API_RESULTS_EXCHANGE=api_results_exchange
-      - FRAME_PROCESSOR_SKIP=1  # Process every frame
+      - FRAME_PROCESSOR_SKIP=${FRAME_PROCESSOR_SKIP:-1}  # Process every Nth frame (1=no skip)
       
       # ========== Configuration ==========
       - CONFIG_PROFILE=${CONFIG_PROFILE:-balanced}  # performance, balanced, quality
@@ -80,7 +80,7 @@ services:
       # Performance settings (auto-configured by profile)
       - TARGET_FPS=${TARGET_FPS:-15}
       - PROCESSING_RESOLUTION=${PROCESSING_RESOLUTION:-720}
-      - MODEL_NAME=${MODEL_NAME:-sam2_base_plus}  # Options: sam2_tiny, sam2_small, sam2_base_plus, sam2_large, fastsam_x
+      - MODEL_NAME=${MODEL_NAME:-sam2_tiny}  # Options: sam2_tiny, sam2_small, sam2_base_plus, sam2_large, fastsam_x
       
       # ========== System Configuration ==========
       - DEVICE=cuda

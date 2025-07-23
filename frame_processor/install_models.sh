@@ -1,7 +1,7 @@
 #!/bin/bash
 # frame_processor/install_models.sh
 
-echo "Installing SAM2 and FastSAM models..."
+echo "Installing SAM2 models..."
 
 # Create models directory
 mkdir -p models
@@ -31,8 +31,7 @@ download_if_missing "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sa
 download_if_missing "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt" "models/sam2_hiera_small.pt"
 download_if_missing "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_base_plus.pt" "models/sam2_hiera_base_plus.pt"
 
-# Download FastSAM model
-download_if_missing "https://github.com/CASIA-IVA-Lab/FastSAM/releases/download/v0.0.1/FastSAM-x.pt" "models/FastSAM-x.pt"
+# FastSAM model removed - using SAM2 exclusively
 
 # Verify downloads
 echo "Verifying downloads..."

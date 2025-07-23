@@ -1,0 +1,15 @@
+{
+  "session_id": "20250723_155648",
+  "start_time": 1753286208.5433729,
+  "video_url": "ws://127.0.0.1:5001/ws/video/consume",
+  "chunk_duration_seconds": 60,
+  "idle_timeout_seconds": 10.0,
+  "codec": "MJPEG",
+  "chunks": [],
+  "partial_chunks": [],
+  "total_frames": 300,
+  "estimated_fps": 14.71996083782227,
+  "last_updated": 1753286246.3640642,
+  "current_chunk_frames": 300,
+  "last_frame_time": 1753286246.3615773
+}

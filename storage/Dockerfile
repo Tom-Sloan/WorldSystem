@@ -21,12 +21,14 @@ COPY storage/ /app/storage/
 
 # Install Python dependencies
 # Note: opencv-python-headless doesn't include video codecs
-# We need the full opencv-python for RTSP support
+# We need the full opencv-python for video writing support
 RUN pip install --no-cache-dir \
     opencv-contrib-python==4.8.1.78 \
     aio-pika==9.0.0 \
     numpy==1.24.3 \
-    prometheus-client==0.17.1
+    prometheus-client==0.17.1 \
+    websockets==12.0 \
+    av==11.0.0
 
 # Create recordings directory
 RUN mkdir -p /app/recordings
@@ -35,5 +37,5 @@ RUN mkdir -p /app/recordings
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Run RTSP storage processor
-CMD ["python", "/app/storage/rtsp_storage.py"] 
+# Run WebSocket storage processor
+CMD ["python", "/app/storage/websocket_storage.py"] 

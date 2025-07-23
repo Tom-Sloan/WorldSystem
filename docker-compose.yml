@@ -15,25 +15,6 @@ services:
     networks:
       - default
   
-  mediamtx:
-    image: bluenviron/mediamtx:latest-ffmpeg
-    container_name: mediamtx
-    network_mode: host
-    environment:
-      - MTX_PROTOCOLS=tcp
-      - MTX_RTSPADDRESS=:8554
-      - MTX_RTPADDRESS=:8000
-      - MTX_RTCPADDRESS=:8001
-      - MTX_WEBRTCADDRESS=:8889
-      - MTX_LOGLEVEL=info
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9997/v3/config/get"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    
   nginx:
     build: ./nginx
     ports:
@@ -61,7 +42,6 @@ services:
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
       - ANALYSIS_MODE_EXCHANGE=analysis_mode_exchange
       - RESTART_EXCHANGE=restart_exchange
-      - RTSP_PORT=8554
       - BIND_HOST=0.0.0.0
       - API_PORT=5001
       - PYTHONUNBUFFERED=1
@@ -69,9 +49,8 @@ services:
       - "5001:5001"  # API/WebSocket
     depends_on:
       - rabbitmq
-      - mediamtx
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5001/health/rtsp"]
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health/video"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -86,9 +65,9 @@ services:
     profiles: ["frame_processor"]
     network_mode: host
     environment:
-      # ========== RTSP Configuration ==========
-      - RTSP_HOST=127.0.0.1
-      - RTSP_PORT=8554
+      # ========== WebSocket Video Configuration ==========
+      - VIDEO_STREAM_URL=ws://127.0.0.1:5001/ws/video/consume
+      - VIDEO_STREAM_TYPE=websocket
       # ========== Core RabbitMQ Configuration ==========
       - RABBITMQ_URL=amqp://127.0.0.1:5672
       - PROCESSED_FRAMES_EXCHANGE=processed_frames_exchange
@@ -169,7 +148,7 @@ services:
       - rabbitmq
       - server
     healthcheck:
-      test: ["CMD", "python3", "-c", "import cv2; cv2.VideoCapture('rtsp://127.0.0.1:8554/drone').isOpened()"]
+      test: ["CMD", "python3", "-c", "import requests; requests.get('http://127.0.0.1:5001/health').raise_for_status()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -676,9 +655,9 @@ services:
     container_name: worldsystem-storage
     network_mode: host
     environment:
-      # ========== RTSP Configuration ==========
-      - RTSP_HOST=127.0.0.1
-      - RTSP_PORT=8554
+      # ========== WebSocket Video Configuration ==========
+      - VIDEO_STREAM_URL=ws://127.0.0.1:5001/ws/video/consume
+      - VIDEO_STREAM_TYPE=websocket
       # ========== RabbitMQ Configuration ==========
       - RABBITMQ_URL=amqp://127.0.0.1:5672
       - FRAME_PROCESSOR_SKIP=1  # Record every frame
@@ -686,6 +665,9 @@ services:
       # ========== Storage Configuration ==========
       - STORAGE_PATH=/app/recordings
       - VIDEO_CHUNK_DURATION_SECONDS=${VIDEO_CHUNK_DURATION_SECONDS:-60}  # 1 minute chunks by default
+      - VIDEO_IDLE_TIMEOUT_SECONDS=${VIDEO_IDLE_TIMEOUT_SECONDS:-10.0}  # Save partial chunk after 10s of no frames
+      - MIN_CHUNK_FRAMES=${MIN_CHUNK_FRAMES:-30}  # Minimum frames to save a partial chunk
+      - USE_H264_CODEC=${USE_H264_CODEC:-false}  # Use H.264 codec instead of MJPEG
       
       # ========== System Configuration ==========
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -699,11 +681,10 @@ services:
       - ${WORKSPACE}/data:/data  # Legacy compatibility
       
     depends_on:
-      - mediamtx
       - rabbitmq
       
     healthcheck:
-      test: ["CMD", "python", "-c", "import cv2; cv2.VideoCapture('rtsp://127.0.0.1:8554/drone').isOpened()"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://127.0.0.1:5001/health').raise_for_status()"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -6,6 +6,7 @@ ntplib>=0.4.0
 rerun-sdk==0.18.2  # Last version compatible with numpy 1.x
 prometheus_client>=0.22.0
 av>=15.0.0  # PyAV for H.264 video decoding
+websockets==12.0
 
 # PyTorch - matching Grounded-SAM-2 requirements (CUDA 12.1+)
 torch>=2.3.1

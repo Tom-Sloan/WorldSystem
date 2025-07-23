@@ -290,34 +290,12 @@ class Config(BaseSettings):
         description="Minimum mask area for video mode"
     )
     
-    # ========== FastSAM Configuration ==========
-    fastsam_model_path: Optional[str] = Field(
-        default=None,
-        description="Path to FastSAM model (auto-determined from model_name if not set)"
-    )
-    fastsam_conf_threshold: float = Field(
-        default=0.4,
-        ge=0.0,
-        le=1.0,
-        description="Confidence threshold for FastSAM"
-    )
-    fastsam_iou_threshold: float = Field(
-        default=0.9,
-        ge=0.0,
-        le=1.0,
-        description="IoU threshold for NMS"
-    )
-    fastsam_max_det: int = Field(
-        default=300,
-        ge=1,
-        le=1000,
-        description="Maximum detections per image"
-    )
+    # ========== Removed FastSAM/YOLO Configuration - Using SAM2 exclusively ==========
     
     # ========== Video Processing Configuration ==========
     video_tracker_type: str = Field(
         default="sam2_realtime",
-        description="Video tracker to use (sam2_realtime, yolo_track, grounded_sam2)"
+        description="Video tracker to use (sam2_realtime, grounded_sam2)"
     )
     
     # Configuration profile
@@ -565,19 +543,7 @@ class Config(BaseSettings):
             if hasattr(self, 'sam_min_mask_region_area') and self.sam_min_mask_region_area == 500:  # default
                 self.sam_min_mask_region_area = params.get('min_mask_region_area', 500)
         
-        # Set FastSAM-specific configs
-        elif model_config.model_type == "fastsam":
-            if self.fastsam_model_path is None:
-                self.fastsam_model_path = model_config.checkpoint_path
-            
-            # Apply recommended parameters if not overridden
-            params = model_config.parameters
-            if hasattr(self, 'fastsam_conf_threshold') and self.fastsam_conf_threshold == 0.4:  # default
-                self.fastsam_conf_threshold = params.get('conf_threshold', 0.4)
-            if hasattr(self, 'fastsam_iou_threshold') and self.fastsam_iou_threshold == 0.9:  # default
-                self.fastsam_iou_threshold = params.get('iou_threshold', 0.9)
-            if hasattr(self, 'fastsam_max_det') and self.fastsam_max_det == 300:  # default
-                self.fastsam_max_det = params.get('max_det', 300)
+        # FastSAM configuration removed - using SAM2 exclusively
         
         return self
     

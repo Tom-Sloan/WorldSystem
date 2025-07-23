@@ -19,7 +19,7 @@ from pathlib import Path
 class ModelConfig:
     """Complete configuration for a model."""
     name: str
-    model_type: str  # "sam2", "fastsam", etc.
+    model_type: str  # "sam2", etc.
     config_file: Optional[str]  # YAML config file name
     checkpoint_path: str  # Path to model weights
     memory_mb: int  # GPU memory requirement in MB
@@ -98,33 +98,16 @@ SAM2_MODELS = {
     ),
 }
 
-# FastSAM Model Configurations
-FASTSAM_MODELS = {
-    "fastsam_x": ModelConfig(
-        name="fastsam_x",
-        model_type="fastsam",
-        config_file=None,  # FastSAM doesn't use YAML configs
-        checkpoint_path="/app/models/FastSAM-x.pt",
-        memory_mb=1500,
-        parameters={
-            "conf_threshold": 0.4,
-            "iou_threshold": 0.9,
-            "max_det": 300,
-            "retina_masks": True,
-        }
-    ),
-}
+# FastSAM/YOLO Models removed - using SAM2 exclusively
 
 # All models registry
 ALL_MODELS = {
     **SAM2_MODELS,
-    **FASTSAM_MODELS,
 }
 
 # Default models for each type
 DEFAULT_MODELS = {
     "sam2": "sam2_base_plus",
-    "fastsam": "fastsam_x",
 }
 
 # Model size mappings for dynamic switching
@@ -141,7 +124,7 @@ def get_model_config(model_name: str) -> ModelConfig:
     Get model configuration by name.
     
     Args:
-        model_name: Name of the model (e.g., "sam2_tiny", "fastsam_x")
+        model_name: Name of the model (e.g., "sam2_tiny", "sam2_small")
         
     Returns:
         ModelConfig object
@@ -162,7 +145,7 @@ def get_default_model(model_type: str) -> ModelConfig:
     Get default model for a given type.
     
     Args:
-        model_type: Type of model ("sam2", "fastsam")
+        model_type: Type of model ("sam2")
         
     Returns:
         ModelConfig object

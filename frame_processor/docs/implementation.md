@@ -5,7 +5,7 @@
 This enhanced frame processor integrates object detection, tracking, and real-world dimension estimation to provide accurate scaling for 3D scene reconstruction. By identifying objects in the scene and retrieving their real-world dimensions, the system can automatically determine the correct scale for the entire 3D reconstruction.
 
 ### Key Features:
-- **Object Detection & Tracking** - YOLO-based detection with IOU tracking
+- **Object Detection & Tracking** - SAM2-based segmentation with IOU tracking
 - **Dimension Estimation** - Google Lens + Perplexity API for real-world object sizes
 - **Weighted Scale Calculation** - Confidence-based averaging of multiple object dimensions
 - **Real-time Visualization** - Rerun.io integration for monitoring and debugging
@@ -33,8 +33,8 @@ Without real-world scale information, 3D reconstructions are dimensionless - a r
 │   ┌─────────────────┐       │   ┌─────────────┬─────────────┐ │
 │   │                 │       │   │  Original   │  Enhanced   │ │
 │   │   Live Video    │       │   │             │             │ │
-│   │   + YOLO        │       │   │             │             │ │
-│   │   Detections    │       │   └─────────────┴─────────────┘ │
+│   │   + SAM2        │       │   │             │             │ │
+│   │   Segmentation  │       │   └─────────────┴─────────────┘ │
 │   │                 │       │                                   │
 │   └─────────────────┘       │   Google Lens Results            │
 │                             │   ┌───────────────────────────┐ │
@@ -358,9 +358,9 @@ import torch
 class RerunEnhancementPipeline:
     """Enhancement pipeline with Rerun visualization"""
     
-    def __init__(self, yolo_model, google_lens_api_key, gcs_bucket_name="your-bucket-name"):
+    def __init__(self, sam2_model, google_lens_api_key, gcs_bucket_name="your-bucket-name"):
         # Initialize base components
-        self.yolo_model = yolo_model
+        self.sam2_model = sam2_model
         self.enhancer = LightEnhancement(device='cuda')
         
         # Initialize tracker with visualizer
@@ -405,8 +405,8 @@ class RerunEnhancementPipeline:
             rr.Image(frame).compress(jpeg_quality=80)
         )
         
-        # Run YOLO detection
-        results = self.yolo_model(frame)
+        # Run SAM2 segmentation
+        results = self.sam2_model(frame)
         
         # Extract detections
         detections = []
@@ -417,7 +417,7 @@ class RerunEnhancementPipeline:
         for detection in results.xyxy[0]:
             x1, y1, x2, y2, conf, cls = detection
             bbox = [int(x1), int(y1), int(x2), int(y2)]
-            class_name = self.yolo_model.names[int(cls)]
+            class_name = self.get_object_class(detection)  # SAM2 doesn't provide classes
             detections.append((bbox, class_name, float(conf)))
             
             # Prepare for batch logging
@@ -428,7 +428,7 @@ class RerunEnhancementPipeline:
         # Log all detections at once
         if all_boxes:
             rr.log(
-                f"{self.visualizer.DETECTIONS_PATH}/yolo",
+                f"{self.visualizer.DETECTIONS_PATH}/sam2",
                 rr.Boxes2D(
                     array=all_boxes,
                     array_format=rr.Box2DFormat.XYWH,
@@ -778,12 +778,12 @@ import rerun as rr
 load_dotenv()
 
 def main():
-    # Initialize YOLO model
-    yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
+    # Initialize SAM2 model
+    sam2_model = initialize_sam2_model()  # Your SAM2 initialization
     
     # Create pipeline with Rerun visualization
     pipeline = RerunEnhancementPipeline(
-        yolo_model=yolo_model,
+        sam2_model=sam2_model,
         google_lens_api_key=os.environ.get("SERPAPI_API_KEY"),
         gcs_bucket_name="your-gcs-bucket-name"  # Replace with your bucket
     )
@@ -813,7 +813,7 @@ if __name__ == "__main__":
 - Processing count tracks how many times each object has been analyzed
 
 ### 2. **Focused 2D Visualization** (3D handled by separate service)
-- **Camera Feed**: Live video with YOLO detections overlaid
+- **Camera Feed**: Live video with SAM2 segmentations overlaid
 - **Enhancement Results**: Side-by-side original vs enhanced images
 - **Active Object Tracking**: Real-time list of tracked objects with scores
 - **Quality Score Timeline**: Temporal view of quality metrics
@@ -855,7 +855,7 @@ if __name__ == "__main__":
 ## How Scene Scaling Works
 
 ### 1. **Object Detection & Tracking**
-The system continuously detects objects using YOLO and tracks them across frames. Common household objects are ideal references:
+The system continuously segments objects using SAM2 and tracks them across frames. Common household objects are ideal references:
 - Monitors (typically 21-27 inches diagonal)
 - Keyboards (standard ~45cm width)
 - Smartphones (5-7 inches)
@@ -864,7 +864,7 @@ The system continuously detects objects using YOLO and tracks them across frames
 
 ### 2. **Dimension Lookup Pipeline**
 ```
-Frame → YOLO Detection → Track for 1.5s → Select Best Frame → Enhance
+Frame → SAM2 Segmentation → Track for 1.5s → Select Best Frame → Enhance
   ↓
 Google Lens API (Object Identification)
   ↓
@@ -879,7 +879,7 @@ If the system detects:
 - Dell 24" Monitor (539.5mm × 323.5mm) with 92% confidence
 - Logitech Keyboard (430mm × 137mm) with 78% confidence
 
-The weighted average considers both API confidence and YOLO detection confidence to determine the most reliable scale factor.
+The weighted average considers both API confidence and segmentation quality to determine the most reliable scale factor.
 
 ### 4. **Integration with Mesh Service**
 The calculated scale is published to the `scene_scaling_exchange` with:

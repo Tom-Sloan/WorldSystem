@@ -43,6 +43,12 @@ COPY frame_processor/requirements.txt /app/requirements.txt
 # Install Python dependencies
 RUN pip3 install --no-cache-dir -r requirements.txt
 
+# Install WebSocket and Rerun dependencies for unified implementation
+RUN pip3 install --no-cache-dir \
+    websockets==12.0 \
+    av==10.0.0 \
+    rerun-sdk==0.24.0
+
 # Clone Grounded-SAM-2
 RUN git clone https://github.com/IDEA-Research/Grounded-SAM-2.git
 

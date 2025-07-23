@@ -88,7 +88,6 @@ class VideoProcessor:
         """Factory method to create video tracker."""
         tracker_types = {
             "sam2_realtime": SAM2RealtimeTracker,
-            # Future: "yolo_track": YOLOVideoTracker,
             # Future: "grounded_sam2": GroundedSAM2Tracker,
         }
         

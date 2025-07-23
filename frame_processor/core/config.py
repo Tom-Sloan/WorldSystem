@@ -192,18 +192,22 @@ class Config(BaseSettings):
         description="Path to log file"
     )
     
-    # ========== Visualization Configuration ==========
-    rerun_enabled: bool = Field(
+    # ========== Output Configuration ==========
+    output_enabled: bool = Field(
         default=True,
-        description="Enable Rerun visualization"
+        description="Enable local output saving"
     )
-    rerun_viewer_address: str = Field(
-        default="0.0.0.0:9876",
-        description="Rerun viewer address"
+    output_dir: str = Field(
+        default="/app/outputs",
+        description="Directory for saving outputs"
     )
-    rerun_connect_url: str = Field(
-        default="rerun+http://localhost:9876/proxy",
-        description="Rerun connection URL"
+    save_visualizations: bool = Field(
+        default=True,
+        description="Save visualization images"
+    )
+    save_video_summary: bool = Field(
+        default=True,
+        description="Create video summary at end of session"
     )
     
     # ========== Performance Configuration ==========
@@ -296,6 +300,35 @@ class Config(BaseSettings):
     video_tracker_type: str = Field(
         default="sam2_realtime",
         description="Video tracker to use (sam2_realtime, grounded_sam2)"
+    )
+    
+    # ========== Grounded SAM2 Configuration ==========
+    grounded_detection_interval: int = Field(
+        default=30,
+        ge=1,
+        description="Frames between full object detection (1 = every frame)"
+    )
+    grounded_text_prompt: str = Field(
+        default="all objects. item. thing. stuff.",
+        description="Text prompt for open-vocabulary detection"
+    )
+    grounded_box_threshold: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=1.0,
+        description="Box confidence threshold for GroundingDINO"
+    )
+    grounded_text_threshold: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        description="Text matching threshold for GroundingDINO"
+    )
+    grounded_iou_threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="IOU threshold for matching detections to tracks"
     )
     
     # Configuration profile

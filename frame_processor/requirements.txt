@@ -1,11 +1,10 @@
 # Core dependencies
-numpy>=1.24.4,<2.0.0  # Grounded-SAM-2 compatibility 
-opencv-python>=4.7.0,<4.9.0  # Compatible with numpy 1.x
+numpy>=1.24.4,<2.0.0  # Grounded-SAM-2 compatibility, cap below 2.0
+opencv-python>=4.7.0
 aio-pika>=9.4.0
 ntplib>=0.4.0
-rerun-sdk==0.18.2  # Last version compatible with numpy 1.x
 prometheus_client>=0.22.0
-av>=15.0.0  # PyAV for H.264 video decoding
+av>=10.0.0  # PyAV for H.264 video decoding
 websockets==12.0
 
 # PyTorch - matching Grounded-SAM-2 requirements (CUDA 12.1+)
@@ -44,7 +43,7 @@ scikit-image>=0.24.0
 aiofiles>=24.1.0  # For async file operations if needed
 aiohttp>=3.12.0  # For async HTTP requests
 
-# Additional dependencies for SAM/FastSAM
+# Additional dependencies for SAM2
 matplotlib>=3.9.1
 pycocotools>=2.0.8
 onnx>=1.16.0

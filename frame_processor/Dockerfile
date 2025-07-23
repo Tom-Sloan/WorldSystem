@@ -1,31 +1,29 @@
-# Grounded-SAM-2 Frame Processor Dockerfile
-# Using CUDA 12.1 development image for build tools
+# Frame Processor Dockerfile based on Grounded-SAM-2
 FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies matching Grounded-SAM-2 requirements
+# Install system dependencies matching Grounded-SAM-2
 RUN apt-get update && apt-get install -y \
-      wget \
-      ffmpeg \
-      libsm6 \
-      libxext6 \
-      git \
-      nano \
-      vim \
-      ninja-build \
-      gcc \
-      g++ \
-      libgl1-mesa-glx \
-      libglib2.0-0 \
-      libgomp1 \
-      libxrender-dev \
-      libavcodec-dev \
-      libavformat-dev \
-      libavutil-dev \
-      libswscale-dev \
-      build-essential \
+    wget \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    git \
+    nano \
+    vim \
+    ninja-build \
+    gcc-10 \
+    g++-10 \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libgomp1 \
+    libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Set gcc-10 as default compiler
+RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100 \
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-10 100
 
 # Set environment variables for CUDA and build
 ENV CUDA_HOME=/usr/local/cuda
@@ -41,77 +39,56 @@ WORKDIR /app
 COPY frame_processor/requirements.txt /app/requirements.txt
 
 # Install Python dependencies
-RUN pip3 install --no-cache-dir -r requirements.txt
-
-# Install WebSocket and Rerun dependencies for unified implementation
-RUN pip3 install --no-cache-dir \
-    websockets==12.0 \
-    av==10.0.0 \
-    rerun-sdk==0.24.0
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Clone Grounded-SAM-2
 RUN git clone https://github.com/IDEA-Research/Grounded-SAM-2.git
 
-# Install Segment Anything 2 in editable mode
+# Install SAM2
 WORKDIR /app/Grounded-SAM-2
 RUN pip install -e .
 
-# Install Grounding DINO with special flag
+# Install Grounding DINO
 RUN pip install --no-build-isolation -e grounding_dino
 
-# Download model checkpoints
+# Download checkpoints
 RUN mkdir -p checkpoints gdino_checkpoints && \
     cd checkpoints && \
-    # Download SAM2 checkpoint
+    wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt && \
+    wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_base_plus.pt && \
     wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt && \
-    cd ../gdino_checkpoints && \
-    # Download Grounding DINO checkpoint
-    wget -q https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
+    wget -q https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_tiny.pt
 
-# Additional model download script
-WORKDIR /app/Grounded-SAM-2/checkpoints
-RUN bash download_ckpts.sh || true
-
-WORKDIR /app/Grounded-SAM-2/gdino_checkpoints  
-RUN bash download_ckpts.sh || true
+WORKDIR /app/Grounded-SAM-2/gdino_checkpoints
+RUN wget -q https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
 
 # Back to app directory
 WORKDIR /app
 
 # Create necessary directories
-RUN mkdir -p /app/models /app/logs
+RUN mkdir -p /app/models /app/logs /app/outputs
 
-# Copy common utilities
+# Copy application code
 COPY common/ /app/common/
-
-# Copy the existing application structure (for API integration)
 COPY frame_processor/core /app/core/
 COPY frame_processor/external /app/external/
 COPY frame_processor/pipeline /app/pipeline/
-COPY frame_processor/visualization /app/visualization/
-
-# Copy the new Grounded-SAM-2 processor and model configs
+COPY frame_processor/video /app/video/
+COPY frame_processor/main.py /app/
 COPY frame_processor/grounded_sam2_processor.py /app/
 COPY frame_processor/model_configs.py /app/
 
-# Copy Google Cloud credentials if available
-# This is optional - can also be mounted at runtime
-COPY frame_processor/credentials/worldsystem-23f7306a1a75.json* /app/
+# Copy Google Cloud credentials if needed
+COPY frame_processor/credentials/worldsystem-23f7306a1a75.json /app/credentials/worldsystem-23f7306a1a75.json
 
-# Set Python path to include app directory and Grounded-SAM-2
+# Verification script
+RUN echo '#!/bin/bash\necho "Verifying PyTorch installation..."\npython -c "import torch; print(f\"PyTorch version: {torch.__version__}\"); print(f\"CUDA available: {torch.cuda.is_available()}\"); print(f\"CUDA version: {torch.version.cuda}\")"\necho "Verifying Grounded-SAM-2 installation..."\npython -c "from sam2.build_sam import build_sam2; print(\"SAM2 import successful\")"' > /app/verify_install.sh && chmod +x /app/verify_install.sh
+
+# Run verification
+RUN /app/verify_install.sh
+
+# Set Python path
 ENV PYTHONPATH=/app:/app/Grounded-SAM-2
-ENV PYTHONUNBUFFERED=1
-ENV CUDA_VISIBLE_DEVICES=0
 
-# Create a startup script to verify installation
-RUN echo '#!/bin/bash\n\
-echo "Verifying PyTorch installation..."\n\
-python3 -c "import torch; print(f\"PyTorch version: {torch.__version__}\"); print(f\"CUDA available: {torch.cuda.is_available()}\"); print(f\"CUDA version: {torch.version.cuda}\")"\n\
-echo "Verifying Grounded-SAM-2 installation..."\n\
-python3 -c "import sys; sys.path.append(\"/app/Grounded-SAM-2\"); from sam2.build_sam import build_sam2; print(\"SAM2 import successful\")"\n\
-python3 -c "import timm; print(f\"timm version: {timm.__version__}\")"\n\
-echo "Starting frame processor..."\n\
-exec python3 -u /app/grounded_sam2_processor.py' > /app/start.sh && chmod +x /app/start.sh
-
-# Run the Grounded-SAM-2 processor
-CMD ["/app/start.sh"]
+# Default command - run the main processor
+CMD ["python", "main.py"]

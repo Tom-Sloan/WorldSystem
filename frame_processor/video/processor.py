@@ -18,6 +18,8 @@ from core.utils import get_logger, PerformanceTimer
 from core.video_buffer import SAM2LongVideoBuffer
 from .base import VideoTracker, VideoTrackingResult
 from .tracker import SAM2RealtimeTracker
+from .grounded_tracker import GroundedSAM2Tracker
+from .grounded_tracker_continuous import GroundedSAM2ContinuousTracker
 from .prompt_strategies import create_prompt_strategy, PromptStrategy
 from pipeline.enhancer import ImageEnhancer
 
@@ -88,7 +90,8 @@ class VideoProcessor:
         """Factory method to create video tracker."""
         tracker_types = {
             "sam2_realtime": SAM2RealtimeTracker,
-            # Future: "grounded_sam2": GroundedSAM2Tracker,
+            "grounded_sam2": GroundedSAM2Tracker,
+            "grounded_sam2_continuous": GroundedSAM2ContinuousTracker,
         }
         
         tracker_type = config.video_tracker_type

@@ -652,6 +652,7 @@ services:
       context: .
       dockerfile: ./storage/Dockerfile
     image: storage:latest
+    profiles: ["storage"]
     container_name: worldsystem-storage
     network_mode: host
     environment:

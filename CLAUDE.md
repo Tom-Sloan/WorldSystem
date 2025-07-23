@@ -2,130 +2,225 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-You are an expert programmer. Make sure to make clean, maintainable code.
-
-Do not leave placeholders, TODOs, without specifically asking for permission.
-
-Do not use magic numbers where possible. Minimize their use.
-
 ## Project Overview
 
 WorldSystem is a real-time 3D reconstruction and visualization system for drone-based room mapping. It combines SLAM, neural reconstruction, and real-time visualization to create 3D models of indoor spaces with the goal of overlaying fantasy elements in augmented reality.
 
-## Architecture
+## High-Level Architecture
 
-The system uses a microservices architecture with the following data flow:
-1. **Android App** → **Server** (WebSocket): Streams video (30fps) and IMU data
-2. **Server** → **RabbitMQ** → **Frame Processor/SLAM/Storage**: Distributes data
-3. **SLAM3R** → **Shared Memory** → **Mesh Service**: Camera poses via zero-copy IPC
-4. **Mesh Service** → **Rerun**: Real-time 3D visualization (TSDF + Marching Cubes)
-5. **Server** → **Website** (WebSocket): Real-time updates and mesh display
+The system follows a microservices architecture with three primary communication patterns:
 
-Key services:
-- **Server**: Central hub for data routing (FastAPI, Python)
-- **SLAM3R**: Camera pose estimation (C++/Python bindings)
-- **Mesh Service**: GPU-accelerated real-time mesh generation (CUDA C++)
-- **Website**: Real-time 3D visualization (React/Three.js)
-- **Frame Processor**: Video processing with YOLO/SAM2 detection and segmentation
-- **Fantasy Builder**: Adds game-like elements to 3D models (WIP)
-- **Storage**: Persistent storage for images and IMU data
+1. **WebSocket Streaming**: Real-time video/IMU data from Android to server, and server to website
+2. **RabbitMQ Message Bus**: Asynchronous fanout distribution to processing services
+3. **Shared Memory IPC**: Zero-copy data transfer between SLAM3R and Mesh Service
+
+### Data Flow Pipeline
+```
+Android App (30fps video + IMU)
+    ↓ WebSocket
+Server (FastAPI hub)
+    ↓ RabbitMQ Fanout
+┌─────────────┬──────────────┬───────────────┐
+Frame Processor    SLAM3R       Storage Service
+(SAM2/YOLO)    (Pose Est.)     (Disk persist)
+    ↓              ↓                 
+RabbitMQ    Shared Memory
+    ↓              ↓
+Website ← ─ ─ Mesh Service → Rerun
+         WebSocket  (TSDF+MC)
+```
+
+### Key Architectural Patterns
+
+**Server (Python/FastAPI)**:
+- Async/await throughout with aio_pika for RabbitMQ
+- WeakSet consumer management for automatic cleanup
+- NTP time synchronization across distributed services
+- Multiple WebSocket endpoints: `/ws/phone`, `/ws/viewer`, `/ws/video`
+
+**Mesh Service (C++/CUDA)**:
+- Shared memory reader using POD structs for C++ compatibility
+- GPU-accelerated TSDF fusion and Marching Cubes
+- Adaptive quality based on camera velocity
+- Memory pool allocation with 1GB default
+
+**Frontend (React/Three.js)**:
+- WebSocketContext for pub/sub message distribution
+- React Three Fiber for 3D visualization
+- WebXR support for AR/VR experiences
+- Tab-based lazy loading for performance
+
+**Shared Memory Interface**:
+- Fixed header + variable-length point cloud data
+- No virtual functions/pointers (POD constraint)
+- RabbitMQ triggers for synchronization
+- Located at `/dev/shm/slam3r_keyframes`
 
 ## Build and Development Commands
 
 ### Quick Start
 ```bash
-./start.sh  # Builds and starts all services
+./start.sh  # Generates .env, rebuilds, and starts all services
 ```
 
 ### Docker Commands
-- Full build: `docker-compose build`
-- Single service: `docker-compose build --no-cache <service_name>`
-- Run all services: `docker-compose up`
-- Run with specific profile: `docker-compose --profile slam3r up`
-- Run without specific service: `docker compose up --detach $(docker compose config --services | grep -v slam3r)`
+```bash
+# Full system
+docker-compose build
+docker-compose up
 
-### Development Commands
-- Website: `cd website && npm run dev`
-- Website build: `cd website && npm run build`
-- Website lint: `cd website && npm run lint`
-- Mesh Service build: `cd mesh_service && mkdir build && cd build && cmake .. && make`
+# Selective deployment
+docker-compose --profile slam3r up
+docker-compose --profile frame_processor up
+
+# Run without specific service
+docker compose up --detach $(docker compose config --services | grep -v slam3r)
+
+# Clean rebuild
+docker-compose down --remove-orphans --volumes --rmi local
+docker-compose build --no-cache
+```
+
+### Service-Specific Development
+
+**Website (React)**:
+```bash
+cd website
+npm run dev      # Development server (port 3001)
+npm run build    # Production build
+npm run lint     # ESLint checking
+npm run preview  # Preview production build
+```
+
+**Mesh Service (C++/CUDA)**:
+```bash
+cd mesh_service
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j$(nproc)                    # Parallel build
+./test_build.sh                    # Build verification
+python3 ../test_mesh_service.py    # Integration test
+```
+
+**Frame Processor**:
+```bash
+cd frame_processor
+./install_models.sh               # Download ML models
+./test_integration.sh             # Run integration tests
+```
+
+**SLAM3R**:
+```bash
+cd slam3r/SLAM3R_engine/scripts
+./demo_wild.sh                    # Run with sample data
+./demo_vis_wild.sh               # Run with visualization
+```
 
 ### Testing Commands
-- Website: `cd website && npm run lint`
-- Mesh Service: `cd mesh_service && python3 test_mesh_service.py`
-- Frame Processor: `cd frame_processor && ./test_integration.sh`
-- Integration tests: `cd tests && python test_*.py`
-- Full test suite: `python run_tests.py`
+```bash
+# Full test suite
+python run_tests.py
+
+# Integration tests
+./test_full_pipeline.sh                              # End-to-end WebSocket test
+python tests/test_slam3r_mesh_integration.py         # SLAM→Mesh integration
+python tests/integration/test_full_integration.py    # Full system test
+
+# Component tests
+cd website && npm run lint
+cd mesh_service && python3 test_mesh_service.py
+cd frame_processor && ./test_integration.sh
+
+# Monitoring endpoints
+curl http://localhost:5001/health/video             # Video health check
+curl http://localhost:5001/video/status             # Streaming status
+```
 
 ### Monitoring URLs (when running)
-- RabbitMQ: http://localhost:15672
+- RabbitMQ Management: http://localhost:15672 (guest/guest)
 - Grafana: http://localhost:3000 (admin/admin)
 - Prometheus: http://localhost:9090
-- Jaeger: http://localhost:16686
-- Rerun: http://localhost:9876
-
-## Code Guidelines
-
-When a file becomes too long, split it into smaller files. When a function becomes too long, split it into smaller functions.
-
-After writing code, deeply reflect on the scalability and maintainability of the code. Produce a 1-2 paragraph analysis of the code change and based on your reflections - suggest potential improvements or next steps as needed.
-
-### Style Guidelines
-- **Python**: PEP 8, 4-space indentation, docstrings for all functions
-- **JavaScript/React**: ESLint config, camelCase, alphabetical imports
-- **Error handling**: try/except in Python, catch and log in JavaScript
-
-### Modifiable Directories
-Only modify code in:
-- `slam3r/aaa/` - Custom algorithm implementations
-- `website/`, `server/`, `storage/` - Core services
-- `simulation/`, `fantasy/` - Additional features
-- `nginx/`, `docker/` - Infrastructure
-- `assets/`, `Drone_Camera_Imu_Config/`, `Drone_Calibration/` - Resources
-- Configuration files: `docker-compose.yml`, Dockerfiles, `README.md`, `prometheus.yml`
+- Jaeger Tracing: http://localhost:16686
+- Rerun Viewer: http://localhost:9876
+- Website: http://localhost:3001
 
 ## Key Technical Details
 
-### WebSocket Communication
-- Server receives data from Android on port 5001
-- Website connects to server WebSocket for real-time updates
-- Messages use JSON format with type field for routing
-
-### SLAM Integration
-- SLAM3R service writes keyframes to shared memory (/dev/shm/slam3r_keyframes)
-- Mesh Service reads from shared memory for zero-copy performance
-- Camera poses must be synchronized with image timestamps
-- Shared memory uses POD structs for C++/Python compatibility
-
-### 3D Reconstruction Pipeline
-1. Images saved to disk by storage service
-2. SLAM3R processes images → camera poses → shared memory
-3. Mesh Service reads poses + images → TSDF volume → Marching Cubes → mesh
-4. Real-time visualization via Rerun (9876) and website
-
-### Service Dependencies
-- GPU-required services: frame_processor, slam3r, mesh_service
-- All services communicate through RabbitMQ
-- Services use environment variables for configuration
-- Docker networks: backend_network (internal), monitoring
-- Mesh Service configuration: All env vars prefixed with MESH_ (see mesh_service/CONFIG.md)
-
 ### RabbitMQ Exchanges
-- `video_frames_exchange` - Raw video frames from Android
-- `imu_data_exchange` - IMU sensor data
-- `slam3r_keyframe_exchange` - Camera poses from SLAM
-- `processed_frames_exchange` - Video with detections
+All exchanges use fanout type for one-to-many distribution:
+- `video_frames_exchange` - Decoded video frames with metadata
+- `imu_data_exchange` - IMU sensor data (accel, gyro, magnetometer)
+- `slam3r_keyframe_exchange` - Camera poses and point clouds
+- `processed_frames_exchange` - Video frames with detections/segmentation
 - `scene_scaling_exchange` - Real-world scale information
+- `restart_exchange` - System-wide restart notifications
 
-### Environment Setup
-Create a `.env` file with:
-```bash
-USERNAME=$(whoami)
-WORKSPACE=/path/to/WorldSystem
-X11SOCKET=/tmp/.X11-unix
-XAUTHORITY=${HOME}/.Xauthority
-UID=$(id -u)
-GID=$(id -g)
-CUDA_PATH=/usr/local/cuda
-DISPLAY=$DISPLAY
+### WebSocket Message Format
+```json
+{
+  "type": "video_frame|imu_data|slam_update|mesh_update",
+  "timestamp": 1234567890123,  // Unix timestamp in ms
+  "data": { /* type-specific payload */ }
+}
 ```
+
+### Shared Memory Structure
+Located at `/dev/shm/slam3r_keyframes`, uses POD struct:
+```cpp
+struct SharedKeyframe {
+    uint64_t timestamp_ns;
+    uint32_t point_count;
+    uint32_t color_channels;
+    float pose_matrix[16];    // Row-major 4x4
+    float bbox[6];            // min/max bounds
+    // Variable arrays follow
+};
+```
+
+### Service Configuration
+All services configured via environment variables:
+- **Server**: `SERVER_PORT`, `RABBITMQ_URL`, `ENABLE_NTP_SYNC`
+- **Mesh Service**: `MESH_*` prefix (see mesh_service/CONFIG.md)
+- **Frame Processor**: `DETECTOR_TYPE`, `USE_SERPAPI`, `USE_PERPLEXITY`
+- **Website**: `VITE_WS_URL`, `VITE_API_URL`
+
+### GPU Requirements
+GPU-accelerated services (require CUDA):
+- `slam3r` - Neural SLAM processing
+- `mesh_service` - TSDF fusion and mesh generation
+- `frame_processor` - SAM2/YOLO detection
+
+### Development Guidelines
+
+**Code Style**:
+- Python: PEP 8, type hints, docstrings for public APIs
+- C++: Modern C++17, RAII, avoid raw pointers
+- JavaScript: ESLint config, functional components, hooks
+
+**Performance Considerations**:
+- Shared memory for high-bandwidth data (>10MB/s)
+- RabbitMQ for loosely-coupled async communication
+- WebSockets for real-time bidirectional updates
+- GPU memory management critical for ML services
+
+**Error Handling**:
+- Services should gracefully degrade (e.g., mesh without colors)
+- Use structured logging with correlation IDs
+- Implement retry logic with exponential backoff
+- Monitor memory usage, especially GPU memory
+
+## Modifiable Directories
+
+When implementing features, modify code in:
+- `server/`, `website/`, `storage/` - Core services
+- `mesh_service/src/` - Mesh generation algorithms
+- `frame_processor/` - Video processing pipeline
+- `slam3r/` - SLAM processor files (not SLAM3R_engine)
+- `simulation/`, `fantasy/` - Additional features
+- `nginx/`, `docker/` - Infrastructure configs
+- Configuration files at root level
+
+Avoid modifying:
+- `slam3r/SLAM3R_engine/` - Third-party SLAM implementation
+- Generated files in `build/` directories
+- Model files in `*/models/`

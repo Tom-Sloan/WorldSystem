@@ -5,11 +5,29 @@
   "chunk_duration_seconds": 60,
   "idle_timeout_seconds": 10.0,
   "codec": "MJPEG",
-  "chunks": [],
-  "partial_chunks": [],
-  "total_frames": 300,
-  "estimated_fps": 14.71996083782227,
-  "last_updated": 1753286246.3640642,
-  "current_chunk_frames": 300,
-  "last_frame_time": 1753286246.3615773
+  "chunks": [
+    {
+      "index": 1,
+      "filename": "chunk_0001.avi",
+      "start_time": 1753286226.0509784,
+      "duration": 30.51796841621399,
+      "frame_count": 303,
+      "average_fps": 9.92857702280792,
+      "size_bytes": 5805758,
+      "partial": true
+    }
+  ],
+  "partial_chunks": [
+    1
+  ],
+  "total_frames": 303,
+  "estimated_fps": 14.715663286161291,
+  "last_updated": 1753286857.7099328,
+  "current_chunk_frames": 303,
+  "last_frame_time": 1753286246.5670218,
+  "end_time": 1753286857.7099292,
+  "duration": 649.1665563583374,
+  "total_chunks": 1,
+  "total_size_bytes": 5805758,
+  "partial_chunks_count": 1
 }

@@ -15,6 +15,7 @@ The system follows a microservices architecture with three primary communication
 3. **Shared Memory IPC**: Zero-copy data transfer between SLAM3R and Mesh Service
 
 ### Data Flow Pipeline
+
 ```
 Android App (30fps video + IMU)
     ↓ WebSocket
@@ -50,20 +51,22 @@ Website ← ─ ─ Mesh Service → Rerun
 - WebXR support for AR/VR experiences
 - Tab-based lazy loading for performance
 
-**Shared Memory Interface**:
-- Fixed header + variable-length point cloud data
-- No virtual functions/pointers (POD constraint)
-- RabbitMQ triggers for synchronization
-- Located at `/dev/shm/slam3r_keyframes`
+**Failure Handling**:
+- RabbitMQ auto-reconnection with exponential backoff
+- Graceful degradation when optional services unavailable
+- Message acknowledgment only after successful processing
+- Weak references for WebSocket consumers to prevent memory leaks
 
 ## Build and Development Commands
 
 ### Quick Start
+
 ```bash
 ./start.sh  # Generates .env, rebuilds, and starts all services
 ```
 
 ### Docker Commands
+
 ```bash
 # Full system
 docker-compose build
@@ -79,6 +82,13 @@ docker compose up --detach $(docker compose config --services | grep -v slam3r)
 # Clean rebuild
 docker-compose down --remove-orphans --volumes --rmi local
 docker-compose build --no-cache
+
+# Access service shells
+docker-compose exec website sh
+docker-compose exec server bash
+
+# View filtered logs
+docker logs worldsystem-frame_processor-1 2>&1 | grep -E "(FPS|tracks)"
 ```
 
 ### Service-Specific Development
@@ -98,6 +108,7 @@ cd mesh_service
 mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j$(nproc)                    # Parallel build
+make VERBOSE=1                     # Verbose output for debugging
 ./test_build.sh                    # Build verification
 python3 ../test_mesh_service.py    # Integration test
 ```
@@ -107,6 +118,8 @@ python3 ../test_mesh_service.py    # Integration test
 cd frame_processor
 ./install_models.sh               # Download ML models
 ./test_integration.sh             # Run integration tests
+# Enable rich terminal UI
+ENABLE_RICH_TERMINAL=true docker-compose run frame_processor
 ```
 
 **SLAM3R**:
@@ -117,26 +130,36 @@ cd slam3r/SLAM3R_engine/scripts
 ```
 
 ### Testing Commands
+
 ```bash
 # Full test suite
 python run_tests.py
 
-# Integration tests
+# Pipeline testing
 ./test_full_pipeline.sh                              # End-to-end WebSocket test
+cd simulation && ./test_stream.sh                    # H.264 streaming test
+
+# Integration tests
 python tests/test_slam3r_mesh_integration.py         # SLAM→Mesh integration
 python tests/integration/test_full_integration.py    # Full system test
+python tests/check_shared_memory.py                  # Shared memory status
 
 # Component tests
 cd website && npm run lint
 cd mesh_service && python3 test_mesh_service.py
 cd frame_processor && ./test_integration.sh
 
+# WebSocket testing
+python test_websocket_producer.py
+python test_websocket_streaming.py
+
 # Monitoring endpoints
 curl http://localhost:5001/health/video             # Video health check
-curl http://localhost:5001/video/status             # Streaming status
+curl http://localhost:5001/video/status | jq        # Streaming status (JSON)
 ```
 
 ### Monitoring URLs (when running)
+
 - RabbitMQ Management: http://localhost:15672 (guest/guest)
 - Grafana: http://localhost:3000 (admin/admin)
 - Prometheus: http://localhost:9090
@@ -147,6 +170,7 @@ curl http://localhost:5001/video/status             # Streaming status
 ## Key Technical Details
 
 ### RabbitMQ Exchanges
+
 All exchanges use fanout type for one-to-many distribution:
 - `video_frames_exchange` - Decoded video frames with metadata
 - `imu_data_exchange` - IMU sensor data (accel, gyro, magnetometer)
@@ -156,6 +180,7 @@ All exchanges use fanout type for one-to-many distribution:
 - `restart_exchange` - System-wide restart notifications
 
 ### WebSocket Message Format
+
 ```json
 {
   "type": "video_frame|imu_data|slam_update|mesh_update",
@@ -165,6 +190,7 @@ All exchanges use fanout type for one-to-many distribution:
 ```
 
 ### Shared Memory Structure
+
 Located at `/dev/shm/slam3r_keyframes`, uses POD struct:
 ```cpp
 struct SharedKeyframe {
@@ -178,17 +204,34 @@ struct SharedKeyframe {
 ```
 
 ### Service Configuration
+
 All services configured via environment variables:
 - **Server**: `SERVER_PORT`, `RABBITMQ_URL`, `ENABLE_NTP_SYNC`
 - **Mesh Service**: `MESH_*` prefix (see mesh_service/CONFIG.md)
 - **Frame Processor**: `DETECTOR_TYPE`, `USE_SERPAPI`, `USE_PERPLEXITY`
 - **Website**: `VITE_WS_URL`, `VITE_API_URL`
+- **Performance**: `STREAM_CLEANUP_TIMEOUT_SECONDS`, `SLAM3R_CONF_THRES_L2W`
 
 ### GPU Requirements
+
 GPU-accelerated services (require CUDA):
 - `slam3r` - Neural SLAM processing
 - `mesh_service` - TSDF fusion and mesh generation
 - `frame_processor` - SAM2/YOLO detection
+
+### Message Queue Patterns
+
+**Reliability**:
+- Exclusive queues with service prefixes (e.g., `mesh_service_video_frames`)
+- Prefetch count of 1 for backpressure control
+- Message acknowledgment after successful processing
+- Auto-reconnection with exponential backoff
+
+**Caching Strategy**:
+- Multi-level caching: memory → disk with fallback
+- Cache location discovery with write tests
+- MD5-based cache keys for API responses
+- Automatic cache loading on startup
 
 ### Development Guidelines
 
@@ -208,6 +251,12 @@ GPU-accelerated services (require CUDA):
 - Use structured logging with correlation IDs
 - Implement retry logic with exponential backoff
 - Monitor memory usage, especially GPU memory
+
+**Debugging Tools**:
+- Rich terminal UI for frame processor: `ENABLE_RICH_TERMINAL=true`
+- Performance timers with microsecond precision
+- Structured JSON logging to separate files
+- OpenTelemetry tracing with Jaeger
 
 ## Modifiable Directories
 

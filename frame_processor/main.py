@@ -18,6 +18,9 @@ from prometheus_client import start_http_server, Counter, Gauge, Histogram
 from typing import Optional
 import psutil
 import torch
+import os
+import threading
+import queue
 
 from core.config import Config
 from core.utils import get_logger, sync_ntp_time, get_ntp_time_ns, async_sync_ntp_time
@@ -27,8 +30,68 @@ from pipeline.publisher import RabbitMQPublisher
 from video.processor import VideoProcessor
 from external.lens_identifier import LensIdentifier
 
+# Add common to path for WebSocket consumer
+sys.path.append('/app/common')
+from websocket_video_consumer import WebSocketVideoConsumer
+
 
 logger = get_logger(__name__)
+
+
+class WebSocketVideoAdapter(WebSocketVideoConsumer):
+    """
+    Adapter class to integrate WebSocket video consumption with the existing
+    FrameProcessorService pipeline. This bridges the WebSocketVideoConsumer
+    base class with our async processing architecture.
+    """
+    
+    def __init__(self, frame_processor_service, ws_url: str):
+        # Initialize with frame skip from config
+        frame_skip = int(os.getenv('FRAME_PROCESSOR_SKIP', '1'))
+        super().__init__(ws_url, "FrameProcessor", frame_skip)
+        self.service = frame_processor_service
+        self.frame_queue = asyncio.Queue(maxsize=30)
+        self.processing_task = None
+        
+    def process_frame(self, frame: np.ndarray, frame_number: int):
+        """Process frame from WebSocket - called by base class in sync context"""
+        try:
+            # Put frame in async queue for processing
+            # Use nowait since we're in sync context
+            self.frame_queue.put_nowait((frame, frame_number, time.time()))
+        except asyncio.QueueFull:
+            logger.warning(f"Frame queue full, dropping frame {frame_number}")
+            
+    async def start_processing(self):
+        """Start async processing of frames from queue"""
+        self.processing_task = asyncio.create_task(self._process_frames())
+        
+    async def _process_frames(self):
+        """Async task to process frames from the queue"""
+        websocket_id = "websocket_stream"
+        
+        while self.is_running:
+            try:
+                # Get frame from queue
+                frame, frame_number, timestamp = await asyncio.wait_for(
+                    self.frame_queue.get(), timeout=1.0
+                )
+                
+                # Process through existing pipeline
+                await self.service._process_websocket_frame(
+                    websocket_id, frame, frame_number, timestamp
+                )
+                
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logger.error(f"Error processing frame: {e}")
+                
+    async def stop_async(self):
+        """Stop async processing"""
+        self.is_running = False
+        if self.processing_task:
+            await self.processing_task
 
 
 # Prometheus metrics
@@ -69,6 +132,10 @@ class FrameProcessorService:
         self.lens_identifier = None
         self.lens_batch_processor = None
         self.rerun_client = None
+        
+        # WebSocket video consumer
+        self.websocket_consumer = None
+        self.websocket_task = None
         
         # Initialize performance monitor
         self.monitor = get_performance_monitor()
@@ -123,11 +190,7 @@ class FrameProcessorService:
             await self.channel.set_qos(prefetch_count=1)
             
             # Declare exchanges
-            self.video_stream_exchange = await self.channel.declare_exchange(
-                self.config.video_stream_exchange,
-                ExchangeType.FANOUT,
-                durable=True
-            )
+            # Note: video_stream_exchange removed - using WebSocket for video input
             
             self.analysis_mode_exchange = await self.channel.declare_exchange(
                 self.config.analysis_mode_exchange,
@@ -143,21 +206,14 @@ class FrameProcessorService:
             )
             
             # Declare queues
-            self.stream_queue = await self.channel.declare_queue(
-                'frame_processor_stream_queue',
-                durable=True
-            )
+            # Note: stream_queue removed - using WebSocket for video input
             
             self.mode_queue = await self.channel.declare_queue(
                 'frame_processor_mode_queue',
                 durable=True
             )
             
-            # Bind queues (fanout exchanges don't use routing keys)
-            await self.stream_queue.bind(
-                self.video_stream_exchange
-            )
-            
+            # Bind mode queue for analysis updates
             await self.mode_queue.bind(
                 self.analysis_mode_exchange
             )
@@ -173,7 +229,9 @@ class FrameProcessorService:
             raise
     
     
-    async def process_stream_message(self, message: aio_pika.IncomingMessage):
+    # NOTE: This method is no longer used - kept for reference
+    # Video streams now come through WebSocket instead of RabbitMQ
+    '''async def process_stream_message(self, message: aio_pika.IncomingMessage):
         """
         Process incoming H.264 video stream chunks.
         
@@ -282,6 +340,7 @@ class FrameProcessorService:
             self.monitor.add_event(f"Stream processing error: {e}", "error")
             logger.error(f"Error processing video stream: {e}", exc_info=True)
             # Message will be rejected/requeued by the context manager
+    '''
     
     async def process_mode_message(self, message: aio_pika.IncomingMessage):
         """Process analysis mode update message - kept for compatibility."""
@@ -469,6 +528,72 @@ class FrameProcessorService:
         
         return (b, g, r)  # BGR for OpenCV
     
+    async def _process_websocket_frame(self, websocket_id: str, frame: np.ndarray, 
+                                     frame_number: int, timestamp: float):
+        """
+        Process a frame received from WebSocket.
+        This replaces the RabbitMQ stream processing for video frames.
+        """
+        try:
+            with DetailedTimer("websocket_frame_processing"):
+                # Convert timestamp to nanoseconds for consistency
+                timestamp_ns = int(timestamp * 1e9)
+                
+                # Process frame with video processor
+                if self.video_processor:
+                    frame_start = time.time()
+                    video_result = await self.video_processor.process_stream_frame(
+                        websocket_id, frame, timestamp_ns
+                    )
+                    frame_time = (time.time() - frame_start) * 1000
+                    
+                    if frame_number % 10 == 0:
+                        logger.info(f"Frame {frame_number}: {frame_time:.1f}ms, "
+                                  f"{video_result.tracking_result.object_count} objects")
+                    
+                    # Update metrics
+                    frames_processed.inc()
+                    processing_time.observe(video_result.processing_time_ms / 1000.0)
+                    active_tracks.set(video_result.tracking_result.object_count)
+                    
+                    # Update performance monitor
+                    self.monitor.update_metric('frames_processed', frames_processed._value.get())
+                    self.monitor.update_metric('fps', video_result.fps)
+                    self.monitor.update_metric('active_tracks', video_result.tracking_result.object_count)
+                    self.monitor.update_metric('detections_per_frame', len(video_result.tracking_result.masks))
+                    
+                    # Update memory metrics
+                    try:
+                        # CPU memory
+                        process = psutil.Process()
+                        memory_info = process.memory_info()
+                        self.monitor.update_metric('memory_mb', memory_info.rss / (1024 * 1024))
+                        
+                        # GPU memory if available
+                        if torch.cuda.is_available():
+                            gpu_memory = torch.cuda.memory_allocated() / (1024 * 1024)
+                            self.monitor.update_metric('gpu_memory_mb', gpu_memory)
+                    except Exception as e:
+                        logger.debug(f"Failed to update memory metrics: {e}")
+                    
+                    # Process video tracking result
+                    await self._process_video_result(video_result, frame, timestamp_ns, websocket_id)
+                    
+        except Exception as e:
+            logger.error(f"Error processing WebSocket frame: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    async def _run_websocket_consumer(self):
+        """Run WebSocket consumer in background task"""
+        try:
+            # Run the WebSocket consumer
+            await asyncio.to_thread(self.websocket_consumer.run)
+        except Exception as e:
+            logger.error(f"WebSocket consumer error: {e}")
+            # If WebSocket fails, the service should probably stop
+            self.running = False
+    
     async def run(self):
         """Main run loop."""
         self.running = True
@@ -565,11 +690,24 @@ class FrameProcessorService:
             else:
                 self.monitor.update_component_status('rerun', status='⏸️ Disabled')
             
-            # Setup consumers
-            await self.stream_queue.consume(self.process_stream_message)
+            # Initialize WebSocket video consumer
+            ws_host = os.getenv('WS_HOST', 'server')
+            ws_port = os.getenv('WS_PORT', '5001')
+            ws_url = f"ws://{ws_host}:{ws_port}/ws/video/consume"
+            
+            logger.info(f"Connecting to WebSocket video stream at {ws_url}")
+            self.websocket_consumer = WebSocketVideoAdapter(self, ws_url)
+            
+            # Start WebSocket processing
+            await self.websocket_consumer.start_processing()
+            
+            # Start WebSocket consumer in background task
+            self.websocket_task = asyncio.create_task(self._run_websocket_consumer())
+            
+            # Setup RabbitMQ consumers (only for mode messages now)
             await self.mode_queue.consume(self.process_mode_message)
             
-            logger.info("Frame processor service started, waiting for messages...")
+            logger.info("Frame processor service started with WebSocket video input...")
             
             # Keep the service running
             try:
@@ -584,6 +722,18 @@ class FrameProcessorService:
         finally:
             # Cleanup
             logger.info("Shutting down frame processor service...")
+            
+            # Stop WebSocket consumer
+            if self.websocket_consumer:
+                logger.info("Stopping WebSocket consumer...")
+                self.websocket_consumer.stop()
+                if self.websocket_task:
+                    self.websocket_task.cancel()
+                    try:
+                        await self.websocket_task
+                    except asyncio.CancelledError:
+                        pass
+                await self.websocket_consumer.stop_async()
             
             # Cleanup video processor streams
             if self.video_processor:

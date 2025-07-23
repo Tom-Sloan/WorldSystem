@@ -4,175 +4,198 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Frame Processor Service Overview
 
-The frame_processor is a GPU-accelerated video processing service with a modular architecture that:
-- Performs real-time object detection and tracking
-- Identifies objects using Google Lens API
-- Estimates object dimensions via Perplexity AI
-- Calculates real-world scene scale
-- Provides real-time visualization via Rerun
-- Publishes results to multiple RabbitMQ exchanges
+The frame_processor is a GPU-accelerated video processing service for the WorldSystem that performs real-time object detection, tracking, and identification. It processes H.264 video streams, applies ML models for analysis, and publishes results to enable AR/VR experiences with real-world scale.
 
 ## Architecture
 
-The service follows a clean, modular architecture:
+The service uses a modular, factory-based architecture with async processing throughout:
 
 ```
 frame_processor/
 ├── main.py                    # Async entry point with RabbitMQ consumer
-├── core/                      # Core utilities
-│   ├── config.py             # Pydantic-based configuration
-│   └── utils.py              # Logging, NTP sync, timing utilities
-├── detection/                 # Detection algorithms (factory pattern)
-│   ├── base.py              # Abstract detector interface
-│   └── yolo.py              # YOLOv11 implementation
-├── tracking/                  # Tracking algorithms (factory pattern)
-│   ├── base.py              # Abstract tracker interface
-│   └── iou_tracker.py       # IOU-based tracker with quality scoring
+├── core/                      # Core utilities and configuration
+│   ├── config.py             # Pydantic-based configuration with profiles
+│   ├── utils.py              # Logging, NTP sync, timing utilities
+│   └── video_decoder.py      # H.264 stream decoder using PyAV
+├── video/                     # Video processing with SAM2
+│   ├── video_processor.py    # Main video tracking pipeline
+│   └── sam2_tracker.py       # SAM2 model wrapper with GPU optimization
 ├── external/                  # External API integrations
-│   └── api_client.py        # GCS, SerpAPI, Perplexity clients
-├── pipeline/                  # Processing pipeline
-│   ├── processor.py         # Main orchestrator
-│   ├── scorer.py            # Frame quality scoring
-│   ├── enhancer.py          # Image enhancement
-│   └── publisher.py         # RabbitMQ publisher
-└── visualization/             # Real-time visualization
-    ├── rerun_client.py      # Rerun integration
-    └── enhanced_visualizer.py
+│   └── api_client.py         # Google Lens (SerpAPI) and Perplexity clients
+├── pipeline/                  # Processing pipeline components
+│   ├── processor.py          # Main orchestrator
+│   ├── scorer.py             # Frame quality scoring
+│   ├── enhancer.py           # Image enhancement
+│   └── publisher.py          # RabbitMQ publisher
+├── visualization/             # Real-time visualization
+│   └── rerun_client.py       # Rerun integration
+└── models/                    # ML model weights (gitignored)
 ```
 
 ## Development Commands
 
+### Build and Run
+
 ```bash
+# Install models (required first time)
+cd frame_processor
+./install_models.sh
+
 # Build the service
 docker-compose build frame_processor
 
 # Run with GPU support
 docker-compose --profile frame_processor up
 
-# Run without specific services
+# Run without frame processor
 docker compose up --detach $(docker compose config --services | grep -v frame_processor)
 
-# View logs
-docker logs -f worldsystem-frame_processor-1
+# Access service shell
+docker-compose exec frame_processor bash
 
-# Monitor metrics
-curl http://localhost:8003/metrics
+# View logs with filtering
+docker logs -f worldsystem-frame_processor-1 2>&1 | grep -E "(Processing|FPS|tracks)"
 
-# Connect to Rerun viewer (automatic at startup)
-# Service connects to: rerun+http://localhost:9876/proxy
+# Enable rich terminal UI
+ENABLE_RICH_TERMINAL=true docker-compose run frame_processor
+```
+
+### Testing and Monitoring
+
+```bash
+# Run tests (requires test dependencies)
+pip install -r requirements-test.txt
+pytest tests/
+
+# Full pipeline test (from WorldSystem root)
+./test_full_pipeline.sh
+
+# Monitor health and metrics
+curl http://localhost:5001/health/video        # Via server
+curl http://localhost:8003/metrics              # Prometheus metrics
+
+# Check video stream status
+curl http://localhost:5001/video/status | jq
+
+# Connect to Rerun viewer
+# Service auto-connects to: rerun+http://localhost:9876/proxy
 ```
 
 ## Configuration
 
-### Algorithm Selection
-- `DETECTOR_TYPE`: Detection algorithm 
-- `TRACKER_TYPE`: Tracking algorithm (`iou`, future: `sort`, `deep_sort`)
+The service uses environment variables and configuration profiles:
 
-### Detection Settings
-- `DETECTOR_MODEL`: Model path (default: `yolov11l.pt`)
-- `DETECTOR_CONFIDENCE`: Confidence threshold (0.0-1.0)
-- `DETECTOR_DEVICE`: `cuda` or `cpu`
-- `DETECTOR_BATCH_SIZE`: Batch size for inference
+### Model Configuration
+- `MODEL_NAME`: SAM2 model variant (`sam2_tiny`, `sam2_small`, `sam2_base_plus`, `sam2_large`)
+- `CONFIG_PROFILE`: Preset configurations (`performance`, `balanced`, `quality`)
+- `TARGET_FPS`: Target processing frame rate (default: 15)
+- `PROCESSING_RESOLUTION`: Max resolution for processing (default: 720)
 
-### Tracking Settings
-- `TRACKER_IOU_THRESHOLD`: IOU matching threshold (0.0-1.0)
+### Processing Settings
+- `DETECTOR_CONFIDENCE`: Detection confidence threshold (0.0-1.0)
 - `TRACKER_MAX_LOST`: Frames before removing lost track
-- `PROCESS_AFTER_SECONDS`: Delay before API processing
-- `REPROCESS_INTERVAL_SECONDS`: Interval between reprocessing
+- `MIN_MASK_AREA`: Minimum mask area to consider valid
+- `PROPAGATE_MAX_FRAMES`: Max frames for mask propagation
 
 ### API Integration
-- `USE_GCS`: Enable Google Cloud Storage upload
 - `USE_SERPAPI`: Enable Google Lens identification
 - `USE_PERPLEXITY`: Enable dimension lookup
+- `USE_GCS`: Enable Google Cloud Storage for images
+- `SERPAPI_API_KEY`: SerpAPI authentication
+- `PERPLEXITY_KEY`: Perplexity AI key
 - `GCS_BUCKET_NAME`: GCS bucket for uploads
-- `SERPAPI_KEY`: SerpAPI authentication
-- `PERPLEXITY_API_KEY`: Perplexity AI key
 
 ### Enhancement Settings
-- `ENHANCEMENT_ENABLED`: Enable image enhancement
-- `ENHANCEMENT_AUTO_ADJUST`: Auto-adjust parameters
+- `ENHANCEMENT_ENABLED`: Enable frame enhancement
+- `ENHANCEMENT_AUTO_ADJUST`: Auto-adjust enhancement parameters
 - `ENHANCEMENT_GAMMA`: Gamma correction factor
 - `ENHANCEMENT_ALPHA`: Contrast factor
 - `ENHANCEMENT_BETA`: Brightness offset
 
-### RabbitMQ Exchanges
-- **Input**: `video_frames_exchange`, `analysis_mode_exchange`, `imu_data_exchange`
-- **Output**: `processed_frames_exchange`, `scene_scaling_exchange`, `api_results_exchange`
+### RabbitMQ Configuration
+- **Input Exchanges**: `video_stream_exchange`, `analysis_mode_exchange`
+- **Output Exchanges**: `processed_frames_exchange`, `api_results_exchange`, `scene_scaling_exchange`
 
-## Key Components
+## Key Technical Details
 
-### Detection Module
-- Abstract base class in `detection/base.py` for easy extension
-- YOLO detector supports GPU acceleration and batch processing
-- Returns list of `Detection` objects with bbox, confidence, class
+### H.264 Stream Processing
+- Receives H.264 chunks via RabbitMQ from WebSocket streams
+- Uses PyAV for hardware-accelerated decoding
+- Maintains per-stream decoders and buffers
+- Automatic cleanup on stream disconnect
 
-### Tracking Module  
-- Abstract base class in `tracking/base.py` for algorithm swapping
-- IOU tracker maintains tracks with quality scoring
-- Memory-optimized: stores only ROIs, not full frames
-- Integrated frame selection based on sharpness, exposure, centering
+### SAM2 Video Tracking
+- Real-time video object segmentation and tracking
+- GPU memory-aware model selection
+- Dynamic model switching on OOM
+- Compiled models for inference optimization
+- Point-based prompting with quality scoring
 
-### API Pipeline
-1. **Frame Selection**: Best quality frame after 1.5s delay
-2. **Enhancement**: Optional auto-adjusting enhancement
-3. **GCS Upload**: Temporary storage with signed URLs
-4. **Google Lens**: Object identification via SerpAPI
-5. **Perplexity**: Dimension query with structured extraction
-6. **Scene Scaling**: Real-world scale calculation
+### Processing Pipeline
+1. **Stream Reception**: H.264 chunks from RabbitMQ
+2. **Decoding**: PyAV decoder with buffering
+3. **Tracking**: SAM2 video tracking with propagation
+4. **Quality Scoring**: Frame selection based on sharpness/exposure
+5. **Enhancement**: Optional image improvement
+6. **API Processing**: Batched Google Lens + Perplexity
+7. **Publishing**: Multi-exchange result distribution
+8. **Visualization**: Real-time Rerun display
 
-### Processing Flow
-1. Async message consumption from RabbitMQ
-2. Object detection (configurable algorithm)
-3. Track association and management
-4. Quality-based frame selection
-5. Timed API processing pipeline
-6. Multi-exchange result publishing
-7. Real-time Rerun visualization
+### Performance Optimizations
+- GPU acceleration with CUDA 12.1+
+- Model compilation with PyTorch 2.0+
+- Stream-specific resource management
+- Batch API processing to reduce costs
+- Async I/O throughout the pipeline
+- Memory-efficient mask storage
 
-## Monitoring & Debugging
+### Error Handling
+- Graceful degradation when services unavailable
+- Automatic GPU OOM recovery with model downgrade
+- Stream cleanup on disconnect
+- Retry logic with exponential backoff
+- Structured logging to separate files
+
+## Monitoring and Debugging
 
 ### Prometheus Metrics (port 8003)
 - `frame_processor_frames_processed_total`
-- `frame_processor_yolo_detections_total`
+- `frame_processor_tracks_active`
 - `frame_processor_processing_time_seconds`
-- `frame_processor_active_tracks`
 - `frame_processor_api_calls_total`
-- `frame_processor_ntp_time_offset_seconds`
+- `frame_processor_gpu_memory_usage_bytes`
+- `frame_processor_stream_active_count`
 
 ### Logging
 - Structured JSON logs to `/app/logs/`
-- Separate logs: detections, metrics, errors, api
-- Configurable via `LOG_LEVEL` environment variable
+- Separate logs: processing, api, errors, metrics
+- Log level configurable via `LOG_LEVEL`
+- Rich terminal UI for development
 
 ### Rerun Visualization
 - Automatic connection on startup
-- Real-time frame display with annotations
+- Real-time frame and mask display
 - Track visualization with IDs
 - Performance metrics overlay
+- Stream health indicators
 
-## Adding New Components
+## Integration with WorldSystem
 
-### New Detector
-1. Create class in `detection/` inheriting from `BaseDetector`
-2. Implement `detect()` method returning `List[Detection]`
-3. Register in `detection/__init__.py` factory
+The frame_processor is a critical component in the real-time pipeline:
 
-### New Tracker
-1. Create class in `tracking/` inheriting from `BaseTracker`
-2. Implement `update()` and track management methods
-3. Register in `tracking/__init__.py` factory
+1. **Receives** H.264 video streams from Android app via server
+2. **Processes** frames with SAM2 for object tracking
+3. **Identifies** objects using Google Lens API
+4. **Estimates** dimensions via Perplexity AI
+5. **Publishes** results for AR overlay and 3D reconstruction
+6. **Enables** real-world scale calculation for SLAM3R
 
-### New API Integration
-1. Add client methods to `external/api_client.py`
-2. Add feature flag to `core/config.py`
-3. Integrate into `pipeline/processor.py` workflow
+### Dependencies
+- **Required**: RabbitMQ, Server (for streams)
+- **Optional**: Rerun, External APIs (Lens, Perplexity)
+- **GPU**: NVIDIA runtime with CUDA 12.1+
 
-## Performance Considerations
-
-- GPU acceleration auto-detected and preferred
-- Batch processing support for efficiency
-- Async I/O throughout the pipeline
-- ROI-only storage reduces memory usage
-- API response caching minimizes costs
-- Configurable worker threads for parallel processing
-- NTP synchronization for accurate timestamps
+### Configuration Profiles
+- **performance**: Optimized for speed (tiny model, 480p, 25fps)
+- **balanced**: Default balanced settings (small model, 720p, 15fps)
+- **quality**: Maximum quality (base+ model, 1080p, 10fps)

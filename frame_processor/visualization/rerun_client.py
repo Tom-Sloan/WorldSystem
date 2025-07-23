@@ -162,48 +162,7 @@ class RerunClient:
         
         # No need for explicit flush - Rerun handles this
     
-    def _log_yolo_detections(self, detections: List[Dict], frame_shape: tuple):
-        """Log YOLO detections in Rerun format."""
-        if not detections:
-            return
-        
-        boxes_2d = []
-        labels = []
-        colors = []
-        
-        for det in detections:
-            x1, y1, x2, y2 = det['bbox']
-            
-            # Convert to center + half-size format
-            center_x = (x1 + x2) / 2
-            center_y = (y1 + y2) / 2
-            half_width = (x2 - x1) / 2
-            half_height = (y2 - y1) / 2
-            
-            boxes_2d.append([center_x, center_y, half_width, half_height])
-            labels.append(f"{det['class_name']} ({det['confidence']:.2f})")
-            
-            # Color based on class name
-            color_hash = hash(det['class_name']) % 360
-            colors.append([color_hash, 255, 255])  # HSV
-        
-        # Log to Rerun
-        try:
-            boxes_array = np.array(boxes_2d, dtype=np.float32)
-            centers = boxes_array[:, :2]
-            half_sizes = boxes_array[:, 2:]
-            
-            rr.log(
-                "detections/yolo",
-                rr.Boxes2D(
-                    centers=centers,
-                    half_sizes=half_sizes,
-                    labels=labels,
-                    colors=colors
-                )
-            )
-        except Exception as e:
-            logger.error(f"Failed to log YOLO detections: {e}")
+    # YOLO detection logging removed - using SAM2 exclusively
     
     def _filter_sam_detections(self, detections: List[Detection], 
                                frame_shape: tuple) -> List[Detection]:

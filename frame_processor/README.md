@@ -2,9 +2,12 @@
 
 This service processes video frames with object detection, tracking, and dimension estimation to provide real-world scaling for 3D reconstruction.
 
+> **Update**: The frame processor now uses WebSocket for video input instead of RabbitMQ, providing lower latency and simplified architecture. See [WEBSOCKET_UNIFIED.md](WEBSOCKET_UNIFIED.md) for details.
+
 ## Features
 
-- **YOLO Object Detection**: Real-time object detection using YOLOv8
+- **WebSocket Video Input**: Direct H.264 stream consumption via WebSocket
+- **SAM2 Video Tracking**: Advanced video object segmentation and tracking
 - **Object Tracking**: IOU-based tracking across frames
 - **Quality Scoring**: Selects best frames based on sharpness, exposure, size, and centering
 - **Image Enhancement**: Improves image quality before API processing
@@ -17,8 +20,7 @@ This service processes video frames with object detection, tracking, and dimensi
 
 ```
 frame_processor/
-├── frame_processor.py      # Main enhanced processor
-├── frame_processor_original.py  # Original simple YOLO processor (backup)
+├── main.py                # Main unified processor with WebSocket support
 ├── modules/                # Processing modules
 │   ├── __init__.py
 │   ├── tracker.py         # Object tracking
@@ -32,8 +34,7 @@ frame_processor/
 ├── Dockerfile
 ├── requirements.txt
 ├── CLAUDE.md              # AI assistant instructions
-├── worldsystem-23f7306a1a75.json  # Google Cloud credentials
-└── yolov8n.pt            # YOLO model weights
+└── worldsystem-23f7306a1a75.json  # Google Cloud credentials
 ```
 
 ## Configuration

@@ -41,8 +41,9 @@ class TrackedObject:
     created_at: Optional[int] = None
     confidence: float = 0.0
     api_result: Optional[Dict] = None
-from core.utils import get_logger
-from core.config import Config
+import logging
+
+logger = logging.getLogger(__name__)
 
 import rerun as rr
 import rerun.blueprint as rrb
@@ -50,7 +51,7 @@ import time
 import av
 
 
-logger = get_logger(__name__)
+# logger is already defined above
 
 
 class RerunClient:
@@ -61,15 +62,15 @@ class RerunClient:
     while fitting into the new modular architecture.
     """
     
-    def __init__(self, config: Config):
+    def __init__(self, rerun_enabled: bool = True, rerun_connect_url: str = "127.0.0.1:9876"):
         """
         Initialize Rerun client.
         
         Args:
-            config: Application configuration
+            rerun_enabled: Whether Rerun visualization is enabled
+            rerun_connect_url: URL to connect to Rerun viewer
         """
-        self.config = config
-        self.enabled = config.rerun_enabled
+        self.enabled = rerun_enabled
         
         if not self.enabled:
             logger.info("Rerun visualization disabled")
@@ -83,8 +84,8 @@ class RerunClient:
         
         # Connect to viewer
         try:
-            logger.info(f"Connecting to Rerun viewer at {config.rerun_connect_url}")
-            rr.connect_grpc(config.rerun_connect_url)
+            logger.info(f"Connecting to Rerun viewer at {rerun_connect_url}")
+            rr.connect_grpc(rerun_connect_url)
             logger.info("Connected to Rerun viewer successfully")
         except Exception as e:
             logger.warning(f"Failed to connect to Rerun viewer: {e}")

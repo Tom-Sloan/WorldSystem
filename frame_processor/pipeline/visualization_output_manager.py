@@ -92,26 +92,32 @@ class VisualizationOutputManager:
     
     def _setup_rabbitmq(self):
         """Setup RabbitMQ for publishing output events."""
+        # Don't set up RabbitMQ in init - it will be set up when needed
+        self.rabbit_connection = None
+        self.output_exchange = None
+        self.channel = None
+        self._setup_complete = False
+    
+    async def setup_rabbitmq_async(self):
+        """Async setup of RabbitMQ connection."""
+        if self._setup_complete:
+            return
+            
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            async def connect():
-                self.rabbit_connection = await aio_pika.connect_robust(
-                    os.getenv('RABBITMQ_URL', 'amqp://127.0.0.1:5672')
-                )
-                channel = await self.rabbit_connection.channel()
-                self.output_exchange = await channel.declare_exchange(
-                    os.getenv('PROCESSED_FRAMES_EXCHANGE', 'processed_frames_exchange'),
-                    aio_pika.ExchangeType.FANOUT,
-                    durable=True
-                )
-            
-            loop.run_until_complete(connect())
-            self.async_loop = loop
+            self.rabbit_connection = await aio_pika.connect_robust(
+                os.getenv('RABBITMQ_URL', 'amqp://127.0.0.1:5672')
+            )
+            self.channel = await self.rabbit_connection.channel()
+            self.output_exchange = await self.channel.declare_exchange(
+                os.getenv('PROCESSED_FRAMES_EXCHANGE', 'processed_frames_exchange'),
+                aio_pika.ExchangeType.FANOUT,
+                durable=True
+            )
+            self._setup_complete = True
+            logger.info("RabbitMQ connection established for visualization output")
         except Exception as e:
-            logger.warning(f"Failed to setup RabbitMQ: {e}")
-            self.rabbit_connection = None
+            logger.error(f"Failed to setup RabbitMQ: {e}")
+            self._setup_complete = False
     
     def _encode_image_base64(self, image: np.ndarray, format: str = 'jpg', 
                             quality: int = 85) -> str:
@@ -226,9 +232,9 @@ class VisualizationOutputManager:
         
         return enhanced_crops
     
-    def send_visualization_update(self, frame: np.ndarray, masks: List[MaskData], 
-                                 frame_number: int, timestamp: Optional[float] = None,
-                                 processing_stats: Optional[Dict[str, Any]] = None):
+    async def send_visualization_update(self, frame: np.ndarray, masks: List[MaskData], 
+                                       frame_number: int, timestamp: Optional[float] = None,
+                                       processing_stats: Optional[Dict[str, Any]] = None):
         """
         Send complete visualization update through RabbitMQ.
         
@@ -239,6 +245,7 @@ class VisualizationOutputManager:
             timestamp: Optional timestamp
             processing_stats: Optional processing statistics
         """
+        logger.info(f"send_visualization_update called for frame {frame_number} with {len(masks)} masks")
         timestamp = timestamp or time.time()
         
         # Create visualization frame
@@ -312,11 +319,16 @@ class VisualizationOutputManager:
             self.object_history[mask.instance_id].append(frame_number)
         
         # Publish to RabbitMQ
-        self._publish_message(message_data)
+        await self._publish_message(message_data)
     
-    def _publish_message(self, message_data: Dict[str, Any]):
+    async def _publish_message(self, message_data: Dict[str, Any]):
         """Publish message to RabbitMQ."""
-        if not self.rabbit_connection:
+        # Ensure RabbitMQ connection is established
+        if not self._setup_complete:
+            await self.setup_rabbitmq_async()
+            
+        if not self._setup_complete or not self.output_exchange:
+            logger.warning(f"Cannot publish frame {message_data['frame_number']} - RabbitMQ not connected (setup_complete={self._setup_complete}, exchange={self.output_exchange is not None})")
             return
         
         try:
@@ -333,10 +345,8 @@ class VisualizationOutputManager:
                 content_type='application/json'
             )
             
-            asyncio.run_coroutine_threadsafe(
-                self.output_exchange.publish(message, routing_key=''),
-                self.async_loop
-            )
+            # Publish directly since we're already in async context
+            await self.output_exchange.publish(message, routing_key='')
             
             logger.debug(f"Published visualization update for frame {message_data['frame_number']}")
             

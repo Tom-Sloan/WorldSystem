@@ -121,7 +121,7 @@ async def lifespan(app: FastAPI):
     # background tasks we need to cancel on shutdown
     bg_tasks = [
         asyncio.create_task(log_imu_rate()),
-        asyncio.create_task(consume_processed_frames_async()),
+        # Removed consume_processed_frames_async() - visualization service handles this now
         asyncio.create_task(consume_trajectory_updates()),
         asyncio.create_task(consume_imu_data()),
         asyncio.create_task(consume_restart_messages()),
@@ -401,6 +401,16 @@ async def test_h264_decoder():
             "error": str(e),
             "suggestion": "Make sure PyAV is installed with: conda install av>=10.0.0"
         }
+
+# Basic health check endpoint
+@app.get("/health")
+async def health_check():
+    """Basic health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "worldsystem-server",
+        "timestamp": time.time()
+    }
 
 # Health check endpoint for RTSP
 @app.get("/health/video")
@@ -931,26 +941,7 @@ async def log_frame_latency():
             # logger.info(f"Average frame latency over last 10 seconds: {avg_latency:.2f} ms")
 
 
-async def consume_processed_frames_async():
-    """
-    Asynchronously consume messages from the processed frames exchange and broadcast them.
-    """
-    try:
-        connection = await aio_pika.connect_robust(RABBITMQ_URL, heartbeat=3600)
-        channel = await connection.channel()
-        # Add server_ prefix to queue name
-        queue = await channel.declare_queue('server_processed_frames', exclusive=True)
-        await queue.bind(exchange=PROCESSED_FRAMES_EXCHANGE)
-        async with queue.iterator() as queue_iter:
-            async for message in queue_iter:
-                async with message.process():
-                    if message.content_type == "application/octet-stream":
-                        # Simply pass the entire headers dict along with the frame data
-                        await broadcast_to_all_viewers(message.body, message.headers)
-                    else:
-                        logger.debug("Ignoring non-binary processed data...")
-    except Exception as e:
-        logger.error(f"Error in async processed frames consumer: {e}")
+# Removed consume_processed_frames_async() - visualization service is the only consumer now
 
 async def consume_trajectory_updates():
     """
@@ -1087,35 +1078,7 @@ async def publish_video_stream_chunk(chunk_bytes: bytes, websocket_id: str) -> N
     except Exception as e:
         logger.error(f"Error publishing video stream chunk: {e}")
 
-async def broadcast_to_all_viewers(frame_data: bytes, headers: dict):
-    """
-    Encode the binary frame data as base64 and broadcast it in a JSON message of type
-    "processed_frame" to all connected viewer websockets. All headers are included in the message.
-    """
-    import base64
-    b64_frame = base64.b64encode(frame_data).decode('utf-8')
-    
-    # Create message with all headers and the frame data
-    msg_data = {
-        "type": "processed_frame",
-        "frame_data": b64_frame
-    }
-    
-    # Add all headers to the message
-    for key, value in headers.items():
-        msg_data[key] = value
-        
-    msg = json.dumps(msg_data)
-    
-    to_remove = []
-    for vw in list(connected_viewers):
-        try:
-            await vw.send_text(msg)
-        except Exception as e:
-            logger.error(f"Error sending processed frame to {vw.client.host}: {e}")
-            to_remove.append(vw)
-    for vw in to_remove:
-        connected_viewers.discard(vw)
+# Removed broadcast_to_all_viewers() - visualization service handles processed frames now
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=BIND_HOST, port=API_PORT, reload=True)

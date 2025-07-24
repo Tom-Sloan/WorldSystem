@@ -357,6 +357,7 @@ class FrameProcessorService:
         
         # Save outputs locally
         if self.output_manager:
+            logger.info(f"Output manager type: {type(self.output_manager).__name__}")
             # Convert tracking results to MaskData format
             mask_data_list = []
             for mask_info in result.tracking_result.masks:
@@ -382,14 +383,17 @@ class FrameProcessorService:
                         )
                         mask_data_list.append(mask_data)
             
+            logger.info(f"Converted {len(mask_data_list)} masks for frame {result.tracking_result.frame_number}")
+            
             # Save/send frame outputs
             if isinstance(self.output_manager, VisualizationOutputManager):
+                logger.info("Using VisualizationOutputManager")
                 # Send visualization update with processing stats
                 processing_stats = {
                     'processing_time_ms': result.processing_time_ms,
                     'fps': self.monitor.metrics.get('fps', 0.0)
                 }
-                self.output_manager.send_visualization_update(
+                await self.output_manager.send_visualization_update(
                     frame=frame,
                     masks=mask_data_list,
                     frame_number=result.tracking_result.frame_number,
@@ -405,35 +409,14 @@ class FrameProcessorService:
                     timestamp=timestamp_ns / 1e9 if timestamp_ns else None
                 )
         
-        # Convert video tracks to detection format for publishing
-        if result.tracking_result.tracks:
-            detection_data = []
-            for track in result.tracking_result.tracks:
-                detection_data.append({
-                    'bbox': track['bbox'],
-                    'class_name': f"Track_{track['object_id']}",
-                    'confidence': track.get('confidence', 0.0),
-                    'track_id': track['track_id']
-                })
-            
-            # Draw annotations
-            annotated_frame = self._draw_video_annotations(frame, result.tracking_result.tracks)
-            
-            # Publish
-            await self.publisher.publish_processed_frame(
-                annotated_frame,
-                detection_data,
-                {
-                    'timestamp_ns': timestamp_ns,
-                    'frame_number': result.tracking_result.frame_number,
-                    'processing_time_ms': result.processing_time_ms,
-                    'ntp_time': get_ntp_time_ns(),
-                    'ntp_offset': ntp_offset._value.get(),
-                    'source': 'h264_video_stream',
-                    'fps': result.fps,
-                    'resolution': f"{result.original_resolution[0]}x{result.original_resolution[1]}"
-                }
-            )
+        # The visualization_output_manager already publishes everything needed
+        # No need to duplicate by calling publisher.publish_processed_frame
+        # The visualization update includes:
+        # - Original frame
+        # - Visualization with colored masks  
+        # - Individual masks
+        # - Enhanced crops
+        # - All metadata
     
     async def _process_identifications(self, stream_id: str):
         """Process pending object identifications."""

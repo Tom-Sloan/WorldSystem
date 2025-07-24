@@ -9,12 +9,13 @@ import json
 import aio_pika
 import rerun as rr
 from typing import Dict, Any
-import numpy as np
-import cv2
+import logging
 
-from core.utils import get_logger
+from visualization_handler import VisualizationHandler
+from blueprint_manager import ViewMode
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 class VisualizationService:
@@ -24,10 +25,17 @@ class VisualizationService:
         self.rabbitmq_url = os.getenv('RABBITMQ_URL', 'amqp://127.0.0.1:5672')
         self.rerun_port = int(os.getenv('RERUN_PORT', '9876'))
         
-        # Initialize Rerun
+        # Initialize Rerun and connect to viewer
         rr.init("worldsystem_visualization", spawn=False)
-        rr.serve(bind=f"0.0.0.0:{self.rerun_port}")
-        logger.info(f"Rerun server started on port {self.rerun_port}")
+        try:
+            # Connect to existing Rerun viewer
+            rr.connect_grpc(url=f"rerun+http://127.0.0.1:{self.rerun_port}/proxy")
+            logger.info(f"Connected to Rerun viewer on port {self.rerun_port}")
+        except Exception as e:
+            logger.warning(f"Could not connect to Rerun viewer: {e}. Will log to memory instead.")
+        
+        # Initialize visualization handler
+        self.handler = VisualizationHandler()
         
         self.connection = None
         self.channel = None
@@ -38,8 +46,9 @@ class VisualizationService:
         self.channel = await self.connection.channel()
         
         # Declare exchange for receiving outputs
+        exchange_name = os.getenv('FRAME_PROCESSOR_OUTPUTS_EXCHANGE', 'processed_frames_exchange')
         self.output_exchange = await self.channel.declare_exchange(
-            'frame_processor_outputs',
+            exchange_name,
             aio_pika.ExchangeType.FANOUT,
             durable=True
         )
@@ -62,52 +71,42 @@ class VisualizationService:
         """Process output messages from frame processor."""
         async with message.process():
             try:
-                data = json.loads(message.body)
+                # Check content type to determine how to process the message
+                content_type = message.content_type or 'application/json'
                 
-                if data['type'] == 'frame_processed':
-                    await self.visualize_frame(data)
-                elif data['type'] == 'video_summary_created':
-                    await self.log_summary(data)
+                if content_type == 'image/jpeg':
+                    # Handle binary JPEG data with metadata in headers
+                    import cv2
+                    import numpy as np
+                    
+                    # Decode JPEG image
+                    frame_array = np.frombuffer(message.body, np.uint8)
+                    frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+                    
+                    # Extract metadata from headers
+                    headers = message.headers or {}
+                    data = {
+                        'type': 'processed_frame',
+                        'frame': frame,
+                        'timestamp_ns': headers.get('timestamp_ns', 0),
+                        'frame_number': headers.get('frame_number', 0),
+                        'processing_time_ms': headers.get('processing_time_ms', 0),
+                        'detection_count': headers.get('detection_count', 0),
+                        'width': headers.get('width', frame.shape[1] if frame is not None else 0),
+                        'height': headers.get('height', frame.shape[0] if frame is not None else 0),
+                        'ntp_time': headers.get('ntp_time', 0),
+                        'ntp_offset': headers.get('ntp_offset', 0),
+                        'class_summary': json.loads(headers.get('class_summary', '{}'))
+                    }
+                else:
+                    # Handle JSON messages
+                    data = json.loads(message.body)
+                
+                # Pass message to handler
+                self.handler.process_message(data)
                     
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
-    
-    async def visualize_frame(self, data: Dict[str, Any]):
-        """Visualize a processed frame in Rerun."""
-        frame_number = data['frame_number']
-        
-        # Set time context
-        rr.set_time_sequence("frame", frame_number)
-        rr.set_time_seconds("time", data['timestamp'])
-        
-        # Load and log visualization if available
-        vis_path = data['paths'].get('visualization')
-        if vis_path and os.path.exists(vis_path):
-            vis_image = cv2.imread(vis_path)
-            vis_rgb = cv2.cvtColor(vis_image, cv2.COLOR_BGR2RGB)
-            rr.log("visualization", rr.Image(vis_rgb))
-        
-        # Log metadata
-        metadata_path = data['paths'].get('metadata')
-        if metadata_path and os.path.exists(metadata_path):
-            with open(metadata_path, 'r') as f:
-                metadata = json.load(f)
-                
-            # Log object count
-            rr.log("metrics/object_count", rr.Scalar(len(metadata['objects'])))
-            
-            # Log text summary
-            summary = f"Frame {frame_number}: {len(metadata['objects'])} objects detected"
-            rr.log("summary", rr.TextLog(summary))
-    
-    async def log_summary(self, data: Dict[str, Any]):
-        """Log session summary."""
-        summary_text = f"""
-Session: {data['session_id']}
-Total frames: {data['num_frames']}
-Video saved: {data['video_path']}
-        """
-        rr.log("session_summary", rr.TextDocument(summary_text))
     
     async def run(self):
         """Main run loop."""

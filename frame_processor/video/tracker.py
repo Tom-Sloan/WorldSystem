@@ -12,6 +12,7 @@ import asyncio
 import gc
 from dataclasses import dataclass, field
 import time
+import os
 
 try:
     from sam2.build_sam import build_sam2_video_predictor, build_sam2
@@ -342,19 +343,63 @@ class SAM2RealtimeTracker(VideoTracker):
                         state = self.stream_states[stream_id]
                         state.update()  # Update frame count and timestamp
                         
-                        # Check if we need to re-prompt for new objects
+                        # Check if we need to re-detect all objects
                         if state.frame_count % self.reprompt_interval == 0:
-                            await self._reprompt_for_new_objects(state, frame)
-                        
-                        # Process with SAM2
-                        masks = []
-                        sam_start = time.time()
-                        if state.inference_state and self.predictor:
-                            masks = await self._propagate_masks(
-                                state.inference_state,
-                                frame,
-                                state.frame_count
-                            )
+                            # Clear existing tracks and detect fresh
+                            logger.info(f"Re-detecting all objects at frame {state.frame_count}")
+                            state.object_ids.clear()
+                            
+                            # Run automatic mask generation
+                            if self.mask_generator:
+                                try:
+                                    masks_result = self.mask_generator.generate(frame)
+                                    
+                                    # Convert and limit to top 5 objects by area
+                                    masks = []
+                                    max_tracks = int(os.getenv('MAX_TRACKS', '5'))
+                                    
+                                    # Sort by area and take top N
+                                    sorted_masks = sorted(masks_result, 
+                                                        key=lambda x: x.get('area', 0), 
+                                                        reverse=True)[:max_tracks]
+                                    
+                                    for i, mask_info in enumerate(sorted_masks):
+                                        if mask_info.get('area', 0) > self.min_object_area:
+                                            seg = mask_info.get('segmentation')
+                                            if seg is not None:
+                                                # Calculate bbox
+                                                y_coords, x_coords = np.where(seg)
+                                                if len(y_coords) > 0:
+                                                    bbox = [int(x_coords.min()), int(y_coords.min()), 
+                                                           int(x_coords.max() - x_coords.min()), 
+                                                           int(y_coords.max() - y_coords.min())]
+                                                    
+                                                    mask_data = {
+                                                        "object_id": i,
+                                                        "segmentation": seg,
+                                                        "area": int(mask_info['area']),
+                                                        "confidence": float(mask_info.get('predicted_iou', 0.9)),
+                                                        "bbox": bbox,
+                                                        "stability_score": float(mask_info.get('stability_score', 0.0))
+                                                    }
+                                                    masks.append(mask_data)
+                                    
+                                    logger.info(f"Detected {len(masks)} objects (from {len(masks_result)} total)")
+                                except Exception as e:
+                                    logger.error(f"Error in automatic mask generation: {e}")
+                                    masks = []
+                            else:
+                                masks = []
+                        else:
+                            # Between detection intervals, just propagate existing masks
+                            masks = []
+                            sam_start = time.time()
+                            if state.inference_state and self.predictor:
+                                masks = await self._propagate_masks(
+                                    state.inference_state,
+                                    frame,
+                                    state.frame_count
+                                )
                         sam_time = (time.time() - sam_start) * 1000
                         
                         # Record SAM2 tracking time

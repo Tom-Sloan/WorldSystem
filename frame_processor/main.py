@@ -29,6 +29,7 @@ from core.performance_monitor import get_performance_monitor, DetailedTimer
 from core.h264_decoder import H264StreamDecoder
 from pipeline.publisher import RabbitMQPublisher
 from pipeline.output_manager import LocalOutputManager, MaskData
+from pipeline.visualization_output_manager import VisualizationOutputManager
 from video.processor import VideoProcessor
 from external.lens_identifier import LensIdentifier
 
@@ -381,13 +382,28 @@ class FrameProcessorService:
                         )
                         mask_data_list.append(mask_data)
             
-            # Save frame outputs
-            self.output_manager.save_frame_outputs(
-                frame=frame,
-                masks=mask_data_list,
-                frame_number=result.tracking_result.frame_number,
-                timestamp=timestamp_ns / 1e9 if timestamp_ns else None
-            )
+            # Save/send frame outputs
+            if isinstance(self.output_manager, VisualizationOutputManager):
+                # Send visualization update with processing stats
+                processing_stats = {
+                    'processing_time_ms': result.processing_time_ms,
+                    'fps': self.monitor.metrics.get('fps', 0.0)
+                }
+                self.output_manager.send_visualization_update(
+                    frame=frame,
+                    masks=mask_data_list,
+                    frame_number=result.tracking_result.frame_number,
+                    timestamp=timestamp_ns / 1e9 if timestamp_ns else None,
+                    processing_stats=processing_stats
+                )
+            else:
+                # Save to disk
+                self.output_manager.save_frame_outputs(
+                    frame=frame,
+                    masks=mask_data_list,
+                    frame_number=result.tracking_result.frame_number,
+                    timestamp=timestamp_ns / 1e9 if timestamp_ns else None
+                )
         
         # Convert video tracks to detection format for publishing
         if result.tracking_result.tracks:
@@ -570,12 +586,21 @@ class FrameProcessorService:
             logger.info("Initializing video processing components...")
             self.video_processor = VideoProcessor(self.config)
             
-            # Initialize output manager for local saving
-            self.output_manager = LocalOutputManager(
-                output_dir=os.getenv('OUTPUT_DIR', '/app/outputs'),
-                session_id=datetime.now().strftime('%Y%m%d_%H%M%S')
-            )
-            logger.info("Local output manager initialized successfully")
+            # Initialize output manager based on environment
+            use_visualization = os.getenv('USE_VISUALIZATION_OUTPUT', 'true').lower() == 'true'
+            session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            if use_visualization:
+                # Use visualization output manager for real-time Rerun visualization
+                self.output_manager = VisualizationOutputManager(session_id=session_id)
+                logger.info("Visualization output manager initialized for real-time streaming")
+            else:
+                # Use local output manager for file-based output
+                self.output_manager = LocalOutputManager(
+                    output_dir=os.getenv('OUTPUT_DIR', '/app/outputs'),
+                    session_id=session_id
+                )
+                logger.info("Local output manager initialized for file-based output")
             
             # Initialize API client for lens identifier
             from external.api_client import APIClient

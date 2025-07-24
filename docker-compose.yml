@@ -82,6 +82,12 @@ services:
       - PROCESSING_RESOLUTION=${PROCESSING_RESOLUTION:-720}
       - MODEL_NAME=${MODEL_NAME:-sam2_tiny}  # Options: sam2_tiny, sam2_small, sam2_base_plus, sam2_large, fastsam_x
       
+      # Video tracker configuration - optimized for performance
+      - VIDEO_TRACKER_TYPE=${VIDEO_TRACKER_TYPE:-sam2_realtime}  # Use SAM2 realtime tracker
+      - REPROMPT_INTERVAL=${REPROMPT_INTERVAL:-5}  # Re-detect objects every 5 frames
+      - MAX_TRACKS=${MAX_TRACKS:-5}  # Limit to 5 objects for performance
+      - SAM_VIDEO_MIN_AREA=${SAM_VIDEO_MIN_AREA:-1000}  # Min area threshold to filter small objects
+      
       # ========== System Configuration ==========
       - DEVICE=cuda
       - NVIDIA_VISIBLE_DEVICES=all
@@ -89,6 +95,7 @@ services:
       - METRICS_ENABLED=${METRICS_ENABLED:-true}
       - RERUN_ENABLED=${RERUN_ENABLED:-true}
       - RERUN_CONNECT_URL=${RERUN_CONNECT_URL:-rerun+http://127.0.0.1:9876/proxy}
+      - USE_VISUALIZATION_OUTPUT=${USE_VISUALIZATION_OUTPUT:-true}
       
       # ========== API Configuration ==========
       - USE_SERPAPI=${USE_SERPAPI:-false}
@@ -690,6 +697,42 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+
+  visualization:
+    build:
+      context: .
+      dockerfile: ./visualization/Dockerfile
+    image: visualization:latest
+    profiles: ["visualization"]
+    container_name: worldsystem-visualization
+    network_mode: host
+    environment:
+      # ========== RabbitMQ Configuration ==========
+      - RABBITMQ_URL=amqp://127.0.0.1:5672
+      - FRAME_PROCESSOR_OUTPUTS_EXCHANGE=frame_processor_outputs
+      
+      # ========== Rerun Configuration ==========
+      - RERUN_PORT=${RERUN_PORT:-9876}
+      - RERUN_ENABLED=${RERUN_ENABLED:-true}
+      
+      # ========== System Configuration ==========
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+      
+    volumes:
+      - ${WORKSPACE}/visualization:/app/visualization:ro
+      - ${WORKSPACE}/common:/app/common:ro
+      - ${WORKSPACE}/frame_processor/outputs:/app/outputs:ro
+      
+    depends_on:
+      - rabbitmq
+      
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
 networks:
   default:

@@ -15,16 +15,16 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy requirements
-COPY requirements.txt .
+COPY visualization/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . /app/
+COPY visualization/ /app/
 
 # Copy common utilities
-COPY ../common /app/common
+COPY common/ /app/common
 
 # Expose Rerun viewer port
 EXPOSE 9876

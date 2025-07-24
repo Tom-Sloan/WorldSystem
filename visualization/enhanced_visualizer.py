@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 import time
 
-from core.utils import get_logger
+import logging
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class ViewMode(Enum):

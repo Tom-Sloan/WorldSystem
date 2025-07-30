@@ -101,7 +101,20 @@ int main(int argc, char* argv[]) {
         const char* unlink_shm_env = std::getenv("MESH_SERVICE_UNLINK_SHM");
         bool unlink_shm = unlink_shm_env ? (std::string(unlink_shm_env) == "true") : false;
         
-        // Initialize components
+        // Initialize RabbitMQ first to allocate small host memory before large device allocations
+        std::cout << "[DEBUG MAIN] Creating RabbitMQConsumer..." << std::endl;
+        auto rabbitmq_consumer = std::make_shared<mesh_service::RabbitMQConsumer>(rabbitmq_url);
+        std::cout << "[DEBUG MAIN] RabbitMQConsumer created" << std::endl;
+        
+        // Connect RabbitMQ early (handler not set yet; messages will be skipped safely)
+        std::cout << "[DEBUG MAIN] About to connect to RabbitMQ at " << rabbitmq_url << std::endl;
+        std::cout << "Connecting to RabbitMQ at " << rabbitmq_url << "..." << std::endl;
+        rabbitmq_consumer->connect();
+        std::cout << "[DEBUG MAIN] RabbitMQ connected, starting consumer..." << std::endl;
+        rabbitmq_consumer->start();
+        std::cout << "[DEBUG MAIN] RabbitMQ consumer started" << std::endl;
+        
+        // Now perform large allocations
         std::cout << "[DEBUG MAIN] Creating SharedMemoryManager..." << std::endl;
         auto shared_memory = std::make_shared<mesh_service::SharedMemoryManager>();
         std::cout << "[DEBUG MAIN] SharedMemoryManager created" << std::endl;
@@ -110,98 +123,17 @@ int main(int argc, char* argv[]) {
         auto mesh_generator = std::make_shared<mesh_service::GPUMeshGenerator>();
         std::cout << "[DEBUG MAIN] GPUMeshGenerator created" << std::endl;
         
-        std::cout << "[DEBUG MAIN] Creating RabbitMQConsumer..." << std::endl;
-        auto rabbitmq_consumer = std::make_shared<mesh_service::RabbitMQConsumer>(rabbitmq_url);
-        std::cout << "[DEBUG MAIN] RabbitMQConsumer created" << std::endl;
-        
+        // Create RerunPublisher before lambda so it can be captured
         std::cout << "[DEBUG MAIN] Creating RerunPublisher..." << std::endl;
         auto rerun_publisher = std::make_shared<mesh_service::RerunPublisher>("mesh_service", rerun_address, rerun_enabled);
         std::cout << "[DEBUG MAIN] RerunPublisher created" << std::endl;
         
-        // Configure mesh generator using configuration manager
-        mesh_generator->setMethod(mesh_service::MeshMethod::TSDF_MARCHING_CUBES);
-        mesh_generator->setQualityAdaptive(true);  // Enable adaptive quality based on camera velocity
-        mesh_generator->setSimplificationRatio(
-            CONFIG_FLOAT("MESH_SIMPLIFICATION_RATIO", mesh_service::config::AlgorithmConfig::DEFAULT_SIMPLIFICATION_RATIO)
-        );
-        
-        std::cout << "Mesh service configured with new algorithm selector:" << std::endl;
-        std::cout << "  - NVIDIA Marching Cubes with optimized TSDF" << std::endl;
-        std::cout << "  - Velocity-based algorithm switching (future-ready)" << std::endl;
-        std::cout << "  - GPU Octree for spatial indexing" << std::endl;
-        std::cout << "  - Memory pool allocation (1GB)" << std::endl;
-        std::cout << "  - 90% spatial overlap deduplication" << std::endl;
-        std::cout << "  - Environment-based configuration" << std::endl;
-        
-        // Display TSDF configuration from environment
-        const char* voxel_size = std::getenv("TSDF_VOXEL_SIZE");
-        const char* truncation = std::getenv("TSDF_TRUNCATION_DISTANCE");
-        const char* max_weight = std::getenv("TSDF_MAX_WEIGHT");
-        const char* bounds_min = std::getenv("TSDF_VOLUME_MIN");
-        const char* bounds_max = std::getenv("TSDF_VOLUME_MAX");
-        
-        if (voxel_size || truncation || max_weight || bounds_min || bounds_max) {
-            std::cout << "\nTSDF Environment Configuration:" << std::endl;
-            if (voxel_size) std::cout << "  TSDF_VOXEL_SIZE: " << voxel_size << "m" << std::endl;
-            if (truncation) std::cout << "  TSDF_TRUNCATION_DISTANCE: " << truncation << "m" << std::endl;
-            if (max_weight) std::cout << "  TSDF_MAX_WEIGHT: " << max_weight << std::endl;
-            if (bounds_min) std::cout << "  TSDF_VOLUME_MIN: " << bounds_min << std::endl;
-            if (bounds_max) std::cout << "  TSDF_VOLUME_MAX: " << bounds_max << std::endl;
-        }
-        
-        // Connect to Rerun
-        if (rerun_enabled) {
-            std::cout << "[DEBUG MAIN] About to connect to Rerun..." << std::endl;
-            std::cout << "[DEBUG MAIN] rerun_publisher pointer: " << rerun_publisher.get() << std::endl;
-            
-            // TEMPORARILY DISABLE RERUN to isolate crash
-            std::cout << "[DEBUG MAIN] TEMPORARILY DISABLING RERUN CONNECTION TO ISOLATE CRASH" << std::endl;
-            rerun_enabled = false;
-            rerun_publisher->setEnabled(false);
-            
-            /*
-            if (rerun_publisher->connect()) {
-                std::cout << "Connected to Rerun viewer at " << rerun_address << std::endl;
-                std::cout << "[DEBUG MAIN] Rerun connection successful" << std::endl;
-                std::cout << "[DEBUG MAIN] About to test rerun functionality..." << std::endl;
-                
-                // Set up a pinhole camera view for better visualization
-                // This helps Rerun understand the 3D space better
-                // Camera matrix - will be used when we add camera visualization
-                // float camera_matrix[9] = {
-                //     500.0f, 0.0f, 320.0f,    // fx, 0, cx
-                //     0.0f, 500.0f, 240.0f,    // 0, fy, cy
-                //     0.0f, 0.0f, 1.0f         // 0, 0, 1
-                // };
-                
-                // Log initial camera setup
-                std::cout << "[DEBUG MAIN] Creating initial camera pose array..." << std::endl;
-                float initial_pose[16] = {
-                    1, 0, 0, 0,
-                    0, 1, 0, 0,
-                    0, 0, 1, -5,  // Position camera 5 units back
-                    0, 0, 0, 1
-                };
-                std::cout << "[DEBUG MAIN] About to log camera pose to Rerun..." << std::endl;
-                rerun_publisher->logCameraPose(initial_pose, "/mesh_service/camera");
-                std::cout << "[DEBUG MAIN] Camera pose logged successfully" << std::endl;
-                std::cout << "[DEBUG MAIN] Exiting Rerun setup block successfully" << std::endl;
-            } else {
-                std::cerr << "Failed to connect to Rerun viewer" << std::endl;
-                rerun_enabled = false;
-                rerun_publisher->setEnabled(false);
-            }
-            */
-        }
-        std::cout << "[DEBUG MAIN] After Rerun connection block" << std::endl;
-        
-        // Statistics
+        // Statistics variables - declare before lambda
         int frame_count = 0;
         auto start_time = std::chrono::steady_clock::now();
         
+        // Set handler after large allocations (captures mesh_generator/shared_memory)
         std::cout << "[DEBUG MAIN] About to set up RabbitMQ keyframe handler" << std::endl;
-        
-        // Set up RabbitMQ keyframe handler
         rabbitmq_consumer->setKeyframeHandler([&](const mesh_service::KeyframeMessage& msg) {
             try {
                 frame_count++;
@@ -314,7 +246,7 @@ int main(int argc, char* argv[]) {
                             auto pose_us = std::chrono::duration_cast<std::chrono::microseconds>(
                                 pose_end - pose_start).count();
                             std::cout << "[DEBUG] Camera pose logged" << std::endl;
-                            std::cout << "[TIMING] Camera pose log: " << pose_us << " µs" << std::endl;
+                            std::cout << "[TIMING] Camera pose log: " << pose_us << " Âµs" << std::endl;
                         }
                         */
                     }
@@ -390,8 +322,70 @@ int main(int argc, char* argv[]) {
                 mesh_service::Metrics::instance().recordError();
             }
         });
-        
         std::cout << "[DEBUG MAIN] RabbitMQ handler set up successfully" << std::endl;
+        
+        // Continue with remaining initialization (unchanged)
+        
+        // Configure mesh generator using configuration manager
+        mesh_generator->setMethod(mesh_service::MeshMethod::TSDF_MARCHING_CUBES);
+        mesh_generator->setQualityAdaptive(true);  // Enable adaptive quality based on camera velocity
+        mesh_generator->setSimplificationRatio(
+            CONFIG_FLOAT("MESH_SIMPLIFICATION_RATIO", mesh_service::config::AlgorithmConfig::DEFAULT_SIMPLIFICATION_RATIO)
+        );
+        
+        std::cout << "Mesh service configured with new algorithm selector:" << std::endl;
+        std::cout << "  - NVIDIA Marching Cubes with optimized TSDF" << std::endl;
+        std::cout << "  - Velocity-based algorithm switching (future-ready)" << std::endl;
+        std::cout << "  - GPU Octree for spatial indexing" << std::endl;
+        std::cout << "  - Memory pool allocation (1GB)" << std::endl;
+        std::cout << "  - 90% spatial overlap deduplication" << std::endl;
+        std::cout << "  - Environment-based configuration" << std::endl;
+        
+        // Display TSDF configuration from environment
+        const char* voxel_size = std::getenv("TSDF_VOXEL_SIZE");
+        const char* truncation = std::getenv("TSDF_TRUNCATION_DISTANCE");
+        const char* max_weight = std::getenv("TSDF_MAX_WEIGHT");
+        const char* bounds_min = std::getenv("TSDF_VOLUME_MIN");
+        const char* bounds_max = std::getenv("TSDF_VOLUME_MAX");
+        
+        if (voxel_size || truncation || max_weight || bounds_min || bounds_max) {
+            std::cout << "\nTSDF Environment Configuration:" << std::endl;
+            if (voxel_size) std::cout << "  TSDF_VOXEL_SIZE: " << voxel_size << "m" << std::endl;
+            if (truncation) std::cout << "  TSDF_TRUNCATION_DISTANCE: " << truncation << "m" << std::endl;
+            if (max_weight) std::cout << "  TSDF_MAX_WEIGHT: " << max_weight << std::endl;
+            if (bounds_min) std::cout << "  TSDF_VOLUME_MIN: " << bounds_min << std::endl;
+            if (bounds_max) std::cout << "  TSDF_VOLUME_MAX: " << bounds_max << std::endl;
+        }
+        
+        // Connect to Rerun
+        if (rerun_enabled) {
+            std::cout << "[DEBUG MAIN] About to connect to Rerun..." << std::endl;
+            std::cout << "[DEBUG MAIN] rerun_publisher pointer: " << rerun_publisher.get() << std::endl;
+            
+            if (rerun_publisher->connect()) {
+                std::cout << "Connected to Rerun viewer at " << rerun_address << std::endl;
+                std::cout << "[DEBUG MAIN] Rerun connection successful" << std::endl;
+                std::cout << "[DEBUG MAIN] About to test rerun functionality..." << std::endl;
+                
+                // Log initial camera setup
+                std::cout << "[DEBUG MAIN] Creating initial camera pose array..." << std::endl;
+                float initial_pose[16] = {
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, -5,  // Position camera 5 units back
+                    0, 0, 0, 1
+                };
+                std::cout << "[DEBUG MAIN] About to log camera pose to Rerun..." << std::endl;
+                rerun_publisher->logCameraPose(initial_pose, "/mesh_service/camera");
+                std::cout << "[DEBUG MAIN] Camera pose logged successfully" << std::endl;
+                std::cout << "[DEBUG MAIN] Exiting Rerun setup block successfully" << std::endl;
+            } else {
+                std::cerr << "Failed to connect to Rerun viewer" << std::endl;
+                rerun_enabled = false;
+                rerun_publisher->setEnabled(false);
+            }
+        }
+        std::cout << "[DEBUG MAIN] After Rerun connection block" << std::endl;
         
         // Start metrics server
         std::cout << "[DEBUG MAIN] Creating metrics server on port " << metrics_port << std::endl;
@@ -399,14 +393,6 @@ int main(int argc, char* argv[]) {
         std::cout << "[DEBUG MAIN] Starting metrics server..." << std::endl;
         metrics_server.run();
         std::cout << "Metrics server started on port " << metrics_port << std::endl;
-        
-        // Connect to RabbitMQ
-        std::cout << "[DEBUG MAIN] About to connect to RabbitMQ at " << rabbitmq_url << std::endl;
-        std::cout << "Connecting to RabbitMQ at " << rabbitmq_url << "..." << std::endl;
-        rabbitmq_consumer->connect();
-        std::cout << "[DEBUG MAIN] RabbitMQ connected, starting consumer..." << std::endl;
-        rabbitmq_consumer->start();
-        std::cout << "[DEBUG MAIN] RabbitMQ consumer started" << std::endl;
         
         std::cout << "Mesh Service running. Waiting for keyframes from SLAM3R..." << std::endl;
         

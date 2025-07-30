@@ -229,6 +229,9 @@ services:
       - SLAM3R_RECONSTRUCTION_VIS_EXCHANGE=${SLAM3R_RECONSTRUCTION_VIS_EXCHANGE:-slam3r_reconstruction_vis_exchange}
       - SLAM3R_KEYFRAME_EXCHANGE=${SLAM3R_KEYFRAME_EXCHANGE:-slam3r_keyframe_exchange}
       - SLAM3R_OUTPUT_TO_RABBITMQ=${SLAM3R_OUTPUT_TO_RABBITMQ:-false}
+      
+      # WebSocket video stream URL
+      - VIDEO_STREAM_URL=ws://127.0.0.1:5001/ws/video/consume
 
       # Paths & checkpoints
       - SLAM3R_CHECKPOINTS_DIR=/checkpoints_mount
@@ -438,7 +441,8 @@ services:
       
       # ========== ALGORITHM SELECTION (NEW) ==========
       # Algorithm selection mode
-      - MESH_ALGORITHM=${MESH_ALGORITHM:-OPEN3D_POISSON}              # AUTO, MARCHING_CUBES, OPEN3D_POISSON, NKSR
+      - MESH_ALGORITHM=${MESH_ALGORITHM:-MARCHING_CUBES}
+      # MARCHING_CUBES, OPEN3D_POISSON, NKSR
       
       # ========== OPEN3D POISSON CONFIGURATION ==========
       # Open3D Poisson reconstruction parameters

@@ -73,6 +73,9 @@ RUN pip3 install -r /app/SLAM3R_engine/requirements.txt
 # Install optional dependencies including Open3D for mesh generation
 RUN pip3 install -r /app/SLAM3R_engine/requirements_optional.txt
 
+# Add WebSocket client and H.264 decoder for direct video stream consumption
+RUN pip3 install websockets av
+
 
 # Ensure libGL is available for Rerun (even if running headlessly, some parts might link against it)
 RUN apt-get update && apt-get install -y libgl1-mesa-glx && apt-get clean && rm -rf /var/lib/apt/lists/*

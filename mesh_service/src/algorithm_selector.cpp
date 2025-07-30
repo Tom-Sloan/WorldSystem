@@ -136,15 +136,6 @@ bool AlgorithmSelector::initialize() {
     }
     */
     
-    // TODO: Initialize NKSR Client when implemented
-    // auto nksr = std::make_shared<NKSRClient>("localhost:50051");
-    // AlgorithmParams nksr_params;
-    // nksr_params.nksr.detail_level = 0.5f;
-    // nksr_params.nksr.chunk_size = 500000;
-    // if (!nksr->initialize(nksr_params)) {
-    //     return false;
-    // }
-    // algorithms_[ReconstructionMethod::NKSR] = nksr;
     
     return true;
 }
@@ -209,7 +200,7 @@ bool AlgorithmSelector::processWithAutoSelect(
     );
     
     std::cout << "[ALGORITHM SELECTOR] Selected method: " << static_cast<int>(method)
-              << " (0=NVIDIA_MARCHING_CUBES, 1=OPEN3D_POISSON, 2=NKSR)" << std::endl;
+              << " (0=NVIDIA_MARCHING_CUBES, 1=OPEN3D_POISSON)" << std::endl;
     std::cout << "[ALGORITHM SELECTOR] Camera velocity: " << camera_velocity << " m/s" << std::endl;
     std::cout << "[ALGORITHM SELECTOR] Points: " << num_points << ", Complexity: " << scene_complexity << std::endl;
     

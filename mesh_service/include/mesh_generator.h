@@ -10,7 +10,6 @@ namespace mesh_service {
 
 enum class MeshMethod {
     INCREMENTAL_POISSON,  // Primary - best for streaming
-    NKSR,                 // For large scenes
     TSDF_MARCHING_CUBES  // Fast preview
 };
 
@@ -64,12 +63,6 @@ private:
         MeshUpdate& update
     );
     
-    void generateNKSRMesh(
-        const SharedKeyframe* keyframe,
-        float3* d_points,
-        float3* d_normals,
-        MeshUpdate& update
-    );
     
     void generateMarchingCubesMesh(
         const SharedKeyframe* keyframe,

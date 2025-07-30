@@ -7,8 +7,7 @@ namespace mesh_service {
 
 enum class ReconstructionMethod {
     NVIDIA_MARCHING_CUBES,
-    OPEN3D_POISSON,
-    NKSR
+    OPEN3D_POISSON
 };
 
 struct AlgorithmParams {
@@ -30,11 +29,6 @@ struct AlgorithmParams {
             float point_weight;
             int solver_iterations;
         } poisson;
-        
-        struct {
-            float detail_level;
-            int chunk_size;
-        } nksr;
     };
     
     // Default constructor initializes marching cubes params

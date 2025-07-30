@@ -69,7 +69,6 @@ set(SOURCES
     src/normal_providers/camera_based_normal_provider.cu
     
     # Algorithm implementations
-    # src/algorithms/nksr_client.cpp  # Future: NKSR integration
     
     # Temporarily disabled for build
     # src/websocket_server.cpp

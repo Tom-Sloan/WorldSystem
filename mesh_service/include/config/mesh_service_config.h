@@ -65,11 +65,6 @@ struct AlgorithmConfig {
     // Incremental Poisson
     static constexpr int DEFAULT_POISSON_INCREMENTAL_BLOCK_SIZE = 10000;  // Points per block
     static constexpr float DEFAULT_POISSON_INCREMENTAL_OVERLAP_RATIO = 0.1f;
-    
-    // NKSR parameters
-    static constexpr float DEFAULT_NKSR_DETAIL_LEVEL = 0.5f;
-    static constexpr int DEFAULT_NKSR_CHUNK_SIZE = 500000;
-    static constexpr float DEFAULT_NKSR_SUPPORT_RADIUS = 0.05f;
 };
 
 // ========== SCENE CONFIGURATION ==========

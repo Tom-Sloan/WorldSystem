@@ -28,10 +28,7 @@ public:
 // Numeric provider IDs for cleaner configuration
 enum NormalProviderType {
     PROVIDER_CAMERA_BASED = 0,    // Fast, low quality (default)
-    PROVIDER_OPEN3D = 1,          // High quality, KD-tree based
-    PROVIDER_NANOFLANN = 2,       // CPU KD-tree (future)
-    PROVIDER_PCL_GPU = 3,         // PCL GPU (future)
-    PROVIDER_GPU_CUSTOM = 4       // Custom GPU kernel (future)
+    PROVIDER_OPEN3D = 1           // High quality, KD-tree based
 };
 
 // Factory for creating normal providers
@@ -41,9 +38,6 @@ public:
         switch(type) {
             case PROVIDER_CAMERA_BASED: return "Camera-based (fast)";
             case PROVIDER_OPEN3D: return "Open3D (quality)";
-            case PROVIDER_NANOFLANN: return "Nanoflann (CPU)";
-            case PROVIDER_PCL_GPU: return "PCL GPU";
-            case PROVIDER_GPU_CUSTOM: return "GPU Custom";
             default: return "Unknown";
         }
     }

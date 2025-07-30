@@ -77,19 +77,23 @@ bool CameraBasedNormalProvider::estimateNormals(
     
     // Configure kernel launch parameters
     dim3 block(256);
-    dim3 grid((num_points + block.x - 1) / block.x);
     
-    // Check for valid grid dimensions
+    // Check for valid grid dimensions BEFORE creating the grid
     int device;
     cudaGetDevice(&device);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device);
     
-    if (grid.x > prop.maxGridSize[0]) {
-        std::cerr << "[CAMERA NORMAL PROVIDER] Grid size " << grid.x 
-                  << " exceeds maximum " << prop.maxGridSize[0] << std::endl;
-        // Use 2D grid if needed
-        int grid_y = (grid.x + prop.maxGridSize[0] - 1) / prop.maxGridSize[0];
+    // Calculate 1D grid size
+    size_t grid_size_1d = (num_points + block.x - 1) / block.x;
+    
+    dim3 grid;
+    if (grid_size_1d <= prop.maxGridSize[0]) {
+        // Use 1D grid
+        grid = dim3(grid_size_1d, 1, 1);
+    } else {
+        // Use 2D grid
+        size_t grid_y = (grid_size_1d + prop.maxGridSize[0] - 1) / prop.maxGridSize[0];
         grid = dim3(prop.maxGridSize[0], grid_y, 1);
         std::cout << "[CAMERA NORMAL PROVIDER] Using 2D grid: " << grid.x << " x " << grid.y << std::endl;
     }

@@ -15,7 +15,6 @@ find_package(CUDA REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system thread)
 find_package(Eigen3 REQUIRED)
-find_package(CGAL REQUIRED)
 find_package(OpenMP)
 # msgpack is header-only, no find_package needed
 
@@ -56,7 +55,6 @@ set(SOURCES
     src/rabbitmq_consumer.cpp
     src/metrics.cpp
     src/rerun_publisher.cpp
-    src/normal_estimation.cu  # Still needed for normals
     src/configuration_manager.cpp  # New configuration system
     
     # New algorithm implementation
@@ -104,7 +102,6 @@ target_link_libraries(mesh_service PRIVATE
     ${CUDA_cusparse_LIBRARY}
     ${CUDA_cusolver_LIBRARY}
     ${CUDA_cufft_LIBRARY}
-    CGAL::CGAL
     pthread
     dl
     rt

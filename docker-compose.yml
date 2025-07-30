@@ -442,7 +442,7 @@ services:
       # ========== ALGORITHM SELECTION (NEW) ==========
       # Algorithm selection mode
       - MESH_ALGORITHM=${MESH_ALGORITHM:-MARCHING_CUBES}
-      # MARCHING_CUBES, OPEN3D_POISSON, NKSR
+      # Options: MARCHING_CUBES, OPEN3D_POISSON
       
       # ========== OPEN3D POISSON CONFIGURATION ==========
       # Open3D Poisson reconstruction parameters

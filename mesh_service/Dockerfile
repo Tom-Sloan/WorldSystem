@@ -1,9 +1,9 @@
 # mesh_service/Dockerfile
 # Mesh reconstruction service using NVIDIA Marching Cubes implementation
-# with algorithm selector for future Poisson/NKSR support
+# with optional Open3D Poisson reconstruction support
 FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 
-# Build argument for Open3D support (ON by default for Poisson reconstruction)
+# Build argument for Open3D support (OFF by default for faster builds)
 ARG USE_OPEN3D=OFF
 
 # Avoid interactive prompts

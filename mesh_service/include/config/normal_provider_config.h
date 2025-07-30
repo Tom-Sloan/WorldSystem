@@ -17,18 +17,6 @@ struct NormalProviderConfig {
     static constexpr float DEFAULT_OPEN3D_SEARCH_RADIUS = 0.1f;
     static constexpr bool DEFAULT_OPEN3D_FAST_NORMAL_COMPUTATION = true;
     
-    // Nanoflann provider settings (future)
-    static constexpr int DEFAULT_NANOFLANN_K_NEIGHBORS = 30;
-    static constexpr int DEFAULT_NANOFLANN_LEAF_SIZE = 10;
-    
-    // PCL GPU provider settings (future)
-    static constexpr int DEFAULT_PCL_K_NEIGHBORS = 30;
-    static constexpr float DEFAULT_PCL_SEARCH_RADIUS = 0.1f;
-    
-    // Custom GPU provider settings (future)
-    static constexpr int DEFAULT_GPU_BLOCK_SIZE = 256;
-    static constexpr int DEFAULT_GPU_K_NEIGHBORS = 32;
-    
     // Common normal estimation parameters
     static constexpr bool DEFAULT_ORIENT_NORMALS_TO_CAMERA = true;
     static constexpr bool DEFAULT_FLIP_NORMALS_TOWARDS_VIEWPOINT = true;

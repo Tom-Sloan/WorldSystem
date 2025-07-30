@@ -1,6 +1,8 @@
 #include "algorithm_selector.h"
 #include "algorithms/nvidia_marching_cubes.h"
+#ifdef HAS_OPEN3D
 #include "algorithms/open3d_poisson.h"
+#endif
 #include "config/configuration_manager.h"
 #include "config/mesh_service_config.h"
 #include "config/poisson_config.h"
@@ -110,10 +112,9 @@ bool AlgorithmSelector::initialize() {
     }
     algorithms_[ReconstructionMethod::NVIDIA_MARCHING_CUBES] = nvidia_mc;
     
+#ifdef HAS_OPEN3D
     // Initialize Open3D Poisson as primary reconstruction method
-    // TEMPORARILY DISABLED to isolate crash issue
-    std::cout << "[DEBUG] Temporarily skipping Open3D Poisson initialization to isolate crash" << std::endl;
-    /*
+    std::cout << "[DEBUG] Initializing Open3D Poisson reconstruction" << std::endl;
     auto open3d_poisson = std::make_shared<Open3DPoisson>();
     AlgorithmParams poisson_params;
     poisson_params.poisson.octree_depth = CONFIG_INT("MESH_POISSON_OCTREE_DEPTH", 
@@ -134,7 +135,9 @@ bool AlgorithmSelector::initialize() {
         std::cout << "  Point weight: " << poisson_params.poisson.point_weight << std::endl;
         std::cout << "  Solver iterations: " << poisson_params.poisson.solver_iterations << std::endl;
     }
-    */
+#else
+    std::cout << "[INFO] Open3D not available - Poisson reconstruction disabled" << std::endl;
+#endif
     
     
     return true;

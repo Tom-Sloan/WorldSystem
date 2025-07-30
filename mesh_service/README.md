@@ -344,8 +344,6 @@ This section documents the purpose of each file in the mesh service codebase.
 
 - **`src/mesh_generator.cu`** - Core mesh generation orchestrator. Manages the entire pipeline from point cloud input to mesh output
 - **`src/simple_tsdf.cu`** - TSDF (Truncated Signed Distance Function) volume implementation. Integrates point clouds into voxel grid
-- **`src/simple_mesh_generator.cu`** - Basic mesh generation for testing (deprecated, use mesh_generator.cu)
-- **`include/tsdf_config.h`** - TSDF-specific configuration parameters
 
 #### Algorithm Implementation
 

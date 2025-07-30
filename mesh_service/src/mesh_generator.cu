@@ -1,6 +1,5 @@
 #include "mesh_generator.h"
 #include "algorithm_selector.h"
-#include "normal_estimation.h"
 #include "normal_provider.h"
 #include "normal_providers/camera_based_normal_provider.h"
 #include "gpu_octree.h"
@@ -31,7 +30,6 @@ class GPUMeshGenerator::Impl {
 public:
     // Algorithm selector and components
     std::unique_ptr<AlgorithmSelector> algorithm_selector;
-    std::unique_ptr<NormalEstimation> normal_estimator;
     std::unique_ptr<GPUOctree> gpu_octree;
     std::unique_ptr<INormalProvider> normal_provider;
     
@@ -83,9 +81,6 @@ public:
         algorithm_selector = std::make_unique<AlgorithmSelector>();
         std::cout << "[DEBUG GPU_MESH_GEN] AlgorithmSelector created" << std::endl;
         
-        std::cout << "[DEBUG GPU_MESH_GEN] Creating NormalEstimation..." << std::endl;
-        normal_estimator = std::make_unique<NormalEstimation>();
-        std::cout << "[DEBUG GPU_MESH_GEN] NormalEstimation created" << std::endl;
         std::cout << "[DEBUG GPU_MESH_GEN] Creating GPUOctree..." << std::endl;
         gpu_octree = std::make_unique<GPUOctree>(
             CONFIG_FLOAT("MESH_OCTREE_SCENE_SIZE", mesh_service::config::SceneConfig::DEFAULT_OCTREE_SCENE_SIZE),
@@ -109,12 +104,6 @@ public:
         }
         std::cout << "[DEBUG GPU_MESH_GEN] Algorithm selector initialized" << std::endl;
         
-        // Configure normal estimation
-        NormalEstimation::Parameters normal_params;
-        normal_params.method = NormalEstimation::PCA;
-        normal_params.k_neighbors = CONFIG_INT("MESH_NORMAL_K_NEIGHBORS", 
-                                               mesh_service::config::AlgorithmConfig::DEFAULT_NORMAL_K_NEIGHBORS);
-        normal_estimator->setParameters(normal_params);
         
         last_frame_time = std::chrono::steady_clock::now();
         

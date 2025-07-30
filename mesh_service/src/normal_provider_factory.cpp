@@ -25,18 +25,6 @@ std::unique_ptr<INormalProvider> NormalProviderFactory::create(int provider_id) 
             return std::make_unique<CameraBasedNormalProvider>();
 #endif
         
-        case PROVIDER_NANOFLANN:
-            std::cerr << "[WARNING] Nanoflann provider not yet implemented, falling back to camera-based" << std::endl;
-            return std::make_unique<CameraBasedNormalProvider>();
-            
-        case PROVIDER_PCL_GPU:
-            std::cerr << "[WARNING] PCL GPU provider not yet implemented, falling back to camera-based" << std::endl;
-            return std::make_unique<CameraBasedNormalProvider>();
-            
-        case PROVIDER_GPU_CUSTOM:
-            std::cerr << "[WARNING] Custom GPU provider not yet implemented, falling back to camera-based" << std::endl;
-            return std::make_unique<CameraBasedNormalProvider>();
-        
         default:
             std::cerr << "[WARNING] Unknown provider " << provider_id << ", using default camera-based" << std::endl;
             return std::make_unique<CameraBasedNormalProvider>();

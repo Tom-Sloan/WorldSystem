@@ -1,416 +1,235 @@
 #include <iostream>
-#include <memory>
+#include <vector>
+#include <string>
 #include <thread>
-#include <csignal>
-#include <atomic>
 #include <chrono>
-#include <cstdlib>
-#include <exception>
+#include <cstring>
+#include <memory>
+#include <unordered_map>
+#include <array>
 
-#include "shared_memory.h"
-#include "mesh_generator.h"
-#include "rabbitmq_consumer.h"
-#include "metrics.h"
-#include "rerun_publisher.h"
-#include "normal_provider.h"
-#include "config/configuration_manager.h"
-#include "config/mesh_service_config.h"
-#include "config/normal_provider_config.h"
 
-std::atomic<bool> g_running{true};
+#include <rabbitmq-c/amqp.h>
+#include <rabbitmq-c/tcp_socket.h>
+#include <rabbitmq-c/framing.h>
 
-void signal_handler(int signal) {
-    std::cout << "Received signal " << signal << ", shutting down..." << std::endl;
-    g_running = false;
+#include <rerun.hpp>  // Rerun SDK C++
+
+#include <msgpack.hpp>  // msgpack-c
+
+#include "shared_memory.h"  // Your provided header
+
+// Namespace alias
+using namespace mesh_service;
+
+// Global Rerun recording stream
+std::shared_ptr<rerun::RecordingStream> rec;
+
+// Batch buffers (flush every BATCH_SIZE)
+constexpr int BATCH_SIZE = 5;
+struct BatchedData {
+    std::vector<rerun::Position3D> positions;
+    std::vector<rerun::Color> colors;
+    std::array<float, 16> transform_matrix;  // 4x4 matrix
+    std::string entity_path;
+};
+std::vector<BatchedData> batch;
+
+// SharedMemoryManager instance (global for simplicity)
+SharedMemoryManager shm_manager;
+
+// Function to connect to Rerun
+bool connect_to_rerun(const std::string& addr) {
+    rec = std::make_shared<rerun::RecordingStream>("slam3r_viz_stream");
+    
+    // Use gRPC connection (default localhost:9876)
+    auto result = rec->connect_grpc();
+    if (result.is_err()) {
+        std::cerr << "Failed to connect to Rerun via gRPC" << std::endl;
+        return false;
+    }
+    
+    std::cout << "Connected to Rerun via gRPC" << std::endl;
+    return true;
 }
 
-int main(int argc, char* argv[]) {
-    // Suppress unused parameter warnings
-    (void)argc;
-    (void)argv;
-    // Set up signal handlers
-    std::signal(SIGINT, signal_handler);
-    std::signal(SIGTERM, signal_handler);
-    
-    std::cout << "\n============================================" << std::endl;
-    std::cout << "        MESH SERVICE v2.1 STARTING          " << std::endl;
-    std::cout << "============================================" << std::endl;
-    
-    // Get normal provider configuration
-    int normal_provider = CONFIG_INT("MESH_NORMAL_PROVIDER", 
-                                    mesh_service::config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER);
-    std::cout << "[CONFIG] Normal Provider: " << normal_provider 
-              << " (" << mesh_service::NormalProviderFactory::getProviderTypeName(normal_provider) << ")" << std::endl;
-    
-    // Check Open3D availability
-#ifdef HAS_OPEN3D
-    std::cout << "[CONFIG] Open3D Support: ENABLED" << std::endl;
-#else
-    std::cout << "[CONFIG] Open3D Support: DISABLED" << std::endl;
-#endif
-    
-    std::cout << "[CONFIG] TSDF Method: Improved camera carving" << std::endl;
-    std::cout << "[CONFIG] Performance Mode: " 
-              << (normal_provider == 0 ? "REAL-TIME (~50 FPS)" : "QUALITY") << std::endl;
-    std::cout << "============================================\n" << std::endl;
-    
-    // Initialize configuration manager
-    auto& config = mesh_service::ConfigurationManager::getInstance();
-    
-    // Validate configuration
-    if (!config.validateConfiguration()) {
-        std::cerr << "Invalid configuration detected. Please check environment variables." << std::endl;
-        return 1;
+// Function to flush batch to Rerun
+void flush_batch_to_rerun() {
+    if (batch.empty()) return;
+
+    for (const auto& data : batch) {
+        // Log points with colors
+        rec->log(data.entity_path,
+                rerun::Points3D(data.positions)
+                    .with_colors(data.colors));
+        
+        // Log transform (for camera pose) - extract from 4x4 matrix
+        std::array<float, 9> mat3_flat = {
+            data.transform_matrix[0], data.transform_matrix[4], data.transform_matrix[8],  // col 0
+            data.transform_matrix[1], data.transform_matrix[5], data.transform_matrix[9],  // col 1
+            data.transform_matrix[2], data.transform_matrix[6], data.transform_matrix[10]  // col 2
+        };
+        rec->log(data.entity_path + "/camera",
+                rerun::Transform3D(
+                    rerun::components::Translation3D(data.transform_matrix[12], data.transform_matrix[13], data.transform_matrix[14]),
+                    rerun::components::TransformMat3x3(mat3_flat),
+                    true
+                ));
     }
-    
-    // Log configuration if debug mode is enabled
-    if (std::getenv("MESH_DEBUG_CONFIG")) {
-        config.logConfiguration();
+
+    batch.clear();
+}
+
+// Function to process a keyframe and add to batch
+void process_keyframe(const std::string& shm_key, uint32_t point_count, const std::string& keyframe_id) {
+    // Open keyframe using manager
+    SharedKeyframe* keyframe = shm_manager.open_keyframe(shm_key);
+    if (!keyframe) {
+        std::cerr << "Failed to open keyframe: " << shm_key << std::endl;
+        return;
     }
+    std::cout << "Successfully opened shared memory: " << shm_key << std::endl;
+
+    // Get data pointers
+    float* points = shm_manager.get_points(keyframe);
+    uint8_t* colors = shm_manager.get_colors(keyframe);
+
+    // Prepare batch data
+    BatchedData data;
+    data.entity_path = "world/points/" + keyframe_id;
     
-    // Set up terminate handler for better debugging
-    std::set_terminate([]() {
-        std::cerr << "Uncaught exception or termination!" << std::endl;
-        try {
-            auto ex = std::current_exception();
-            if (ex) {
-                std::rethrow_exception(ex);
-            }
-        } catch (const std::exception& e) {
-            std::cerr << "Exception: " << e.what() << std::endl;
-        } catch (...) {
-            std::cerr << "Unknown exception" << std::endl;
-        }
-        std::abort();
-    });
+    // Convert points and colors
+    data.positions.reserve(point_count);
+    data.colors.reserve(point_count);
     
-    try {
-        // Get configuration from environment
-        const char* rabbitmq_url_env = std::getenv("RABBITMQ_URL");
-        std::string rabbitmq_url = rabbitmq_url_env ? rabbitmq_url_env : "amqp://127.0.0.1:5672";
-        
-        const char* rerun_address_env = std::getenv("RERUN_VIEWER_ADDRESS");
-        std::string rerun_address = rerun_address_env ? rerun_address_env : "127.0.0.1:9876";
-        
-        const char* rerun_enabled_env = std::getenv("RERUN_ENABLED");
-        bool rerun_enabled = rerun_enabled_env ? (std::string(rerun_enabled_env) == "true") : true;
-        
-        const char* metrics_port_env = std::getenv("METRICS_PORT");
-        int metrics_port = metrics_port_env ? std::atoi(metrics_port_env) : 9091;
-        
-        const char* unlink_shm_env = std::getenv("MESH_SERVICE_UNLINK_SHM");
-        bool unlink_shm = unlink_shm_env ? (std::string(unlink_shm_env) == "true") : false;
-        
-        // Initialize RabbitMQ first to allocate small host memory before large device allocations
-        std::cout << "[DEBUG MAIN] Creating RabbitMQConsumer..." << std::endl;
-        auto rabbitmq_consumer = std::make_shared<mesh_service::RabbitMQConsumer>(rabbitmq_url);
-        std::cout << "[DEBUG MAIN] RabbitMQConsumer created" << std::endl;
-        
-        // Connect RabbitMQ early (handler not set yet; messages will be skipped safely)
-        std::cout << "[DEBUG MAIN] About to connect to RabbitMQ at " << rabbitmq_url << std::endl;
-        std::cout << "Connecting to RabbitMQ at " << rabbitmq_url << "..." << std::endl;
-        rabbitmq_consumer->connect();
-        std::cout << "[DEBUG MAIN] RabbitMQ connected, starting consumer..." << std::endl;
-        rabbitmq_consumer->start();
-        std::cout << "[DEBUG MAIN] RabbitMQ consumer started" << std::endl;
-        
-        // Now perform large allocations
-        std::cout << "[DEBUG MAIN] Creating SharedMemoryManager..." << std::endl;
-        auto shared_memory = std::make_shared<mesh_service::SharedMemoryManager>();
-        std::cout << "[DEBUG MAIN] SharedMemoryManager created" << std::endl;
-        
-        std::cout << "[DEBUG MAIN] Creating GPUMeshGenerator..." << std::endl;
-        auto mesh_generator = std::make_shared<mesh_service::GPUMeshGenerator>();
-        std::cout << "[DEBUG MAIN] GPUMeshGenerator created" << std::endl;
-        
-        // Create RerunPublisher before lambda so it can be captured
-        std::cout << "[DEBUG MAIN] Creating RerunPublisher..." << std::endl;
-        auto rerun_publisher = std::make_shared<mesh_service::RerunPublisher>("mesh_service", rerun_address, rerun_enabled);
-        std::cout << "[DEBUG MAIN] RerunPublisher created" << std::endl;
-        
-        // Statistics variables - declare before lambda
-        int frame_count = 0;
-        auto start_time = std::chrono::steady_clock::now();
-        
-        // Set handler after large allocations (captures mesh_generator/shared_memory)
-        std::cout << "[DEBUG MAIN] About to set up RabbitMQ keyframe handler" << std::endl;
-        rabbitmq_consumer->setKeyframeHandler([&](const mesh_service::KeyframeMessage& msg) {
-            try {
-                frame_count++;
-                auto process_start = std::chrono::steady_clock::now();
-                
-                std::cout << "\nReceived keyframe " << msg.keyframe_id 
-                         << " via RabbitMQ, shm_key: " << msg.shm_key << std::endl;
-                
-                // Open shared memory segment
-                std::cout << "[DEBUG] Opening shared memory segment: " << msg.shm_key << std::endl;
-                auto* keyframe = shared_memory->open_keyframe(msg.shm_key);
-                
-                if (keyframe) {
-                    std::cout << "[DEBUG] Successfully opened shared memory" << std::endl;
-                    std::cout << "Processing keyframe with " << keyframe->point_count << " points" << std::endl;
-                    
-                    // Generate mesh
-                    std::cout << "[DEBUG] Creating MeshUpdate object" << std::endl;
-                    mesh_service::MeshUpdate update;
-                    std::cout << "[DEBUG] Calling generateIncrementalMesh" << std::endl;
-                    mesh_generator->generateIncrementalMesh(keyframe, update);
-                    std::cout << "[DEBUG] Mesh generation complete" << std::endl;
-                    
-                    auto process_end = std::chrono::steady_clock::now();
-                    auto process_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        process_end - process_start).count();
-                    
-                    std::cout << "Generated mesh with " 
-                             << update.vertices.size() / 3 << " vertices, "
-                             << update.faces.size() / 3 << " faces"
-                             << " in " << process_time << "ms" << std::endl;
-                    
-                    // Store individual component times for summary
-                    auto mesh_gen_time = process_time;
-                    
-                    // Record metrics
-                    std::cout << "[DEBUG] Recording metrics" << std::endl;
-                    mesh_service::Metrics::instance().recordMeshGeneration(
-                        update.vertices.size() / 3, 
-                        update.faces.size() / 3
-                    );
-                    mesh_service::Metrics::instance().recordProcessingTime(process_time / 1000.0);
-                    
-                    // Send mesh to Rerun
-                    auto rerun_start = std::chrono::steady_clock::now();
-                    long rerun_total_ms = 0;  // Initialize at outer scope
-                    std::cout << "[DEBUG] Checking Rerun: enabled=" << rerun_enabled 
-                             << ", connected=" << (rerun_publisher ? rerun_publisher->isConnected() : false) << std::endl;
-                    if (rerun_enabled && rerun_publisher->isConnected()) {
-                        // Extract vertex colors from the keyframe if available
-                        uint8_t* keyframe_colors = shared_memory->get_colors(keyframe);
-                        std::cout << "[DEBUG] Keyframe has colors: " << (keyframe_colors != nullptr) 
-                                 << ", vertices count: " << update.vertices.size() << std::endl;
-                        if (keyframe_colors && update.vertices.size() > 0) {
-                            // Colors are in the keyframe data
-                            std::cout << "[DEBUG] Extracting colors for " << keyframe->point_count << " points" << std::endl;
-                            auto color_extract_start = std::chrono::steady_clock::now();
-                            
-                            // Get colors pointer from shared memory
-                            uint8_t* shm_colors = shared_memory->get_colors(keyframe);
-                            if (!shm_colors) {
-                                std::cerr << "[DEBUG] Failed to get colors pointer from shared memory" << std::endl;
-                            } else {
-                                std::vector<uint8_t> colors;
-                                colors.reserve(keyframe->point_count * 3);
-                                for (uint32_t i = 0; i < keyframe->point_count * 3; i++) {
-                                    colors.push_back(shm_colors[i]);
-                                }
-                                auto color_extract_end = std::chrono::steady_clock::now();
-                                auto color_extract_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    color_extract_end - color_extract_start).count();
-                                std::cout << "[DEBUG] Color extraction complete, size: " << colors.size() << std::endl;
-                                std::cout << "[TIMING] Color extraction: " << color_extract_ms << " ms" << std::endl;
-                                
-                                // Publish colored mesh
-                                std::cout << "[DEBUG] Publishing colored mesh to Rerun" << std::endl;
-                                auto publish_start = std::chrono::steady_clock::now();
-                                rerun_publisher->publishColoredMesh(
-                                    update.vertices, 
-                                    update.faces, 
-                                    colors,
-                                    "/mesh_service/reconstruction"
-                                );
-                                auto publish_end = std::chrono::steady_clock::now();
-                                auto publish_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    publish_end - publish_start).count();
-                                std::cout << "[DEBUG] Colored mesh published" << std::endl;
-                                std::cout << "[TIMING] Rerun publish (colored): " << publish_ms << " ms" << std::endl;
-                            }
-                        } else {
-                            // Publish mesh without colors
-                            std::cout << "[DEBUG] Publishing mesh without colors to Rerun" << std::endl;
-                            auto publish_start = std::chrono::steady_clock::now();
-                            rerun_publisher->publishMesh(update, "/mesh_service/reconstruction");
-                            auto publish_end = std::chrono::steady_clock::now();
-                            auto publish_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                publish_end - publish_start).count();
-                            std::cout << "[DEBUG] Mesh published" << std::endl;
-                            std::cout << "[TIMING] Rerun publish (no color): " << publish_ms << " ms" << std::endl;
-                        }
-                        
-                        // Also log camera pose if available
-                        // TODO: Fix camera pose logging - currently causing segfault
-                        /*
-                        if (keyframe->pose_matrix[0] != 0.0f) {  // Check if pose is valid
-                            std::cout << "[DEBUG] Logging camera pose" << std::endl;
-                            auto pose_start = std::chrono::steady_clock::now();
-                            rerun_publisher->logCameraPose(keyframe->pose_matrix, "/mesh_service/camera");
-                            auto pose_end = std::chrono::steady_clock::now();
-                            auto pose_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                                pose_end - pose_start).count();
-                            std::cout << "[DEBUG] Camera pose logged" << std::endl;
-                            std::cout << "[TIMING] Camera pose log: " << pose_us << " Âµs" << std::endl;
-                        }
-                        */
-                    }
-                    
-                    auto rerun_end = std::chrono::steady_clock::now();
-                    rerun_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        rerun_end - rerun_start).count();
-                    if (rerun_enabled && rerun_publisher->isConnected()) {
-                        std::cout << "[TIMING] Total Rerun publishing: " << rerun_total_ms << " ms" << std::endl;
-                    }
-                    
-                    // Close shared memory
-                    auto cleanup_start = std::chrono::steady_clock::now();
-                    std::cout << "[DEBUG] Closing shared memory" << std::endl;
-                    shared_memory->close_keyframe(keyframe);
-                    std::cout << "[DEBUG] Shared memory closed" << std::endl;
-                    
-                    // Optionally unlink the shared memory segment
-                    if (unlink_shm) {
-                        std::cout << "[DEBUG] Unlinking shared memory: " << msg.shm_key << std::endl;
-                        shared_memory->unlink_keyframe(msg.shm_key);
-                        std::cout << "[DEBUG] Shared memory unlinked" << std::endl;
-                    }
-                    auto cleanup_end = std::chrono::steady_clock::now();
-                    auto cleanup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        cleanup_end - cleanup_start).count();
-                    std::cout << "[TIMING] Cleanup operations: " << cleanup_ms << " ms" << std::endl;
-                    
-                    // Calculate total frame processing time
-                    auto frame_end = std::chrono::steady_clock::now();
-                    auto frame_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        frame_end - process_start).count();
-                    
-                    // Print comprehensive timing summary
-                    std::cout << "\n========== FRAME PROCESSING TIMING SUMMARY ==========" << std::endl;
-                    std::cout << "[NORMAL PROVIDER STATUS] " << mesh_service::NormalProviderFactory::getProviderTypeName(
-                                  CONFIG_INT("MESH_NORMAL_PROVIDER", mesh_service::config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER))
-                             << std::endl;
-                    std::cout << "Frame " << frame_count << " - Total Time: " << frame_total_ms << " ms" << std::endl;
-                    std::cout << "Breakdown:" << std::endl;
-                    std::cout << "  1. Mesh Generation: " << mesh_gen_time << " ms (" 
-                             << (mesh_gen_time * 100.0 / frame_total_ms) << "%)" << std::endl;
-                    std::cout << "     - Normal provider: " << mesh_service::NormalProviderFactory::getProviderTypeName(
-                                  CONFIG_INT("MESH_NORMAL_PROVIDER", mesh_service::config::NormalProviderConfig::DEFAULT_NORMAL_PROVIDER))
-                             << std::endl;
-                    std::cout << "     - TSDF + MC: ~" << (mesh_gen_time * 0.80) << " ms (estimate)" << std::endl;
-                    std::cout << "     - Other: ~" << (mesh_gen_time * 0.20) << " ms (estimate)" << std::endl;
-                    std::cout << "  2. Rerun Publishing: " << rerun_total_ms << " ms (" 
-                             << (rerun_total_ms * 100.0 / frame_total_ms) << "%)" << std::endl;
-                    std::cout << "  3. Cleanup: " << cleanup_ms << " ms (" 
-                             << (cleanup_ms * 100.0 / frame_total_ms) << "%)" << std::endl;
-                    std::cout << "  4. Other (metrics, etc): " << (frame_total_ms - mesh_gen_time - rerun_total_ms - cleanup_ms) 
-                             << " ms" << std::endl;
-                    std::cout << "Performance: " << (1000.0 / frame_total_ms) << " FPS potential" << std::endl;
-                    std::cout << "===================================================\n" << std::endl;
-                    
-                    // Log FPS periodically
-                    if (frame_count % CONFIG_INT("MESH_FPS_LOG_INTERVAL", mesh_service::config::DebugConfig::DEFAULT_FPS_LOG_INTERVAL) == 0) {
-                        auto now = std::chrono::steady_clock::now();
-                        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
-                        if (elapsed > 0) {
-                            float fps = static_cast<float>(frame_count) / elapsed;
-                            std::cout << "Average FPS: " << fps << std::endl;
-                        }
-                    }
-                } else {
-                    std::cerr << "Failed to open shared memory segment: " << msg.shm_key << std::endl;
-                    mesh_service::Metrics::instance().recordError();
-                }
-                
-            } catch (const std::exception& e) {
-                std::cerr << "Error processing keyframe: " << e.what() << std::endl;
-                mesh_service::Metrics::instance().recordError();
-            }
-        });
-        std::cout << "[DEBUG MAIN] RabbitMQ handler set up successfully" << std::endl;
-        
-        // Continue with remaining initialization (unchanged)
-        
-        // Configure mesh generator using configuration manager
-        mesh_generator->setMethod(mesh_service::MeshMethod::TSDF_MARCHING_CUBES);
-        mesh_generator->setQualityAdaptive(true);  // Enable adaptive quality based on camera velocity
-        mesh_generator->setSimplificationRatio(
-            CONFIG_FLOAT("MESH_SIMPLIFICATION_RATIO", mesh_service::config::AlgorithmConfig::DEFAULT_SIMPLIFICATION_RATIO)
+    for (uint32_t i = 0; i < point_count; ++i) {
+        data.positions.emplace_back(
+            points[i * 3], 
+            points[i * 3 + 1], 
+            points[i * 3 + 2]
         );
         
-        std::cout << "Mesh service configured with new algorithm selector:" << std::endl;
-        std::cout << "  - NVIDIA Marching Cubes with optimized TSDF" << std::endl;
-        std::cout << "  - Velocity-based algorithm switching (future-ready)" << std::endl;
-        std::cout << "  - GPU Octree for spatial indexing" << std::endl;
-        std::cout << "  - Memory pool allocation (1GB)" << std::endl;
-        std::cout << "  - 90% spatial overlap deduplication" << std::endl;
-        std::cout << "  - Environment-based configuration" << std::endl;
-        
-        // Display TSDF configuration from environment
-        const char* voxel_size = std::getenv("TSDF_VOXEL_SIZE");
-        const char* truncation = std::getenv("TSDF_TRUNCATION_DISTANCE");
-        const char* max_weight = std::getenv("TSDF_MAX_WEIGHT");
-        const char* bounds_min = std::getenv("TSDF_VOLUME_MIN");
-        const char* bounds_max = std::getenv("TSDF_VOLUME_MAX");
-        
-        if (voxel_size || truncation || max_weight || bounds_min || bounds_max) {
-            std::cout << "\nTSDF Environment Configuration:" << std::endl;
-            if (voxel_size) std::cout << "  TSDF_VOXEL_SIZE: " << voxel_size << "m" << std::endl;
-            if (truncation) std::cout << "  TSDF_TRUNCATION_DISTANCE: " << truncation << "m" << std::endl;
-            if (max_weight) std::cout << "  TSDF_MAX_WEIGHT: " << max_weight << std::endl;
-            if (bounds_min) std::cout << "  TSDF_VOLUME_MIN: " << bounds_min << std::endl;
-            if (bounds_max) std::cout << "  TSDF_VOLUME_MAX: " << bounds_max << std::endl;
+        data.colors.emplace_back(
+            colors[i * 3], 
+            colors[i * 3 + 1], 
+            colors[i * 3 + 2]
+        );
+    }
+
+    // Copy transform matrix
+    std::copy(keyframe->pose_matrix, keyframe->pose_matrix + 16, data.transform_matrix.begin());
+
+    // Add to batch
+    batch.push_back(std::move(data));
+
+    // Flush if batch full
+    if (batch.size() >= BATCH_SIZE) {
+        flush_batch_to_rerun();
+    }
+
+    // Close and optionally unlink
+    shm_manager.close_keyframe(keyframe);
+    const char* unlink_env = getenv("MESH_SERVICE_UNLINK_SHM");
+    if (unlink_env && std::string(unlink_env) == "true") {
+        shm_manager.unlink_keyframe(shm_key);
+        std::cout << "Unlinked shm: " << shm_key << std::endl;
+    }
+}
+
+// RabbitMQ consumer loop
+void rabbitmq_consumer_loop() {
+    amqp_connection_state_t conn = amqp_new_connection();
+    amqp_socket_t* socket = amqp_tcp_socket_new(conn);
+    if (amqp_socket_open(socket, "127.0.0.1", 5672) != 0) {
+        std::cerr << "Failed to connect to RabbitMQ" << std::endl;
+        return;
+    }
+
+    amqp_rpc_reply_t login_reply = amqp_login(conn, "/", 0, 131072, 0, AMQP_SASL_METHOD_PLAIN, "guest", "guest");
+    if (login_reply.reply_type != AMQP_RESPONSE_NORMAL) {
+        std::cerr << "Failed to login to RabbitMQ" << std::endl;
+        amqp_destroy_connection(conn);
+        return;
+    }
+    std::cout << "Connected and logged in to RabbitMQ successfully" << std::endl;
+
+    amqp_channel_open(conn, 1);
+
+    amqp_exchange_declare(conn, 1, amqp_cstring_bytes("slam3r_keyframe_exchange"), amqp_cstring_bytes("topic"), 
+                           0, 1, 0, 0, amqp_empty_table);
+    amqp_rpc_reply_t declare_reply = amqp_get_rpc_reply(conn);
+    if (declare_reply.reply_type != AMQP_RESPONSE_NORMAL) {
+        std::cerr << "Failed to declare exchange" << std::endl;
+        return;
+    }
+
+    amqp_queue_declare_ok_t* q = amqp_queue_declare(conn, 1, amqp_empty_bytes, 0, 0, 0, 1, amqp_empty_table);
+    amqp_queue_bind(conn, 1, q->queue, amqp_cstring_bytes("slam3r_keyframe_exchange"), amqp_cstring_bytes("#"), amqp_empty_table);
+    amqp_rpc_reply_t bind_reply = amqp_get_rpc_reply(conn);
+    if (bind_reply.reply_type != AMQP_RESPONSE_NORMAL) {
+        std::cerr << "Failed to bind queue" << std::endl;
+        return;
+    }
+
+    amqp_basic_consume(conn, 1, q->queue, amqp_empty_bytes, 0, 1, 0, amqp_empty_table);
+    amqp_rpc_reply_t consume_reply = amqp_get_rpc_reply(conn);
+    if (consume_reply.reply_type != AMQP_RESPONSE_NORMAL) {
+        std::cerr << "Failed to consume" << std::endl;
+        return;
+    }
+
+    while (true) {
+        amqp_maybe_release_buffers(conn);
+        amqp_envelope_t envelope;
+        amqp_consume_message(conn, &envelope, NULL, 0);
+
+        // Real msgpack parsing
+        msgpack::object_handle oh = msgpack::unpack(static_cast<const char*>(envelope.message.body.bytes), envelope.message.body.len);
+        msgpack::object obj = oh.get();
+
+        // Convert to map
+        std::unordered_map<std::string, msgpack::object> msg_map;
+        obj.convert(msg_map);
+
+        // Extract required fields (verified types from data log)
+        std::string type = msg_map["type"].as<std::string>();
+        if (type != "keyframe.new") {
+            amqp_destroy_envelope(&envelope);
+            continue;
         }
-        
-        // Connect to Rerun
-        if (rerun_enabled) {
-            std::cout << "[DEBUG MAIN] About to connect to Rerun..." << std::endl;
-            std::cout << "[DEBUG MAIN] rerun_publisher pointer: " << rerun_publisher.get() << std::endl;
-            
-            if (rerun_publisher->connect()) {
-                std::cout << "Connected to Rerun viewer at " << rerun_address << std::endl;
-                std::cout << "[DEBUG MAIN] Rerun connection successful" << std::endl;
-                std::cout << "[DEBUG MAIN] About to test rerun functionality..." << std::endl;
-                
-                // Log initial camera setup
-                std::cout << "[DEBUG MAIN] Creating initial camera pose array..." << std::endl;
-                float initial_pose[16] = {
-                    1, 0, 0, 0,
-                    0, 1, 0, 0,
-                    0, 0, 1, -5,  // Position camera 5 units back
-                    0, 0, 0, 1
-                };
-                std::cout << "[DEBUG MAIN] About to log camera pose to Rerun..." << std::endl;
-                rerun_publisher->logCameraPose(initial_pose, "/mesh_service/camera");
-                std::cout << "[DEBUG MAIN] Camera pose logged successfully" << std::endl;
-                std::cout << "[DEBUG MAIN] Exiting Rerun setup block successfully" << std::endl;
-            } else {
-                std::cerr << "Failed to connect to Rerun viewer" << std::endl;
-                rerun_enabled = false;
-                rerun_publisher->setEnabled(false);
-            }
-        }
-        std::cout << "[DEBUG MAIN] After Rerun connection block" << std::endl;
-        
-        // Start metrics server
-        std::cout << "[DEBUG MAIN] Creating metrics server on port " << metrics_port << std::endl;
-        mesh_service::MetricsServer metrics_server(metrics_port);
-        std::cout << "[DEBUG MAIN] Starting metrics server..." << std::endl;
-        metrics_server.run();
-        std::cout << "Metrics server started on port " << metrics_port << std::endl;
-        
-        std::cout << "Mesh Service running. Waiting for keyframes from SLAM3R..." << std::endl;
-        
-        // Main loop - just keep running
-        while (g_running) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        
-        // Shutdown
-        std::cout << "Shutting down..." << std::endl;
-        rabbitmq_consumer->stop();
-        metrics_server.stop();
-        
-    } catch (const std::exception& e) {
-        std::cerr << "Fatal error: " << e.what() << std::endl;
+
+        std::string shm_key = msg_map["shm_key"].as<std::string>();
+        uint32_t point_count = msg_map["point_count"].as<uint32_t>();
+        std::string keyframe_id = msg_map["keyframe_id"].as<std::string>();
+
+        // Process the keyframe
+        process_keyframe(shm_key, point_count, keyframe_id);
+
+        amqp_destroy_envelope(&envelope);
+    }
+
+    amqp_channel_close(conn, 1, AMQP_REPLY_SUCCESS);
+    amqp_connection_close(conn, AMQP_REPLY_SUCCESS);
+    amqp_destroy_connection(conn);
+}
+
+int main() {
+    // Connect to Rerun (gRPC uses default port 9876)
+    if (!connect_to_rerun("")) {
         return 1;
     }
-    
-    std::cout << "Mesh Service stopped." << std::endl;
+
+    // Test logging to verify Rerun connection
+    std::cout << "Logging test points to Rerun..." << std::endl;
+    std::vector<rerun::Position3D> test_points = {rerun::Position3D(0.0f, 0.0f, 0.0f), rerun::Position3D(1.0f, 1.0f, 1.0f)};
+    std::vector<rerun::Color> test_colors = {rerun::Color(255, 0, 0, 255), rerun::Color(0, 255, 0, 255)};
+    rec->log("test_points", rerun::Points3D(test_points).with_colors(test_colors).with_radii({0.1f}));
+    std::cout << "Test points logged to Rerun." << std::endl;
+
+    // Start consumer loop
+    rabbitmq_consumer_loop();
+
+    // Cleanup on exit (flush remaining batch)
+    flush_batch_to_rerun();
     return 0;
 }

@@ -352,7 +352,7 @@ services:
 
   mesh_service:
     image: mesh_service:latest
-    profiles: ["mesh_service", "slam3r"]  # Run with slam3r profile
+    profiles: ["mesh_service", "slam3r"]
     build:
       context: ./mesh_service
       args:
@@ -361,19 +361,16 @@ services:
         GID: ${GID}
     container_name: mesh_service
     runtime: nvidia
-    network_mode: host  # Same as SLAM3R for shared memory access
+    network_mode: host
     
-    # Volume mounts
     volumes:
-      - /dev/shm:/dev/shm  # Shared memory for zero-copy IPC with SLAM3R
+      - /dev/shm:/dev/shm
       - ${X11SOCKET}:${X11SOCKET}
       - ${XAUTHORITY}:${XAUTHORITY}
-      - ./mesh_service/debug_output:/debug_output  # Mount local directory for debug saves
+      - ./mesh_service/debug_output:/debug_output
     
-    # Shared memory size for large point clouds
     shm_size: '4gb'
     
-    # Resource management
     deploy:
       resources:
         reservations:
@@ -382,7 +379,6 @@ services:
               count: all
               capabilities: [gpu]
     
-    # Health check for monitoring
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/metrics"]
       interval: 30s
@@ -390,147 +386,22 @@ services:
       retries: 3
       start_period: 40s
     
-    # Auto-restart on crashes
     restart: unless-stopped
     
     environment:
-      # ========== RABBITMQ CONFIGURATION ==========
       - RABBITMQ_URL=amqp://127.0.0.1:5672
-      
-      # Input exchanges from SLAM3R
       - SLAM3R_KEYFRAME_EXCHANGE=${SLAM3R_KEYFRAME_EXCHANGE:-slam3r_keyframe_exchange}
-      
-      # ========== TSDF VOLUME CONFIGURATION ==========
-      # Adjust these based on your scene - current values for hallway scene
-      # Updated to match actual point cloud bounds (points are at ~[20-27, 0-7, 20-28])
-      - TSDF_VOLUME_MIN=15,-2,15
-      - TSDF_VOLUME_MAX=32,10,32
-      - TSDF_VOXEL_SIZE=0.05
-      - TSDF_TRUNCATION_DISTANCE=0.10
-      
-      # ========== RERUN VISUALIZATION ==========
       - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
       - RERUN_ENABLED=${RERUN_ENABLED:-true}
-      
-      # ========== METRICS CONFIGURATION ==========
       - METRICS_PORT=${MESH_SERVICE_METRICS_PORT:-9091}
-      
-      # ========== SHARED MEMORY CONFIGURATION ==========
-      # Whether mesh_service should unlink shared memory after processing
-      # Set to false if SLAM3R needs to confirm receipt
       - MESH_SERVICE_UNLINK_SHM=${MESH_SERVICE_UNLINK_SHM:-false}
-      
-      # ========== TSDF CONFIGURATION ==========
-      # Core TSDF parameters (removed duplicates - see above)
-      - TSDF_MAX_WEIGHT=${TSDF_MAX_WEIGHT:-100.0}             # Temporal averaging weight
-      
-      # Volume bounds optimized for actual point cloud data
-      # Format: "x_min,y_min,z_min" and "x_max,y_max,z_max"
-      # Note: These are now set above in lines 434-435 to match actual scene bounds
-      
-      # Performance tuning
-      - TSDF_BLOCK_SIZE=${TSDF_BLOCK_SIZE:-8}                 # Voxel blocks for cache efficiency
-      - TSDF_MAX_MESH_VERTICES=${TSDF_MAX_MESH_VERTICES:-10000000}  # 10M vertices max
-      - TSDF_INTEGRATION_WEIGHT=${TSDF_INTEGRATION_WEIGHT:-1.0}     # Weight for new observations
-      
-      # Features
-      - TSDF_COLOR_INTEGRATION=${TSDF_COLOR_INTEGRATION:-true}      # Enable color from RGB
-      - TSDF_USE_SPACE_CARVING=${TSDF_USE_SPACE_CARVING:-false}     # Remove unseen voxels
-      - TSDF_MIN_WEIGHT_THRESHOLD=${TSDF_MIN_WEIGHT_THRESHOLD:-1.0} # Min weight for mesh extraction
-      - TSDF_GRADIENT_DELTA=${TSDF_GRADIENT_DELTA:-0.01}            # For normal estimation
-      
-      # ========== ALGORITHM SELECTION (NEW) ==========
-      # Algorithm selection mode
-      - MESH_ALGORITHM=${MESH_ALGORITHM:-MARCHING_CUBES}
-      # Options: MARCHING_CUBES, OPEN3D_POISSON
-      
-      # ========== OPEN3D POISSON CONFIGURATION ==========
-      # Open3D Poisson reconstruction parameters
-      - MESH_POISSON_OCTREE_DEPTH=${POISSON_OCTREE_DEPTH:-8}
-      - MESH_POISSON_WIDTH=${POISSON_WIDTH:-0.0}
-      - MESH_POISSON_SCALE=${POISSON_SCALE:-1.1}
-      - MESH_POISSON_LINEAR_FIT=${POISSON_LINEAR_FIT:-false}
-      - MESH_POISSON_THREADS=${POISSON_THREADS:-0}
-      
-      # Density filtering
-      - MESH_POISSON_DENSITY_FILTER=${POISSON_DENSITY_FILTER:-true}
-      - MESH_POISSON_DENSITY_PERCENTILE=${POISSON_DENSITY_PERCENTILE:-0.1}
-      
-      # SLAM3R-specific settings
-      - MESH_POISSON_USE_CONFIDENCE=${POISSON_USE_CONFIDENCE:-true}
-      - MESH_POISSON_CONFIDENCE_THRESHOLD=${POISSON_CONFIDENCE_THRESHOLD:-12.0}
-      - MESH_POISSON_POINT_WEIGHT=${MESH_POISSON_POINT_WEIGHT:-4.0}
-      - MESH_POISSON_SOLVER_ITERATIONS=${MESH_POISSON_SOLVER_ITERATIONS:-8}
-      
-      # ========== MEMORY CONFIGURATION ==========
-      - MESH_MEMORY_POOL_SIZE=${MESH_MEMORY_POOL_SIZE:-1073741824}      # 1GB in bytes
-      - MESH_MEMORY_BLOCK_SIZE=${MESH_MEMORY_BLOCK_SIZE:-67108864}      # 64MB in bytes
-      - MESH_OCTREE_POOL_SIZE=${MESH_OCTREE_POOL_SIZE:-536870912}       # 512MB in bytes
-      - MESH_SOLVER_POOL_SIZE=${MESH_SOLVER_POOL_SIZE:-268435456}       # 256MB in bytes
-      - MESH_MAX_GPU_MEMORY=${MESH_MAX_GPU_MEMORY:-4294967296}          # 4GB limit
-      
-      # ========== ALGORITHM PARAMETERS ==========
-      - MESH_NORMAL_K_NEIGHBORS=${MESH_NORMAL_K_NEIGHBORS:-30}
-      - MESH_TRUNCATION_DISTANCE=${MESH_TRUNCATION_DISTANCE:-0.15}
-      - MESH_MAX_VERTICES=${MESH_MAX_VERTICES:-5000000}
-      - MESH_SIMPLIFICATION_RATIO=${MESH_SIMPLIFICATION_RATIO:-0.1}
-      - MESH_MAX_TSDF_WEIGHT=${MESH_MAX_TSDF_WEIGHT:-100.0}
-      - MESH_CONFIDENCE_THRESHOLD=${MESH_CONFIDENCE_THRESHOLD:-0.1}
-      - MESH_INFLUENCE_RADIUS=${MESH_INFLUENCE_RADIUS:-0.1}
-      - MESH_VOXEL_SIZE=${MESH_VOXEL_SIZE:-0.05}
-      - MESH_ISO_VALUE=${MESH_ISO_VALUE:-0.0}
-      
-      # ========== SCENE CONFIGURATION ==========
-      - MESH_MAX_SCENE_COORDINATE=${MESH_MAX_SCENE_COORDINATE:-1000.0}  # 1km max
-      - MESH_OCTREE_SCENE_SIZE=${MESH_OCTREE_SCENE_SIZE:-10.0}         # 10m octree
-      - MESH_OCTREE_MAX_DEPTH=${MESH_OCTREE_MAX_DEPTH:-8}
-      - MESH_OCTREE_LEAF_SIZE=${MESH_OCTREE_LEAF_SIZE:-64}
-      - MESH_OVERLAP_THRESHOLD=${MESH_OVERLAP_THRESHOLD:-0.9}           # 90% overlap
-      
-      # ========== PERFORMANCE THRESHOLDS ==========
-      - MESH_CAMERA_VELOCITY_THRESHOLD=${MESH_CAMERA_VELOCITY_THRESHOLD:-0.1}    # m/s
-      - MESH_VELOCITY_THRESHOLD_HIGH=${MESH_VELOCITY_THRESHOLD_HIGH:-2.0}        # m/s
-      - MESH_VELOCITY_THRESHOLD_LOW=${MESH_VELOCITY_THRESHOLD_LOW:-0.5}          # m/s
-      - MESH_TIME_DELTA_THRESHOLD=${MESH_TIME_DELTA_THRESHOLD:-0.001}            # seconds
-      - MESH_VELOCITY_SMOOTH_FACTOR=${MESH_VELOCITY_SMOOTH_FACTOR:-0.8}
-      - MESH_VELOCITY_CURRENT_FACTOR=${MESH_VELOCITY_CURRENT_FACTOR:-0.2}
-      - MESH_SWITCH_STABILITY_FRAMES=${MESH_SWITCH_STABILITY_FRAMES:-5}
-      - MESH_POINT_COUNT_THRESHOLD=${MESH_POINT_COUNT_THRESHOLD:-100000}
-      - MESH_COMPLEXITY_THRESHOLD=${MESH_COMPLEXITY_THRESHOLD:-0.7}
-      
-      # ========== DEBUG CONFIGURATION ==========
-      - MESH_FPS_LOG_INTERVAL=${MESH_FPS_LOG_INTERVAL:-30}              # Log FPS every N frames
-      - MESH_DEBUG_SAVE_INTERVAL=${MESH_DEBUG_SAVE_INTERVAL:-10}        # Save debug every N frames
-      - MESH_DEBUG_PRINT_LIMIT=${MESH_DEBUG_PRINT_LIMIT:-5}             # Print first N items
-      - MESH_MAX_POINTS_TO_SCAN=${MESH_MAX_POINTS_TO_SCAN:-1000000}     # Max points for bounds
-      - MESH_DEBUG_VOXEL_LIMIT=${MESH_DEBUG_VOXEL_LIMIT:-10}           # Debug voxel limit
-      - MESH_DEBUG_POINT_LIMIT=${MESH_DEBUG_POINT_LIMIT:-10}           # Debug point limit
-      - MESH_DEBUG_CONFIG=${MESH_DEBUG_CONFIG:-false}                   # Log config at startup
-      - MESH_DEBUG_OUTPUT_DIR=${MESH_DEBUG_OUTPUT_DIR:-/debug_output}   # Debug output directory
-      
-      # Velocity thresholds for adaptive quality
-      - VELOCITY_THRESHOLD_HIGH=${VELOCITY_THRESHOLD_HIGH:-0.5}      # High velocity threshold (m/s)
-      - VELOCITY_THRESHOLD_LOW=${VELOCITY_THRESHOLD_LOW:-0.3}        # Low velocity threshold (m/s)
-      
-      # Point cloud complexity thresholds
-      - POINT_COUNT_THRESHOLD=${POINT_COUNT_THRESHOLD:-100000}       # Threshold for algorithm switching
-      - COMPLEXITY_THRESHOLD=${COMPLEXITY_THRESHOLD:-0.7}            # Scene complexity threshold
-      
-      # ========== GPU AND DISPLAY ==========
       - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_PATH=${CUDA_PATH}
-      - LIBGL_ALWAYS_INDIRECT=${LIBGL_ALWAYS_INDIRECT}
       - DISPLAY=${DISPLAY}
-      
-      # ========== PERFORMANCE SETTINGS ==========
       - OMP_NUM_THREADS=4
       - CUDA_LAUNCH_BLOCKING=0
-      
-      # ========== LOGGING ==========
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - PYTHONUNBUFFERED=1
     
-    # Logging configuration
     logging:
       driver: "json-file"
       options:

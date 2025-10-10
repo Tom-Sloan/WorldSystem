@@ -147,6 +147,10 @@ class SLAM3RProcessor:
         
         # PCD saving configuration
         self.save_pcd = os.getenv("SLAM3R_SAVE_PCD", "false").lower() == "true"
+        
+        # PTS tracking for B-frame deduplication
+        self.last_pts = None
+        self.pts_duplicates_skipped = 0
         self.pcd_output_dir = os.getenv("SLAM3R_PCD_OUTPUT_DIR", "/debug_output/pcd")
         if self.save_pcd:
             os.makedirs(self.pcd_output_dir, exist_ok=True)
@@ -261,6 +265,15 @@ class SLAM3RProcessor:
                 try:
                     frames = self.codec.decode(packet)
                     for frame in frames:
+                        # Skip duplicate PTS frames (common with B-frames)
+                        if hasattr(frame, 'pts') and frame.pts is not None:
+                            if self.last_pts is not None and frame.pts == self.last_pts:
+                                self.pts_duplicates_skipped += 1
+                                if self.pts_duplicates_skipped % 100 == 0:
+                                    logger.info(f"Skipped {self.pts_duplicates_skipped} duplicate PTS frames")
+                                continue
+                            self.last_pts = frame.pts
+                        
                         img_rgb = frame.to_ndarray(format='rgb24')
                         timestamp = int(time.time_ns())  # TODO: Extract from stream if available
                         result = self.slam3r.process_frame(img_rgb, timestamp)
@@ -282,6 +295,13 @@ class SLAM3RProcessor:
             try:
                 flushed_frames = self.codec.decode()  # Empty packet flushes
                 for frame in flushed_frames:
+                    # Skip duplicate PTS frames (common with B-frames)
+                    if hasattr(frame, 'pts') and frame.pts is not None:
+                        if self.last_pts is not None and frame.pts == self.last_pts:
+                            self.pts_duplicates_skipped += 1
+                            continue
+                        self.last_pts = frame.pts
+                    
                     img_rgb = frame.to_ndarray(format='rgb24')
                     timestamp = int(time.time_ns())  # TODO: Extract from stream if available
                     result = self.slam3r.process_frame(img_rgb, timestamp)
@@ -446,6 +466,7 @@ class SLAM3RProcessor:
                 )
                 
                 logger.info(f"Successfully published keyframe {self.keyframe_count} with {len(filtered_pts)} points")
+                self.keyframe_count += 1
                 
         except Exception as e:
             logger.error(f"Failed to publish keyframe: {e}")
@@ -462,7 +483,8 @@ class SLAM3RProcessor:
                 f"FPS: {fps:.2f} | "
                 f"Frames: {self.frame_count} | "
                 f"Keyframes: {self.keyframe_count} | "
-                f"Segment frames: {self.segment_frame_count}"
+                f"Segment frames: {self.segment_frame_count} | "
+                f"PTS duplicates skipped: {self.pts_duplicates_skipped}"
             )
         
         self.last_fps_time = current_time
@@ -617,6 +639,10 @@ class SLAM3RProcessor:
                     self.codec = av.CodecContext.create('h264', 'r')
                     self.codec.thread_type = 'AUTO'  # Enable multi-threading
                     self.codec.extradata = None  # Reset extradata for new stream
+                    
+                    # Reset PTS tracking for new stream
+                    self.last_pts = None
+                    self.pts_duplicates_skipped = 0
                     
                     # Process incoming messages
                     async for message in websocket:

@@ -1,0 +1,197 @@
+========================================================================
+SLAM3R TO MESH SERVICE DATA TRANSMISSION LOG
+========================================================================
+
+This log documents all data types and structures sent from SLAM3R to the
+mesh service via both shared memory and RabbitMQ messaging.
+
+========================================================================
+1. SHARED MEMORY DATA STRUCTURE
+========================================================================
+
+Location: /dev/shm/slam3r_keyframe_*
+Format: Binary POD struct for C++ compatibility
+
+Header Structure (104 bytes total):
+-----------------------------------
+struct SharedKeyframe {
+    uint64_t timestamp_ns;      // 8 bytes - Timestamp in nanoseconds
+    uint32_t point_count;       // 4 bytes - Number of 3D points
+    uint32_t color_channels;    // 4 bytes - Number of color channels (always 3 for RGB)
+    float pose_matrix[16];      // 64 bytes - 4x4 transformation matrix (row-major, transposed)
+    float bbox[6];              // 24 bytes - Bounding box [min_x, min_y, min_z, max_x, max_y, max_z]
+    // Variable-length arrays follow:
+    // float points[point_count * 3];     // 3D point coordinates (x,y,z)
+    // uint8_t colors[point_count * 3];   // RGB color values (0-255)
+};
+
+Example Data Written (from shared_memory.py:write_keyframe):
+------------------------------------------------------------
+timestamp_ns: 1234567890123456789
+point_count: 15000
+color_channels: 3
+pose_matrix: [
+    Row-major flattened 4x4 matrix where translation is at indices [12,13,14]
+    Original pose is TRANSPOSED before flattening to match C++ expectations
+    Example values:
+    [0]: 0.9998,  [1]: 0.0123,  [2]: -0.0145, [3]: 0.0000,
+    [4]: -0.0124, [5]: 0.9999,  [6]: -0.0034, [7]: 0.0000,
+    [8]: 0.0144,  [9]: 0.0037,  [10]: 0.9999, [11]: 0.0000,
+    [12]: 1.2345, [13]: 0.5678, [14]: -0.9876, [15]: 1.0000
+    Translation at [12,13,14]: [1.2345, 0.5678, -0.9876]
+]
+bbox: [-5.123, -3.456, -2.789, 4.567, 3.890, 1.234]
+
+Points array (float32): 
+- Shape: (point_count, 3)
+- Example points:
+  [0.123, -0.456, 1.789]
+  [-0.234, 0.567, 2.345]
+  [1.456, -0.789, 0.123]
+  ...
+
+Colors array (uint8):
+- Shape: (point_count, 3) 
+- RGB values 0-255
+- Example colors:
+  [200, 150, 100]  // Light brown
+  [100, 200, 150]  // Light teal
+  [150, 100, 200]  // Light purple
+  ...
+
+========================================================================
+2. RABBITMQ MESSAGE DATA
+========================================================================
+
+Exchange: slam3r_keyframe_exchange (fanout type)
+Format: MessagePack binary serialization
+Content-Type: application/msgpack
+
+Message Structure (from shared_memory.py:publish_keyframe):
+----------------------------------------------------------
+{
+    'type': 'keyframe.new',
+    'keyframe_id': 'frame_0000042',         // Unique keyframe identifier
+    'timestamp_ns': 1234567890123456789,    // Unix timestamp in nanoseconds
+    'pose_matrix': [                        // 4x4 transformation matrix as nested list
+        [0.9998, 0.0123, -0.0145, 1.2345],
+        [-0.0124, 0.9999, -0.0034, 0.5678],
+        [0.0144, 0.0037, 0.9999, -0.9876],
+        [0.0, 0.0, 0.0, 1.0]
+    ],
+    'shm_key': '/slam3r_keyframe_frame_0000042',  // Shared memory segment name
+    'point_count': 15000,                   // Number of points in this keyframe
+    'bbox': [                               // Bounding box of point cloud
+        -5.123,  // min_x
+        -3.456,  // min_y  
+        -2.789,  // min_z
+        4.567,   // max_x
+        3.890,   // max_y
+        1.234    // max_z
+    ]
+}
+
+========================================================================
+3. DATA FLOW AND PROCESSING
+========================================================================
+
+A. SLAM3R Processing Pipeline:
+------------------------------
+1. WebSocket receives H.264 video frames
+2. Frames decoded to RGB (224x224 resolution)
+3. StreamingSLAM3R processes frame:
+   - I2P model: RGB → camera-space 3D points
+   - L2W model: camera points → world-space points
+   - Confidence filtering applied (thresholds: I2P=10.0, L2W=12.0)
+
+B. Keyframe Selection:
+----------------------
+- Adaptive stride (1-20 frames) based on camera motion
+- Only keyframes are published to mesh service
+- Typical keyframe rate: 1 per 5-10 frames
+
+C. Data Filtering Before Transmission:
+--------------------------------------
+1. Confidence thresholding:
+   - I2P confidence > 10.0
+   - L2W confidence > 12.0
+   - Fallback to 50% threshold if too few points
+
+2. Spatial filtering:
+   - Remove points outside 100m bounds
+   - Filter NaN/Inf values
+   - Validate pose matrix (det(R) = 1)
+
+3. Color extraction:
+   - RGB from original frame resized to match point cloud
+   - Default gray (200,200,200) if no RGB available
+
+========================================================================
+4. EXAMPLE LOGGED DATA FROM SLAM3R
+========================================================================
+
+From slam3r_processor.py _publish_keyframe():
+---------------------------------------------
+[SLAM3R] Publishing keyframe 42 with frame_id 1234
+[SLAM3R] pts3d_world shape: torch.Size([1, 224, 224, 3]), dtype: torch.float32
+[SLAM3R] conf_world shape: torch.Size([1, 224, 224]), dtype: torch.float32
+[SLAM3R] Before reshape - pts3d_np shape: (1, 224, 224, 3), conf_np shape: (1, 224, 224)
+[SLAM3R] Too few points with conf > 12.0, using fallback threshold 6.0
+[SLAM3R] Filtering 234 corrupted points with extreme values
+[SLAM3R] Publishing keyframe 42: 14766 valid points (from 50176 total, 15000 passed confidence)
+[SLAM3R] Successfully published keyframe 42 with 14766 points
+
+From shared_memory.py write_keyframe():
+---------------------------------------
+[SHM SLAM3R DEBUG] Writing pose matrix to shared memory:
+[SHM SLAM3R DEBUG] Pose shape: (4, 4)
+[SHM SLAM3R DEBUG] Pose matrix:
+  [    0.9998,     0.0123,    -0.0145,     1.2345]
+  [   -0.0124,     0.9999,    -0.0034,     0.5678]
+  [    0.0144,     0.0037,     0.9999,    -0.9876]
+  [    0.0000,     0.0000,     0.0000,     1.0000]
+[SHM SLAM3R DEBUG] Camera position (translation): [1.2345, 0.5678, -0.9876]
+[SHM SLAM3R FIX] Original pose translation at [0,3],[1,3],[2,3]: [1.2345, 0.5678, -0.9876]
+[SHM SLAM3R FIX] Row-major flattened translation at [12],[13],[14]: [1.2345, 0.5678, -0.9876]
+
+========================================================================
+5. POSE ESTIMATION DETAILS
+========================================================================
+
+Camera pose is estimated using SVD alignment between:
+- pts3d_cam: Points in camera coordinate system
+- pts3d_world: Points in world coordinate system
+
+SVD Process (from slam3r_processor.py _estimate_camera_pose()):
+---------------------------------------------------------------
+1. Filter valid point correspondences (confidence > threshold)
+2. Compute centroids of both point sets
+3. Center the points
+4. Compute covariance matrix H = pts_cam^T * pts_world
+5. SVD decomposition: U, S, V^T = svd(H)
+6. Rotation: R = V * U^T (ensure det(R) = 1)
+7. Translation: t = centroid_world - R * centroid_cam
+8. Build 4x4 transformation matrix
+
+Example pose estimation log:
+[SLAM3R POSE DEBUG] Estimated camera pose (translation): [1.2345, 0.5678, -0.9876]
+[SLAM3R POSE DEBUG] Valid points for SVD: 12543 out of 50176
+[SLAM3R POSE DEBUG] Camera space center: [0.123, -0.456, 2.345]
+[SLAM3R POSE DEBUG] World space center: [1.357, 0.112, 1.369]
+[SLAM3R POSE DEBUG] Transform validation error: 0.0234
+
+========================================================================
+6. MESH SERVICE CONSUMPTION
+========================================================================
+
+The mesh service receives this data and:
+1. Reads RabbitMQ message to get keyframe notification
+2. Opens shared memory segment using shm_key
+3. Reads binary header (104 bytes)
+4. Reconstructs pose matrix from row-major format
+5. Reads point and color arrays
+6. Integrates into TSDF volume for mesh generation
+
+========================================================================
+END OF LOG
+========================================================================

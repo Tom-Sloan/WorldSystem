@@ -103,13 +103,20 @@ make -j$(nproc)
 
 ## Algorithm Details
 
-### Current Implementation: TSDF + Marching Cubes
+### Current Implementations
 
-The service uses NVIDIA's marching cubes implementation with TSDF integration for real-time performance:
+#### 1. TSDF + Marching Cubes (Default)
+NVIDIA's marching cubes implementation with TSDF integration for real-time performance:
+- **TSDF Integration**: Points are integrated into a voxel grid with truncated signed distance values
+- **Marching Cubes**: Extracts isosurface from TSDF volume to generate triangle mesh
+- **Normal Estimation**: Camera-based (fast) or Open3D KD-tree (quality)
 
-1. **TSDF Integration**: Points are integrated into a voxel grid with truncated signed distance values
-2. **Marching Cubes**: Extracts isosurface from TSDF volume to generate triangle mesh
-3. **Normal Estimation**: Camera-based (fast) or Open3D KD-tree (quality)
+#### 2. Open3D Poisson Reconstruction (Optional)
+High-quality surface reconstruction when Open3D is available:
+- **Octree Construction**: Adaptive octree based on point density
+- **Indicator Function**: Solves for indicator function using point normals
+- **Iso-surface Extraction**: Extracts watertight surface at specified iso-value
+- **Density Filtering**: Removes low-confidence regions
 
 ### Performance Characteristics
 
@@ -119,14 +126,18 @@ The service uses NVIDIA's marching cubes implementation with TSDF integration fo
 
 ### Normal Estimation Providers
 
-1. **Camera-based (0)**: Fast, uses ray direction from camera
-   - 0ms overhead (integrated in TSDF)
+1. **Camera-based (0)**: Fast GPU implementation
+   - Uses ray direction from camera position
+   - 0ms overhead (integrated in pipeline)
    - Lower quality but real-time
+   - Best for moving camera scenarios
 
 2. **Open3D (1)**: High quality, KD-tree based
+   - K-nearest neighbors (k=30) or radius search
    - 40-60ms for 50k points
    - Requires CPU-GPU transfers
    - Optional compile-time dependency
+   - Best for static reconstruction
 
 ## Development
 
@@ -158,9 +169,9 @@ mesh_service/
    ```
 
 2. **New Normal Provider**:
-   - Add enum value in `normal_provider.h`
    - Implement `INormalProvider` interface
    - Add to factory in `normal_provider_factory.cpp`
+   - Currently supports camera-based and Open3D providers
 
 ### Debug Output
 
@@ -266,24 +277,29 @@ docker exec -it mesh_service bash
 
 ## Future Enhancements
 
-### Planned Algorithms
-
-1. **GPU Poisson Reconstruction**: High-quality watertight meshes
-   - Best for stationary camera
-   - Implemented but currently disabled
+1. **GPU Poisson Reconstruction**: Custom CUDA implementation
+   - Currently available via Open3D integration
+   - Native GPU version planned for better performance
 
 2. **Incremental Updates**: Only process changed regions
    - Octree-based spatial indexing
    - 90% overlap detection
 
-### Re-enabling Advanced Algorithms
+3. **Advanced Normal Estimation**: 
+   - GPU-based KD-tree implementation
+   - Bilateral filtering for noise reduction
 
-To re-enable Poisson, see the comments in:
-- `src/mesh_generator.cu`
-- `src/algorithm_selector.cpp`
-- `CMakeLists.txt`
+### Enabling Poisson Reconstruction
 
-These were disabled for optimal real-time performance but remain in codebase.
+Poisson reconstruction is available when built with Open3D support:
+
+```bash
+# Build with Open3D
+docker-compose build --build-arg USE_OPEN3D=ON mesh_service
+
+# Run with Poisson enabled
+MESH_ALGORITHM=OPEN3D_POISSON docker-compose up mesh_service
+```
 
 ## Performance Optimization Tips
 
@@ -402,8 +418,6 @@ This section documents the purpose of each file in the mesh service codebase.
 
 #### CPU Algorithms
 - **`src/octree.cpp`** - CPU octree implementation (backup for GPU version)
-- **`src/poisson_reconstruction.cpp`** - CPU Poisson reconstruction
-- **`include/poisson_reconstruction.h`** - CPU Poisson interface
 
 #### Neural Reconstruction
 

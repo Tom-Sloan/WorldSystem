@@ -36,8 +36,8 @@ PACKET_TYPE_FRAME = 0x04
 PACKET_TYPE_CONFIG = 0x05
 
 # Test data location (copied into container)
-TEST_DATA_ROOT = Path("/test_data")
-TEST_VIDEO_PATH = TEST_DATA_ROOT / "test_video.mp4"
+TEST_DATA_ROOT = Path("/test_continuous_hallway")
+TEST_VIDEO_PATH = TEST_DATA_ROOT / "continuous hallway walk.mp4"
 SEGMENTS_PATH = TEST_DATA_ROOT / "20250617_211214_segments"
 
 

@@ -45,3 +45,24 @@ frame_processor/API_INTEGRATION_GUIDE.md
 frame_processor/worldsystem-23f7306a1a75.json
 .env
 .env
+
+# Environment files
+.env
+.env.*
+!.env.example
+docker/.env
+!docker/.env.example
+
+# Credentials and secrets
+*credentials*.json
+worldsystem-*.json
+**/credentials/
+*.pem
+*.key
+id_rsa*
+*.p12
+
+# API keys and tokens
+.secrets
+secrets/
+

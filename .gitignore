@@ -52,6 +52,7 @@ frame_processor/worldsystem-23f7306a1a75.json
 !.env.example
 docker/.env
 !docker/.env.example
+*.properties
 
 # Credentials and secrets
 *credentials*.json

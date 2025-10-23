@@ -66,4 +66,8 @@ id_rsa*
 .secrets
 secrets/
 
+# Android Gradle properties (contains API keys)
+**/gradle.properties
+!**/gradle.properties.example
+
 worldsystem.env.personal

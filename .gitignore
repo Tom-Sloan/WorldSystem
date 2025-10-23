@@ -66,3 +66,4 @@ id_rsa*
 .secrets
 secrets/
 
+worldsystem.env.personal

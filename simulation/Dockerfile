@@ -15,5 +15,6 @@ COPY . .
 
 # Copy test data into the container
 COPY test_continuous_hallway /test_continuous_hallway
+COPY test_data /test_data
 
 CMD ["python", "simulate_video_stream.py"] 

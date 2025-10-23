@@ -284,11 +284,15 @@ class SLAM3RProcessor:
                         self.segment_frame_count += 1
                         if self.frame_count % 30 == 0:
                             self._log_fps()
-                except av.AVError as e:
-                    logger.debug(f"Skipping invalid packet: {e}")
+                except Exception as e:
+                    # Log actual exception type to determine correct catch
+                    if "decode" in str(e).lower() or "invalid" in str(e).lower():
+                        logger.debug(f"Skipping invalid packet ({type(e).__module__}.{type(e).__name__}): {e}")
+                    else:
+                        raise  # Re-raise unexpected exceptions
             
             # Update buffer (remove parsed data)
-            consumed = sum(len(p) for p in packets)
+            consumed = sum(p.size for p in packets)
             self.byte_buffer = self.byte_buffer[consumed:]
             
             # Flush decoder for any remaining frames
@@ -312,8 +316,9 @@ class SLAM3RProcessor:
                     self.segment_frame_count += 1
                     if self.frame_count % 30 == 0:
                         self._log_fps()
-            except av.AVError:
-                pass
+            except Exception as e:
+                # Flush errors are expected at boundaries
+                logger.debug(f"Flush decode exception ({type(e).__module__}.{type(e).__name__}): {e}")
                     
         except av.error.InvalidDataError:
             # This is normal for partial packets, skip

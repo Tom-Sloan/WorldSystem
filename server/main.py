@@ -38,6 +38,7 @@ import av  # For H.264 testing endpoint
 
 from src.config.settings import logger, API_PORT, BIND_HOST, AnalysisMode
 from src.api.routes import router
+from src.core.h264_handler_pyav import PyAVH264Handler
 
 # ------------- WebSocket Broadcasting imports -------------
 from typing import Set, Dict

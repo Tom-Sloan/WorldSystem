@@ -4,11 +4,17 @@
 
 ### 1. Removed Sensitive Files from Git History
 Successfully removed the following files from **ALL** git commits:
+
+**Python/Server API Keys:**
 - `.env` (contained API keys: SERPAPI, OPENAI, PERPLEXITY)
 - `docker/.env` (contained personal paths)
 - `.env.personal` (contained Grafana credentials)
 
-**Commits affected:** 168 commits across all branches
+**Android API Keys:**
+- `WebSocketTest/gradle.properties` (contained DJI, Google Maps, MapLibre API keys)
+- `Archive/android/WebSocketTest/gradle.properties` (same keys)
+
+**Commits affected:** 169 commits across all branches
 **Branches cleaned:**
 - `fix-frame-processor-v2`
 - `master`
@@ -16,9 +22,17 @@ Successfully removed the following files from **ALL** git commits:
 
 ### 2. Created Template Files
 Created the following template files with placeholders:
+
+**Python/Server:**
 - ✓ `.env.example` - Root configuration template
 - ✓ `docker/.env.example` - Docker-specific configuration
-- ✓ Updated `.gitignore` - Prevents future commits of sensitive files
+
+**Android:**
+- ✓ `WebSocketTest/gradle.properties.example` - Android app API keys template
+- ✓ `Archive/android/WebSocketTest/gradle.properties.example` - Archive Android app template
+
+**Git Configuration:**
+- ✓ Updated `.gitignore` - Prevents future commits of sensitive files (both .env and gradle.properties)
 
 ### 3. Repository Cleanup
 - ✓ Removed backup references (`.git/refs/original/`)
@@ -61,6 +75,21 @@ The following API keys were exposed in git history and **MUST** be revoked:
 - **File:** `frame_processor/credentials/worldsystem-23f7306a1a75.json`
 - **Action:** Delete service account or rotate keys at https://console.cloud.google.com/iam-admin/serviceaccounts
 - **Then:** Generate new credentials and update path in `.env`
+
+#### DJI Mobile SDK API Key
+- **Key:** `dbca74ea9cd8c2cd9d193fe9`
+- **Action:** Regenerate at https://developer.dji.com/user/apps
+- **Then:** Add to `WebSocketTest/gradle.properties`
+
+#### Google Maps API Key (Android)
+- **Key:** `AIzaSyBMmMWgaETlnknmwGlHUelFErEWNwMn84o`
+- **Action:** Regenerate or restrict at https://console.cloud.google.com/google/maps-apis/credentials
+- **Then:** Add to `WebSocketTest/gradle.properties`
+
+#### MapLibre Token
+- **Token:** `AAPTxy8BH1VEsoebNVZXo8HurFd6D-NTBNv7ZFS...` (truncated)
+- **Action:** Regenerate at https://cloud.maptiler.com/account/keys/
+- **Then:** Add to `WebSocketTest/gradle.properties`
 
 ### 2. Force Push to Remote (⚠️ DANGEROUS)
 

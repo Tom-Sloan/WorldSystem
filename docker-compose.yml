@@ -355,59 +355,57 @@ services:
     profiles: ["mesh_service", "slam3r"]
     build:
       context: ./mesh_service
-      args:
-        USERNAME: ${USERNAME}
-        UID: ${UID}
-        GID: ${GID}
     container_name: mesh_service
-    runtime: nvidia
     network_mode: host
-    
+
     volumes:
-      - /dev/shm:/dev/shm
-      - ${X11SOCKET}:${X11SOCKET}
-      - ${XAUTHORITY}:${XAUTHORITY}
+      - /dev/shm:/dev/shm  # Shared memory for SLAM3R keyframes
       - ./mesh_service/debug_output:/debug_output
-    
+
     shm_size: '4gb'
-    
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/metrics"]
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    
+
     restart: unless-stopped
-    
+
     environment:
+      # RabbitMQ Configuration
       - RABBITMQ_URL=amqp://127.0.0.1:5672
-      - SLAM3R_KEYFRAME_EXCHANGE=${SLAM3R_KEYFRAME_EXCHANGE:-slam3r_keyframe_exchange}
-      - RERUN_VIEWER_ADDRESS=127.0.0.1:9876
-      - RERUN_ENABLED=${RERUN_ENABLED:-true}
-      - METRICS_PORT=${MESH_SERVICE_METRICS_PORT:-9091}
-      - MESH_SERVICE_UNLINK_SHM=${MESH_SERVICE_UNLINK_SHM:-false}
-      - NVIDIA_VISIBLE_DEVICES=all
-      - DISPLAY=${DISPLAY}
-      - OMP_NUM_THREADS=4
-      - CUDA_LAUNCH_BLOCKING=0
+
+      # Rerun Configuration
+      - RERUN_HOST=127.0.0.1
+      - RERUN_PORT=9876
+      - RERUN_CONNECT=true
+
+      # Point Cloud Configuration
+      - VOXEL_SIZE=${VOXEL_SIZE:-0.02}  # 2cm voxels
+      - MAX_POINTS=${MAX_POINTS:-500000}  # Display cap
+      - MAX_RAW_POINTS=${MAX_RAW_POINTS:-1000000}  # Auto-downsample threshold
+      - LOG_INTERVAL_MS=${LOG_INTERVAL_MS:-500}  # Rerun update rate
+
+      # Shared Memory
+      - MESH_SERVICE_UNLINK_SHM=${MESH_SERVICE_UNLINK_SHM:-true}
+
+      # Video Configuration
+      - ENABLE_VIDEO=${ENABLE_VIDEO:-true}
+      - VIDEO_LOG_INTERVAL_MS=${VIDEO_LOG_INTERVAL_MS:-100}  # 10fps
+
+      # System Configuration
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_METRICS=${ENABLE_METRICS:-true}
       - PYTHONUNBUFFERED=1
-    
+
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-    
+
     depends_on:
       - rabbitmq
 

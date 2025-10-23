@@ -1,0 +1,21 @@
+# Core dependencies - matching visualization service versions
+rerun-sdk==0.24.0
+numpy>=2.0.0
+open3d>=0.18.0
+
+# Async RabbitMQ - matching visualization
+aio-pika>=9.4.0
+
+# WebSocket for video streaming
+websockets>=10.0
+
+# Serialization
+msgpack>=1.0.0
+
+# Video processing (for frame decoding)
+opencv-python>=4.7.0
+av>=10.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+colorama>=0.4.6

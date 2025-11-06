@@ -14,11 +14,14 @@ import numpy as np
 import rerun as rr
 from colorama import Fore, Style
 
+# Add common directory to path for WebSocketVideoConsumer
+sys.path.insert(0, '/app/common')
+from websocket_video_consumer import WebSocketVideoConsumer
+
 from config import config
 from utils.logger import setup_logging, get_logger
 from io_handlers.shared_memory import SharedMemoryReader
 from io_handlers.rabbitmq_consumer import RabbitMQConsumer
-from io_handlers.websocket_consumer import WebSocketVideoConsumer
 from processing.point_cloud_manager import PointCloudManager
 from visualization.rerun_publisher import RerunPublisher
 from visualization.blueprint_manager import (
@@ -27,6 +30,56 @@ from visualization.blueprint_manager import (
 )
 
 logger = get_logger(__name__)
+
+
+class MeshServiceVideoConsumer(WebSocketVideoConsumer):
+    """
+    WebSocket video consumer for mesh service.
+    Extends common WebSocketVideoConsumer base class.
+    """
+
+    def __init__(self, ws_url: str, rerun_publisher, config):
+        """
+        Initialize mesh service video consumer.
+
+        Args:
+            ws_url: WebSocket URL
+            rerun_publisher: RerunPublisher instance for logging frames
+            config: Configuration object
+        """
+        super().__init__(ws_url, service_name="MeshService", frame_skip=1)
+        self.rerun_publisher = rerun_publisher
+        self.config = config
+
+    def process_frame(self, frame: np.ndarray, frame_number: int):
+        """
+        Process frame - convert BGR to RGB and log to Rerun.
+
+        Args:
+            frame: Frame in BGR format (from WebSocketVideoConsumer)
+            frame_number: Frame number
+        """
+        try:
+            # Check if video logging is enabled
+            if not self.config.enable_video:
+                return
+
+            # Check if it's time to log video
+            if not self.rerun_publisher.should_log_video():
+                return
+
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Generate timestamp
+            import time
+            timestamp_ns = int(time.time() * 1e9)
+
+            # Log to Rerun (synchronous call - no async needed!)
+            self.rerun_publisher.log_video_frame(frame_rgb, timestamp_ns)
+
+        except Exception as e:
+            logger.error(f"Error in process_frame: {e}", exc_info=True)
 
 
 class MeshService:
@@ -56,11 +109,9 @@ class MeshService:
 
         # WebSocket video consumer (for camera feed)
         ws_url = os.getenv("VIDEO_STREAM_URL", "ws://127.0.0.1:5001/ws/video/consume")
-        self.websocket_consumer = WebSocketVideoConsumer(ws_url)
-        self.websocket_consumer.set_frame_callback(self.handle_websocket_video_frame)
+        self.websocket_consumer = MeshServiceVideoConsumer(ws_url, self.rerun_publisher, config)
 
         # State
-        self.last_stats_log = asyncio.get_event_loop().time()
         self.stats_log_interval = 5.0  # Log stats every 5 seconds
         self.running = False
 
@@ -280,9 +331,14 @@ class MeshService:
             await self.rabbitmq.consume_slam_keyframes(self.handle_slam_keyframe)
 
             # Start WebSocket video consumer if video is enabled
-            websocket_task = None
+            websocket_thread = None
             if config.enable_video:
-                websocket_task = asyncio.create_task(self.websocket_consumer.run())
+                import threading
+                websocket_thread = threading.Thread(
+                    target=self.websocket_consumer.run,
+                    daemon=True
+                )
+                websocket_thread.start()
                 logger.info("🎥 Started WebSocket video consumer")
 
             # Start periodic stats logger
@@ -302,13 +358,9 @@ class MeshService:
             stats_task.cancel()
             await stats_task
 
-            if websocket_task:
-                await self.websocket_consumer.stop()
-                websocket_task.cancel()
-                try:
-                    await websocket_task
-                except asyncio.CancelledError:
-                    pass
+            if websocket_thread:
+                self.websocket_consumer.stop()
+                websocket_thread.join(timeout=2)
 
         except Exception as e:
             logger.error(f"Fatal error in service: {e}", exc_info=True)

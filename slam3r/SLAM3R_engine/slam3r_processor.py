@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Streamlined SLAM3R Processor - Reads from WebSocket instead of RabbitMQ.
+Streamlined SLAM3R Processor - Uses WebSocketVideoConsumer base class.
 
 This processor:
+- Inherits from WebSocketVideoConsumer for H.264 decoding
 - Connects to server's WebSocket consumer (/ws/video/consume)
-- Receives H.264 binary packets
-- Accumulates and parses bytes for robust decoding
-- Decodes to RGB frames using PyAV
-- Runs SLAM3R pipeline (I2P → L2W)
+- Runs SLAM3R pipeline (I2P → L2W) on decoded frames
 - Publishes keyframes to mesh_service via shared memory
 - Uses StreamingSLAM3R wrapper for clean architecture
 """
@@ -15,6 +13,7 @@ This processor:
 import asyncio
 import logging
 import os
+import sys
 import time
 from typing import Dict, Tuple, Optional
 
@@ -23,11 +22,14 @@ import numpy as np
 import torch
 import yaml
 import trimesh
-import websockets
-import av  # For H.264 decoding
 
-# Max buffer size to prevent memory issues
-MAX_BYTE_BUFFER_SIZE = 1 << 20  # 1MB
+# Add common directory to path for WebSocketVideoConsumer
+# In Docker: /app/common, locally: ../../common from SLAM3R_engine
+common_path = os.path.join(os.path.dirname(__file__), '../../common')
+if not os.path.exists(common_path):
+    common_path = '/app/common'  # Docker path
+sys.path.insert(0, common_path)
+from websocket_video_consumer import WebSocketVideoConsumer
 
 # Configure logging
 logging.basicConfig(
@@ -105,56 +107,52 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = os.getenv(
 )
 
 
-class SLAM3RProcessor:
-    """Streamlined SLAM3R processor using StreamingSLAM3R wrapper."""
-    
+class SLAM3RProcessor(WebSocketVideoConsumer):
+    """Streamlined SLAM3R processor using StreamingSLAM3R wrapper and WebSocketVideoConsumer base."""
+
     def __init__(self, config_path: str = "./SLAM3R_engine/configs/wild.yaml"):
         """Initialize the SLAM3R processor."""
+        # Get WebSocket URL from environment
+        ws_url = os.getenv("VIDEO_STREAM_URL", "ws://127.0.0.1:5001/ws/video/consume")
+
+        # Initialize parent WebSocketVideoConsumer
+        super().__init__(ws_url=ws_url, service_name="SLAM3R", frame_skip=1)
+
         self.config_path = config_path
         self.config = self._load_config()
-        
+
         # Initialize device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Using device: {self.device}")
-        
+
         # Initialize StreamingSLAM3R
         self.slam3r = None
         self._initialize_models()
-        
-        # WebSocket configuration
-        self.ws_url = os.getenv("VIDEO_STREAM_URL", "ws://127.0.0.1:5001/ws/video/consume")
-        self.codec = None  # PyAV codec context for H.264 decoding
-        self.reconnect_delay = 5  # seconds
-        self.byte_buffer = bytearray()  # Accumulate raw H.264 bytes
-        
+
         # RabbitMQ connection (for keyframe publishing)
         self.rabbitmq_connection = None
         self.rabbitmq_channel = None
         self.keyframe_exchange = None
-        
+
         # Shared memory publisher for keyframes
         self.keyframe_publisher = None
-        
-        # Processing statistics
-        self.frame_count = 0
+
+        # Keyframe tracking
         self.keyframe_count = 0
-        self.last_fps_time = time.time()
-        self.last_fps_frame_count = 0
-        
+
         # Video segment handling
         self.current_video_id = None
         self.segment_frame_count = 0
-        
+
         # PCD saving configuration
         self.save_pcd = os.getenv("SLAM3R_SAVE_PCD", "false").lower() == "true"
-        
-        # PTS tracking for B-frame deduplication
-        self.last_pts = None
-        self.pts_duplicates_skipped = 0
         self.pcd_output_dir = os.getenv("SLAM3R_PCD_OUTPUT_DIR", "/debug_output/pcd")
         if self.save_pcd:
             os.makedirs(self.pcd_output_dir, exist_ok=True)
             logger.info(f"PCD saving enabled. Output directory: {self.pcd_output_dir}")
+
+        # Event loop reference for async operations from sync thread
+        self._event_loop = None
     
     def _load_config(self) -> Dict:
         """Load configuration from YAML file."""
@@ -200,22 +198,74 @@ class SLAM3RProcessor:
             logger.error(f"Failed to initialize models: {e}")
             raise
     
+    def process_frame(self, frame: np.ndarray, frame_number: int):
+        """Process a single decoded frame through SLAM3R pipeline.
+
+        This method is called by WebSocketVideoConsumer for each decoded frame.
+        Frame is already in BGR format from the parent class.
+
+        Note: This runs in a separate thread, so we use run_coroutine_threadsafe
+        to schedule async tasks on the main event loop.
+        """
+        try:
+            # Convert BGR to RGB for SLAM3R
+            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Process through SLAM3R pipeline
+            timestamp = int(time.time_ns())
+            result = self.slam3r.process_frame(img_rgb, timestamp)
+
+            # Publish keyframe if detected
+            if result and result.get('is_keyframe', False):
+                result['rgb_image'] = img_rgb
+
+                # Schedule async keyframe publishing on main event loop
+                # This is thread-safe and doesn't block the processing thread
+                if self._event_loop is not None:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._publish_keyframe(result, timestamp),
+                        self._event_loop
+                    )
+
+                    # Add callback to log any errors
+                    def handle_publish_error(fut):
+                        try:
+                            fut.result()
+                        except Exception as e:
+                            logger.error(f"Error publishing keyframe: {e}", exc_info=True)
+
+                    future.add_done_callback(handle_publish_error)
+                else:
+                    logger.warning("Event loop not available, skipping keyframe publish")
+
+            # Update segment counter
+            self.segment_frame_count += 1
+
+            # Log FPS every 30 frames
+            if frame_number % 30 == 0:
+                avg_fps = sum(self.fps_samples) / len(self.fps_samples) if self.fps_samples else 0
+                logger.info(f"SLAM3R FPS: {avg_fps:.1f} | Frames: {frame_number} | "
+                          f"Keyframes: {self.keyframe_count} | Segment frames: {self.segment_frame_count}")
+
+        except Exception as e:
+            logger.error(f"Error processing frame {frame_number}: {e}", exc_info=True)
+
     async def connect_rabbitmq(self):
         """Establish RabbitMQ connection for keyframe publishing only."""
         rabbitmq_host = os.getenv("RABBITMQ_HOST", "localhost")
         rabbitmq_port = int(os.getenv("RABBITMQ_PORT", "5672"))
-        
+
         max_retries = 5
         for attempt in range(max_retries):
             try:
                 # Import aio_pika here since we still need it for keyframe publishing
                 import aio_pika
-                
+
                 self.rabbitmq_connection = await aio_pika.connect_robust(
                     f"amqp://guest:guest@{rabbitmq_host}:{rabbitmq_port}/"
                 )
                 self.rabbitmq_channel = await self.rabbitmq_connection.channel()
-                
+
                 # Create keyframe exchange
                 exchange_name = os.getenv("SLAM3R_KEYFRAME_EXCHANGE", "slam3r_keyframe_exchange")
                 self.keyframe_exchange = await self.rabbitmq_channel.declare_exchange(
@@ -223,7 +273,7 @@ class SLAM3RProcessor:
                     aio_pika.ExchangeType.TOPIC,
                     durable=True
                 )
-                
+
                 # Initialize keyframe publisher with exchange
                 if STREAMING_AVAILABLE and self.keyframe_exchange:
                     try:
@@ -231,106 +281,16 @@ class SLAM3RProcessor:
                         logger.info("Initialized shared memory keyframe publisher with exchange")
                     except Exception as e:
                         logger.error(f"Failed to initialize keyframe publisher: {e}")
-                
+
                 logger.info(f"Connected to RabbitMQ at {rabbitmq_host}:{rabbitmq_port} for keyframe publishing")
                 return
-                
+
             except Exception as e:
                 logger.error(f"RabbitMQ connection attempt {attempt + 1} failed: {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(5)
                 else:
                     logger.warning("Failed to connect to RabbitMQ - keyframe publishing will be disabled")
-    
-    async def _process_h264_packet(self, data: bytes):
-        """Process H.264 packet and decode to RGB frames."""
-        try:
-            # Append data to buffer
-            self.byte_buffer.extend(data)
-            logger.debug(f"Received {len(data)} bytes, buffer size: {len(self.byte_buffer)}")
-            
-            # Prevent buffer overflow
-            if len(self.byte_buffer) > MAX_BYTE_BUFFER_SIZE:
-                logger.warning("Byte buffer overflow - clearing oldest data")
-                self.byte_buffer = self.byte_buffer[-MAX_BYTE_BUFFER_SIZE:]
-            
-            # Parse buffer into valid packets
-            packets = self.codec.parse(self.byte_buffer)
-            if not packets:
-                logger.debug("No valid packets parsed yet")
-                return
-            
-            # Process each packet
-            for packet in packets:
-                try:
-                    frames = self.codec.decode(packet)
-                    for frame in frames:
-                        # Skip duplicate PTS frames (common with B-frames)
-                        if hasattr(frame, 'pts') and frame.pts is not None:
-                            if self.last_pts is not None and frame.pts == self.last_pts:
-                                self.pts_duplicates_skipped += 1
-                                if self.pts_duplicates_skipped % 100 == 0:
-                                    logger.info(f"Skipped {self.pts_duplicates_skipped} duplicate PTS frames")
-                                continue
-                            self.last_pts = frame.pts
-                        
-                        img_rgb = frame.to_ndarray(format='rgb24')
-                        timestamp = int(time.time_ns())  # TODO: Extract from stream if available
-                        result = self.slam3r.process_frame(img_rgb, timestamp)
-                        if result and result.get('is_keyframe', False):
-                            result['rgb_image'] = img_rgb
-                            await self._publish_keyframe(result, timestamp)
-                        self.frame_count += 1
-                        self.segment_frame_count += 1
-                        if self.frame_count % 30 == 0:
-                            self._log_fps()
-                except Exception as e:
-                    # Log actual exception type to determine correct catch
-                    if "decode" in str(e).lower() or "invalid" in str(e).lower():
-                        logger.debug(f"Skipping invalid packet ({type(e).__module__}.{type(e).__name__}): {e}")
-                    else:
-                        raise  # Re-raise unexpected exceptions
-            
-            # Update buffer (remove parsed data)
-            consumed = sum(p.size for p in packets)
-            self.byte_buffer = self.byte_buffer[consumed:]
-
-            # Flush decoder for any remaining frames
-            # Note: Only attempt flush if we successfully decoded packets
-            # EOF errors during active streaming are expected and should not be logged as errors
-            try:
-                flushed_frames = self.codec.decode()  # Empty packet flushes
-                for frame in flushed_frames:
-                    # Skip duplicate PTS frames (common with B-frames)
-                    if hasattr(frame, 'pts') and frame.pts is not None:
-                        if self.last_pts is not None and frame.pts == self.last_pts:
-                            self.pts_duplicates_skipped += 1
-                            continue
-                        self.last_pts = frame.pts
-
-                    img_rgb = frame.to_ndarray(format='rgb24')
-                    timestamp = int(time.time_ns())  # TODO: Extract from stream if available
-                    result = self.slam3r.process_frame(img_rgb, timestamp)
-                    if result and result.get('is_keyframe', False):
-                        result['rgb_image'] = img_rgb
-                        await self._publish_keyframe(result, timestamp)
-                    self.frame_count += 1
-                    self.segment_frame_count += 1
-                    if self.frame_count % 30 == 0:
-                        self._log_fps()
-            except av.error.EOFError:
-                # EOF during flush is expected when decoder buffer is empty during active streaming
-                # This is NOT an error - it just means no buffered frames are available
-                logger.debug("Decoder flush: no buffered frames available (EOF)")
-            except Exception as e:
-                # Log other flush exceptions at debug level (e.g., invalid data at boundaries)
-                logger.debug(f"Flush decode exception ({type(e).__module__}.{type(e).__name__}): {e}")
-                    
-        except av.error.InvalidDataError:
-            # This is normal for partial packets, skip
-            pass
-        except Exception as e:
-            logger.error(f"Error processing H.264 packet: {e}")
     
     async def _publish_keyframe(self, keyframe_data: Dict, timestamp: int):
         """Publish keyframe to mesh_service via shared memory."""
@@ -482,24 +442,6 @@ class SLAM3RProcessor:
         except Exception as e:
             logger.error(f"Failed to publish keyframe: {e}")
     
-    def _log_fps(self):
-        """Log current FPS."""
-        current_time = time.time()
-        time_diff = current_time - self.last_fps_time
-        frame_diff = self.frame_count - self.last_fps_frame_count
-        
-        if time_diff > 0:
-            fps = frame_diff / time_diff
-            logger.info(
-                f"FPS: {fps:.2f} | "
-                f"Frames: {self.frame_count} | "
-                f"Keyframes: {self.keyframe_count} | "
-                f"Segment frames: {self.segment_frame_count} | "
-                f"PTS duplicates skipped: {self.pts_duplicates_skipped}"
-            )
-        
-        self.last_fps_time = current_time
-        self.last_fps_frame_count = self.frame_count
     
     def _save_debug_pointcloud(self, points: np.ndarray, confidence: np.ndarray, keyframe_id: int, colors: np.ndarray = None):
         """Save point cloud to PLY file for debugging using trimesh."""
@@ -633,63 +575,51 @@ class SLAM3RProcessor:
         
         return T
     
-    async def run(self):
-        """Main processing loop with WebSocket connection."""
+    async def run_async(self):
+        """Override parent's run_async to connect RabbitMQ before starting."""
+        # Store reference to event loop for thread-safe async operations
+        self._event_loop = asyncio.get_running_loop()
+        logger.info("Event loop captured for thread-safe async operations")
+
         # Connect to RabbitMQ for keyframe publishing
         await self.connect_rabbitmq()
-        
-        logger.info(f"Starting WebSocket consumer, connecting to: {self.ws_url}")
-        
-        while True:
-            try:
-                # Connect to WebSocket
-                async with websockets.connect(self.ws_url) as websocket:
-                    logger.info(f"Connected to WebSocket: {self.ws_url}")
-                    
-                    # Initialize H.264 decoder
-                    self.codec = av.CodecContext.create('h264', 'r')
-                    self.codec.thread_type = 'AUTO'  # Enable multi-threading
-                    self.codec.extradata = None  # Reset extradata for new stream
-                    
-                    # Reset PTS tracking for new stream
-                    self.last_pts = None
-                    self.pts_duplicates_skipped = 0
-                    
-                    # Process incoming messages
-                    async for message in websocket:
-                        if isinstance(message, bytes):
-                            await self._process_h264_packet(message)
-                        else:
-                            logger.debug(f"Non-binary WebSocket message received: {message}")
-                            
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("WebSocket connection closed. Reconnecting...")
-            except Exception as e:
-                logger.error(f"WebSocket error: {e}. Reconnecting in {self.reconnect_delay}s...")
-                await asyncio.sleep(self.reconnect_delay)
-            finally:
-                # Clean up codec
-                if self.codec:
-                    self.codec = None
 
+        # Call parent's run_async to handle WebSocket connection and frame processing
+        await super().run_async()
 
-async def main():
-    """Main entry point."""
-    processor = SLAM3RProcessor()
-    try:
-        await processor.run()
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
-    finally:
-        # Clean up shared memory
-        if processor.keyframe_publisher:
-            logger.info("Cleaning up shared memory segments...")
-            processor.keyframe_publisher.cleanup()
-        
-        # Close RabbitMQ connection
-        if processor.rabbitmq_connection:
-            await processor.rabbitmq_connection.close()
+    def run(self):
+        """Override parent's run to add cleanup logic."""
+        self.is_running = True
+        try:
+            asyncio.run(self.run_async())
+        except KeyboardInterrupt:
+            logger.info("Shutting down SLAM3R processor...")
+        finally:
+            self.stop()
+
+            # Clean up shared memory
+            if self.keyframe_publisher:
+                logger.info("Cleaning up shared memory segments...")
+                try:
+                    self.keyframe_publisher.cleanup()
+                except Exception as e:
+                    logger.error(f"Error cleaning up keyframe publisher: {e}")
+
+            # Close RabbitMQ connection
+            if self.rabbitmq_connection:
+                logger.info("Closing RabbitMQ connection...")
+                try:
+                    # Create new event loop for cleanup if needed
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self.rabbitmq_connection.close())
+                except Exception as e:
+                    logger.error(f"Error closing RabbitMQ connection: {e}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    processor = SLAM3RProcessor()
+    processor.run()

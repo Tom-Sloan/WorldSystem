@@ -15,14 +15,17 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# Copy common utilities first (needed by mesh service)
+COPY common/ /app/common/
+
 # Copy requirements
-COPY requirements.txt .
+COPY mesh_service/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY python/ /app/
+COPY mesh_service/python/ /app/
 
 # Expose Rerun viewer port (if running locally)
 EXPOSE 9876

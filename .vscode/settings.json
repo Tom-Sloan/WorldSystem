@@ -77,5 +77,5 @@
         "valarray": "cpp",
         "variant": "cpp"
     },
-    "cmake.sourceDirectory": "/home/sam3/Desktop/Toms_Workspace/WorldSystem/slam"
+    "cmake.sourceDirectory": "/home/sam3/Desktop/Toms_Workspace/WorldSystem/mesh_service"
 }

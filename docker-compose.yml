@@ -163,7 +163,8 @@ services:
     profiles: ["slam3r"]
     privileged: true
     build:
-      context: ./slam3r
+      context: .
+      dockerfile: ./slam3r/Dockerfile
       args:
         USERNAME: ${USERNAME}
         UID: ${UID}
@@ -354,7 +355,8 @@ services:
     image: mesh_service:latest
     profiles: ["mesh_service", "slam3r"]
     build:
-      context: ./mesh_service
+      context: .
+      dockerfile: ./mesh_service/Dockerfile
     container_name: mesh_service
     network_mode: host
 
@@ -393,7 +395,7 @@ services:
 
       # Video Configuration
       - ENABLE_VIDEO=${ENABLE_VIDEO:-true}
-      - VIDEO_LOG_INTERVAL_MS=${VIDEO_LOG_INTERVAL_MS:-100}  # 10fps
+      - VIDEO_LOG_INTERVAL_MS=${VIDEO_LOG_INTERVAL_MS:-1}  # 10fps
 
       # System Configuration
       - LOG_LEVEL=${LOG_LEVEL:-INFO}

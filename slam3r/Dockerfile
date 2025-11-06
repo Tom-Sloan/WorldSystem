@@ -64,8 +64,8 @@ RUN pip3 install ninja
 WORKDIR /app
 
 # Copy only requirements files first (for better caching)
-COPY ./SLAM3R_engine/requirements.txt /app/SLAM3R_engine/requirements.txt
-COPY ./SLAM3R_engine/requirements_optional.txt /app/SLAM3R_engine/requirements_optional.txt
+COPY slam3r/SLAM3R_engine/requirements.txt /app/SLAM3R_engine/requirements.txt
+COPY slam3r/SLAM3R_engine/requirements_optional.txt /app/SLAM3R_engine/requirements_optional.txt
 
 # Install SLAM3R Python dependencies
 RUN pip3 install -r /app/SLAM3R_engine/requirements.txt
@@ -88,7 +88,10 @@ RUN pip3 install --no-cache-dir "numpy>=2.2,<3" rerun-sdk==0.23.2
 
 WORKDIR /app
 
-COPY ./SLAM3R_engine/ /app/SLAM3R_engine/
+# Copy common utilities first (needed by slam3r_processor)
+COPY common/ /app/common/
+
+COPY slam3r/SLAM3R_engine/ /app/SLAM3R_engine/
 
 # Build and install the CUDA‑accelerated curope wheel
 RUN cd /app/SLAM3R_engine/slam3r/pos_embed/curope && \

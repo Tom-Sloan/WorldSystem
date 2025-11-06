@@ -30,7 +30,7 @@ class MeshServiceConfig:
 
     # Video Processing
     enable_video: bool = os.getenv('ENABLE_VIDEO', 'true').lower() == 'true'
-    video_log_interval_ms: int = int(os.getenv('VIDEO_LOG_INTERVAL_MS', '100'))  # 10fps to Rerun
+    video_log_interval_ms: int = int(os.getenv('VIDEO_LOG_INTERVAL_MS', '1'))  # 10fps to Rerun
 
     # Performance
     enable_metrics: bool = os.getenv('ENABLE_METRICS', 'true').lower() == 'true'

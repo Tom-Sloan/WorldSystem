@@ -294,8 +294,10 @@ class SLAM3RProcessor:
             # Update buffer (remove parsed data)
             consumed = sum(p.size for p in packets)
             self.byte_buffer = self.byte_buffer[consumed:]
-            
+
             # Flush decoder for any remaining frames
+            # Note: Only attempt flush if we successfully decoded packets
+            # EOF errors during active streaming are expected and should not be logged as errors
             try:
                 flushed_frames = self.codec.decode()  # Empty packet flushes
                 for frame in flushed_frames:
@@ -305,7 +307,7 @@ class SLAM3RProcessor:
                             self.pts_duplicates_skipped += 1
                             continue
                         self.last_pts = frame.pts
-                    
+
                     img_rgb = frame.to_ndarray(format='rgb24')
                     timestamp = int(time.time_ns())  # TODO: Extract from stream if available
                     result = self.slam3r.process_frame(img_rgb, timestamp)
@@ -316,8 +318,12 @@ class SLAM3RProcessor:
                     self.segment_frame_count += 1
                     if self.frame_count % 30 == 0:
                         self._log_fps()
+            except av.error.EOFError:
+                # EOF during flush is expected when decoder buffer is empty during active streaming
+                # This is NOT an error - it just means no buffered frames are available
+                logger.debug("Decoder flush: no buffered frames available (EOF)")
             except Exception as e:
-                # Flush errors are expected at boundaries
+                # Log other flush exceptions at debug level (e.g., invalid data at boundaries)
                 logger.debug(f"Flush decode exception ({type(e).__module__}.{type(e).__name__}): {e}")
                     
         except av.error.InvalidDataError:

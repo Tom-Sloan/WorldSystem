@@ -125,6 +125,8 @@ class WebSocketVideoConsumer:
             self.byte_buffer = self.byte_buffer[consumed:]
 
             # Flush decoder for any remaining frames
+            # Note: Only attempt flush if we successfully decoded packets
+            # EOF errors during active streaming are expected and should not be logged as errors
             try:
                 flushed_frames = self.codec.decode()  # Empty packet flushes
                 for frame in flushed_frames:
@@ -143,8 +145,12 @@ class WebSocketVideoConsumer:
                         timestamp_ns = int(time.time() * 1e9)
                         await self.frame_callback(img_rgb, timestamp_ns)
 
+            except av.error.EOFError:
+                # EOF during flush is expected when decoder buffer is empty during active streaming
+                # This is NOT an error - it just means no buffered frames are available
+                logger.debug("Decoder flush: no buffered frames available (EOF)")
             except Exception as e:
-                # Flush errors are expected at boundaries
+                # Log other flush exceptions at debug level (e.g., invalid data at boundaries)
                 logger.debug(f"Flush decode exception ({type(e).__module__}.{type(e).__name__}): {e}")
 
         except av.error.InvalidDataError:

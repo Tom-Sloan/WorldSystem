@@ -28,7 +28,8 @@ class PointCloudManager:
         self,
         voxel_size: float = 0.02,
         max_points: int = 500_000,
-        max_raw_points: int = 1_000_000
+        max_raw_points: int = 1_000_000,
+        max_cached_keyframes: int = 100
     ):
         """
         Initialize point cloud manager.
@@ -37,10 +38,12 @@ class PointCloudManager:
             voxel_size: Voxel size in meters for downsampling (default: 2cm)
             max_points: Maximum points to display in Rerun (memory cap)
             max_raw_points: Maximum raw points before auto-downsampling
+            max_cached_keyframes: Maximum number of keyframes to cache for optimization
         """
         self.voxel_size = voxel_size
         self.max_points = max_points
         self.max_raw_points = max_raw_points
+        self.max_cached_keyframes = max_cached_keyframes
 
         # Accumulated point cloud (Open3D)
         self.accumulated_pcd = o3d.geometry.PointCloud()
@@ -51,9 +54,15 @@ class PointCloudManager:
         self.total_points_raw = 0
         self.last_downsample_time = time.time()
 
+        # Per-frame keyframe cache for optimization (LRU)
+        self.keyframe_cache = {}  # keyframe_id -> KeyframeData dict
+        self.keyframe_cache_order = []  # LRU tracking (oldest first)
+        self.last_optimization_keyframe = None  # Track which keyframe was last optimized
+
         logger.info(
             f"PointCloudManager initialized: voxel_size={voxel_size*100:.1f}cm, "
-            f"max_points={max_points:,}, max_raw_points={max_raw_points:,}"
+            f"max_points={max_points:,}, max_raw_points={max_raw_points:,}, "
+            f"max_cached_keyframes={max_cached_keyframes}"
         )
 
     def add_keyframe(
@@ -61,16 +70,18 @@ class PointCloudManager:
         keyframe_id: str,
         points: np.ndarray,
         colors: np.ndarray,
-        pose: Optional[np.ndarray] = None
+        pose: Optional[np.ndarray] = None,
+        confidence: Optional[np.ndarray] = None
     ) -> bool:
         """
-        Add keyframe to accumulated point cloud.
+        Add keyframe to accumulated point cloud and store in cache for optimization.
 
         Args:
             keyframe_id: Unique keyframe identifier
             points: Point coordinates (N, 3) float32
             colors: Point colors (N, 3) or (N, 4) uint8
             pose: Optional 4x4 transformation matrix to world coordinates
+            confidence: Optional per-point confidence scores (N,) float32
 
         Returns:
             True if keyframe was added (new), False if skipped (duplicate)
@@ -84,6 +95,9 @@ class PointCloudManager:
         self.total_keyframes += 1
 
         start_time = time.time()
+
+        # Store keyframe data in cache for optimization (before transformation)
+        self._cache_keyframe(keyframe_id, points.copy(), colors.copy(), pose, confidence)
 
         # Transform points to world coordinates if pose provided
         if pose is not None:
@@ -130,6 +144,88 @@ class PointCloudManager:
         )
 
         return True
+
+    def _cache_keyframe(self, keyframe_id: str, points: np.ndarray, colors: np.ndarray,
+                       pose: Optional[np.ndarray], confidence: Optional[np.ndarray]):
+        """
+        Store keyframe data in LRU cache for optimization.
+
+        Args:
+            keyframe_id: Unique keyframe identifier
+            points: Point coordinates (N, 3) float32
+            colors: Point colors (N, 3) uint8
+            pose: 4x4 transformation matrix
+            confidence: Per-point confidence scores (N,) float32
+        """
+        # Store keyframe data
+        self.keyframe_cache[keyframe_id] = {
+            'points': points,
+            'colors': colors,
+            'pose': pose.copy() if pose is not None else None,
+            'confidence': confidence.copy() if confidence is not None else None,
+            'timestamp': time.time(),
+            'optimized': False  # Track if this keyframe has been optimized
+        }
+
+        # Update LRU order
+        if keyframe_id in self.keyframe_cache_order:
+            self.keyframe_cache_order.remove(keyframe_id)
+        self.keyframe_cache_order.append(keyframe_id)
+
+        # Evict oldest keyframes if cache is full
+        while len(self.keyframe_cache) > self.max_cached_keyframes:
+            oldest_id = self.keyframe_cache_order.pop(0)
+            if oldest_id in self.keyframe_cache:
+                del self.keyframe_cache[oldest_id]
+                logger.debug(f"Evicted keyframe {oldest_id} from cache (LRU)")
+
+    def get_new_keyframes_since_optimization(self) -> list:
+        """
+        Get list of keyframes that haven't been optimized yet.
+
+        Returns:
+            List of keyframe data dicts, each containing:
+                - keyframe_id: str
+                - points: np.ndarray
+                - colors: np.ndarray
+                - pose: np.ndarray
+                - confidence: Optional[np.ndarray]
+        """
+        new_keyframes = []
+
+        for keyframe_id in self.keyframe_cache_order:
+            if keyframe_id not in self.keyframe_cache:
+                continue
+
+            kf_data = self.keyframe_cache[keyframe_id]
+
+            # Include keyframes that haven't been optimized
+            if not kf_data['optimized']:
+                new_keyframes.append({
+                    'keyframe_id': keyframe_id,
+                    'points': kf_data['points'],
+                    'colors': kf_data['colors'],
+                    'pose': kf_data['pose'],
+                    'confidence': kf_data['confidence'],
+                    'timestamp': kf_data['timestamp']
+                })
+
+        return new_keyframes
+
+    def mark_keyframes_optimized(self, keyframe_ids: list):
+        """
+        Mark keyframes as having been optimized.
+
+        Args:
+            keyframe_ids: List of keyframe IDs that were optimized
+        """
+        for keyframe_id in keyframe_ids:
+            if keyframe_id in self.keyframe_cache:
+                self.keyframe_cache[keyframe_id]['optimized'] = True
+
+        if keyframe_ids:
+            self.last_optimization_keyframe = keyframe_ids[-1]
+            logger.info(f"Marked {len(keyframe_ids)} keyframes as optimized")
 
     def get_downsampled_cloud(self) -> Tuple[np.ndarray, np.ndarray]:
         """

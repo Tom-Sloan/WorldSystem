@@ -364,16 +364,18 @@ class SLAM3RProcessor(WebSocketVideoConsumer):
                     logger.info(f"Too few points with conf > {conf_thresh}, using fallback threshold {conf_thresh_fallback}")
                 
                 filtered_pts = pts3d[mask]
-                
+                filtered_conf = conf[mask]  # Extract confidence for filtered points
+
                 # Additional validation: filter corrupted points
                 max_coord = 100.0  # 100m scene bounds
                 valid_mask = np.all(np.isfinite(filtered_pts), axis=1)
                 valid_mask &= np.all(np.abs(filtered_pts) < max_coord, axis=1)
-                
+
                 corrupted_count = (~valid_mask).sum()
                 if corrupted_count > 0:
                     logger.warning(f"Filtering {corrupted_count} corrupted points with extreme values")
                     filtered_pts = filtered_pts[valid_mask]
+                    filtered_conf = filtered_conf[valid_mask]  # Apply same filtering to confidence
                     # Need to filter corresponding confidence values for color mapping
                     if 'rgb_image' in keyframe_data and keyframe_data['rgb_image'] is not None:
                         # Update mask to reflect additional filtering
@@ -421,19 +423,21 @@ class SLAM3RProcessor(WebSocketVideoConsumer):
                     colors = np.ones((len(filtered_pts), 3), dtype=np.uint8) * 200
                 
                 logger.info(f"Publishing keyframe {self.keyframe_count}: {len(filtered_pts)} valid points "
-                           f"(from {len(pts3d)} total, {mask.sum()} passed confidence)")
-                
+                           f"(from {len(pts3d)} total, {mask.sum()} passed confidence). "
+                           f"Confidence range: {filtered_conf.min():.2f}-{filtered_conf.max():.2f}, mean: {filtered_conf.mean():.2f}")
+
                 # Get pose matrix
                 pose = keyframe_data.get('pose', np.eye(4))
                 if isinstance(pose, list):
                     pose = np.array(pose).reshape(4, 4)
-                
-                # Publish via shared memory
+
+                # Publish via shared memory (including confidence data)
                 await self.keyframe_publisher.publish_keyframe(
                     keyframe_id=str(self.keyframe_count),
                     pose=pose,
                     points=filtered_pts.astype(np.float32),
-                    colors=colors
+                    colors=colors,
+                    confidence=filtered_conf.astype(np.float32)
                 )
                 
                 logger.info(f"Successfully published keyframe {self.keyframe_count} with {len(filtered_pts)} points")

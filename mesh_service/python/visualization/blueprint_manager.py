@@ -25,12 +25,13 @@ def create_slam_visualization_blueprint() -> rrb.Blueprint:
     """
     blueprint = rrb.Blueprint(
         rrb.Horizontal(
-            # Left panel: Main 3D view
+            # Left panel: Main 3D view (shows both real-time and optimized clouds)
             rrb.Spatial3DView(
                 name="🗺️ SLAM Reconstruction",
                 origin="/slam/world",
                 contents=[
-                    "/slam/world/accumulated_cloud",
+                    "/slam/world/accumulated_cloud",      # Real-time (raw)
+                    "/slam/world/optimized_cloud",         # Optimized (filtered+downsampled)
                     "/slam/world/camera_trajectory/**",
                     "/slam/world/keyframe_poses/**"
                 ]
@@ -45,12 +46,13 @@ def create_slam_visualization_blueprint() -> rrb.Blueprint:
                     contents=["/slam/camera/video"]
                 ),
 
-                # Top-down view
+                # Top-down view (shows both clouds)
                 rrb.Spatial3DView(
                     name="📍 Top-Down View",
                     origin="/slam/world",
                     contents=[
                         "/slam/world/accumulated_cloud",
+                        "/slam/world/optimized_cloud",
                         "/slam/world/camera_trajectory/**"
                     ]
                 ),
@@ -83,12 +85,13 @@ def create_point_cloud_only_blueprint() -> rrb.Blueprint:
     """
     blueprint = rrb.Blueprint(
         rrb.Vertical(
-            # Main 3D view
+            # Main 3D view (shows both real-time and optimized clouds)
             rrb.Spatial3DView(
                 name="🗺️ SLAM Point Cloud",
                 origin="/slam/world",
                 contents=[
-                    "/slam/world/accumulated_cloud",
+                    "/slam/world/accumulated_cloud",      # Real-time (raw)
+                    "/slam/world/optimized_cloud",         # Optimized (filtered+downsampled)
                     "/slam/world/camera_trajectory/**"
                 ]
             ),

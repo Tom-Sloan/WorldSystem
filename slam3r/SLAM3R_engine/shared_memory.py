@@ -20,19 +20,21 @@ class SharedMemoryManager:
         self.active_segments = {}  # shm_name -> (shm_object, mapfile)
         self._cleanup_stale_segments()
         
-    def write_keyframe(self, keyframe_id: str, points: np.ndarray, 
+    def write_keyframe(self, keyframe_id: str, points: np.ndarray,
                       colors: np.ndarray, pose: np.ndarray,
-                      bbox: Optional[np.ndarray] = None) -> str:
+                      bbox: Optional[np.ndarray] = None,
+                      confidence: Optional[np.ndarray] = None) -> str:
         """
         Write keyframe data to shared memory.
-        
+
         Args:
             keyframe_id: Unique identifier for the keyframe
             points: Nx3 array of 3D points (float32)
             colors: Nx3 array of RGB colors (uint8)
             pose: 4x4 pose matrix (float32)
             bbox: Optional 6-element bounding box [min_x,min_y,min_z,max_x,max_y,max_z]
-            
+            confidence: Optional Nx1 array of per-point confidence scores (float32)
+
         Returns:
             shm_name: Name of the shared memory segment
         """
@@ -40,9 +42,20 @@ class SharedMemoryManager:
         points = np.asarray(points, dtype=np.float32)
         colors = np.asarray(colors, dtype=np.uint8)
         pose = np.asarray(pose, dtype=np.float32)
-        
+
         if points.shape[0] != colors.shape[0]:
             raise ValueError("Points and colors must have same number of elements")
+
+        # Handle confidence data
+        has_confidence = confidence is not None
+        if has_confidence:
+            confidence = np.asarray(confidence, dtype=np.float32)
+            # Ensure confidence is 1D
+            if confidence.ndim > 1:
+                confidence = confidence.flatten()
+            if confidence.shape[0] != points.shape[0]:
+                raise ValueError(f"Confidence must have same number of elements as points: "
+                               f"{confidence.shape[0]} != {points.shape[0]}")
             
         # Calculate bounding box if not provided
         if bbox is None:
@@ -58,21 +71,22 @@ class SharedMemoryManager:
             
         # Create shared memory name
         shm_name = f"{self.prefix}{keyframe_id}"
-        
+
         # Calculate total size
-        # Header: timestamp(8) + count(4) + color_channels(4) + pose(64) + bbox(24) = 104 bytes
-        header_format = "QII" + "f" * 16 + "f" * 6  # Q=uint64, I=uint32, f=float32
+        # Extended Header: timestamp(8) + count(4) + color_channels(4) + has_confidence(4) + pose(64) + bbox(24) = 108 bytes
+        header_format = "QIII" + "f" * 16 + "f" * 6  # Q=uint64, I=uint32, f=float32
         header_size = struct.calcsize(header_format)
-        
-        # Verify header size matches C++ struct
-        expected_size = 8 + 4 + 4 + 64 + 24  # Should be 104
+
+        # Verify header size
+        expected_size = 8 + 4 + 4 + 4 + 64 + 24  # Should be 108 (was 104 before adding confidence flag)
         if header_size != expected_size:
             logger.warning(f"Header size mismatch! Python: {header_size}, Expected: {expected_size}")
-        
+
         # Data size
         points_size = points.nbytes  # N*3*4 bytes
         colors_size = colors.nbytes  # N*3*1 bytes
-        total_size = header_size + points_size + colors_size
+        confidence_size = confidence.nbytes if has_confidence else 0  # N*4 bytes or 0
+        total_size = header_size + points_size + colors_size + confidence_size
         
         # Close existing segment if any
         self._close_segment(shm_name)
@@ -136,6 +150,7 @@ class SharedMemoryManager:
                 timestamp_ns,              # timestamp_ns
                 len(points),              # point_count
                 3,                        # color_channels (3=RGB)
+                1 if has_confidence else 0,  # has_confidence (1=yes, 0=no)
                 *pose_row_major,          # pose_matrix (16 floats, row-major)
                 *bbox                     # bbox (6 floats)
             )
@@ -151,13 +166,21 @@ class SharedMemoryManager:
             offset = 0
             mapfile[offset:offset+header_size] = header_data
             offset += header_size
-            
+
             # Write points
             mapfile[offset:offset+points_size] = points.tobytes()
             offset += points_size
-            
+
             # Write colors
             mapfile[offset:offset+colors_size] = colors.tobytes()
+            offset += colors_size
+
+            # Write confidence (if present)
+            if has_confidence:
+                mapfile[offset:offset+confidence_size] = confidence.tobytes()
+                logger.debug(f"Wrote confidence data: {confidence_size} bytes "
+                           f"(min: {confidence.min():.2f}, max: {confidence.max():.2f}, "
+                           f"mean: {confidence.mean():.2f})")
             
             # Store reference
             self.active_segments[shm_name] = (shm, mapfile)
@@ -233,8 +256,9 @@ class StreamingKeyframePublisher:
         self.shm_manager = SharedMemoryManager()
         self.keyframe_counter = 0
         
-    async def publish_keyframe(self, keyframe_id: str, pose: np.ndarray, 
-                              points: np.ndarray, colors: np.ndarray):
+    async def publish_keyframe(self, keyframe_id: str, pose: np.ndarray,
+                              points: np.ndarray, colors: np.ndarray,
+                              confidence: Optional[np.ndarray] = None):
         """Publish keyframe to mesh service via shared memory + RabbitMQ."""
         import aio_pika
         import msgpack
@@ -242,9 +266,10 @@ class StreamingKeyframePublisher:
         
         # Always write to shared memory (even if RabbitMQ is not configured)
         shm_key = self.shm_manager.write_keyframe(
-            keyframe_id, points, colors, pose
+            keyframe_id, points, colors, pose, confidence=confidence
         )
-        logger.info(f"Wrote keyframe {keyframe_id} to shared memory: {shm_key}")
+        conf_info = f" (confidence: {confidence.min():.2f}-{confidence.max():.2f}, mean: {confidence.mean():.2f})" if confidence is not None else ""
+        logger.info(f"Wrote keyframe {keyframe_id} to shared memory: {shm_key}{conf_info}")
         
         if self.keyframe_exchange is None:
             logger.warning("No keyframe exchange configured - skipping RabbitMQ notification")

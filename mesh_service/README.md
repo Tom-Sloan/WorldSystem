@@ -15,9 +15,11 @@ Consumes SLAM3R keyframes via shared memory and visualizes in Rerun with Open3D 
 
 **After (Python v2.0)**:
 - Memory: ~50 MB constant ✅
-- Rerun FPS: 60 fps ✅  
+- Rerun FPS: 60 fps ✅
 - Processing: 3-6 ms/keyframe ✅
 - Single entity rendering ✅
+
+> **Note:** The C++ v1.0 implementation has been archived to `archive_cpp_v1/`. See [archive_cpp_v1/README_ARCHIVE.md](archive_cpp_v1/README_ARCHIVE.md) for details.
 
 ## Running
 

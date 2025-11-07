@@ -188,15 +188,19 @@ class SlidingWindowProcessor:
         if frame.frame_id % self.keyframe_stride == 0:
             frame.is_keyframe = True
             self.keyframes.append(frame)
-            
-            # Limit keyframes
-            if len(self.keyframes) > 10:
-                self.keyframes = self.keyframes[-10:]
+
+            # Limit keyframes to maintain reasonable memory usage
+            # Larger buffer = more diverse reference candidates for correlation-based selection
+            # 50 keyframes @ ~2-3MB each = ~100-150MB (acceptable for GPU memory)
+            if len(self.keyframes) > 50:
+                self.keyframes = self.keyframes[-50:]
     
     def get_reference_frames(self, num_refs: int = 5) -> List[FrameData]:
         """Select best reference frames from window"""
-        # For now, return the most recent keyframes
-        return self.keyframes[-num_refs:] if len(self.keyframes) >= num_refs else list(self.keyframes)
+        # Return ALL keyframes as candidates for correlation-based selection
+        # scene_frame_retrieve() will pick the best ones using i2p_model.get_corr_score()
+        # This enables geometric diversity instead of just temporal proximity
+        return list(self.keyframes)
 
 
 class StreamingSLAM3R:

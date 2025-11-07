@@ -24,6 +24,7 @@ class SharedKeyframe:
     bbox: np.ndarray  # (6,) min/max bounds
     points: np.ndarray  # (N, 3) XYZ coordinates
     colors: np.ndarray  # (N, 3) or (N, 4) RGB(A) colors
+    confidence: Optional[np.ndarray] = None  # (N,) per-point confidence scores
 
 
 class SharedMemoryReader:
@@ -36,9 +37,9 @@ class SharedMemoryReader:
     - Colors: point_count * color_channels bytes (uint8 RGB/RGBA)
     """
 
-    # C++ struct SharedKeyframe layout
-    HEADER_SIZE = 104  # 8 + 4 + 4 + 64 + 24 bytes
-    HEADER_FORMAT = '<QII16f6f'  # little-endian: uint64, uint32, uint32, 16 floats (4x4 matrix), 6 floats (bbox)
+    # C++ struct SharedKeyframe layout (updated to include confidence flag)
+    HEADER_SIZE = 108  # 8 + 4 + 4 + 4 + 64 + 24 bytes (added has_confidence field)
+    HEADER_FORMAT = '<QIII16f6f'  # little-endian: uint64, uint32, uint32, uint32(has_conf), 16 floats (4x4 matrix), 6 floats (bbox)
 
     def __init__(self, shm_path: str = '/dev/shm'):
         """
@@ -84,9 +85,10 @@ class SharedMemoryReader:
                 timestamp_ns = header_data[0]
                 point_count = header_data[1]
                 color_channels = header_data[2]
+                has_confidence = header_data[3]  # New field: 1 if confidence data is present, 0 otherwise
                 # SLAM3R writes pose.T.flatten(), so we need to reshape and transpose back
-                pose_matrix = np.array(header_data[3:19], dtype=np.float32).reshape(4, 4).T
-                bbox = np.array(header_data[19:25], dtype=np.float32)
+                pose_matrix = np.array(header_data[4:20], dtype=np.float32).reshape(4, 4).T
+                bbox = np.array(header_data[20:26], dtype=np.float32)
 
                 # Read points (N x 3 float32)
                 points_size = point_count * 3 * 4
@@ -106,7 +108,20 @@ class SharedMemoryReader:
 
                 colors = np.frombuffer(colors_bytes, dtype=np.uint8).reshape(-1, color_channels)
 
-                logger.debug(f"Read keyframe {shm_key}: {point_count} points")
+                # Read confidence (N x float32) if present
+                confidence = None
+                if has_confidence:
+                    confidence_size = point_count * 4  # 4 bytes per float32
+                    confidence_bytes = f.read(confidence_size)
+                    if len(confidence_bytes) < confidence_size:
+                        logger.warning(f"Incomplete confidence read: {len(confidence_bytes)} < {confidence_size}")
+                        # Continue without confidence rather than failing
+                    else:
+                        confidence = np.frombuffer(confidence_bytes, dtype=np.float32)
+                        logger.debug(f"Read confidence data: min={confidence.min():.2f}, max={confidence.max():.2f}, mean={confidence.mean():.2f}")
+
+                logger.debug(f"Read keyframe {shm_key}: {point_count} points" +
+                            (f" with confidence" if confidence is not None else ""))
 
                 return SharedKeyframe(
                     timestamp_ns=timestamp_ns,
@@ -115,7 +130,8 @@ class SharedMemoryReader:
                     pose_matrix=pose_matrix,
                     bbox=bbox,
                     points=points,
-                    colors=colors
+                    colors=colors,
+                    confidence=confidence
                 )
 
         except Exception as e:
@@ -148,18 +164,20 @@ class SharedMemoryReader:
             return False
 
     @staticmethod
-    def calculate_size(point_count: int, color_channels: int = 3) -> int:
+    def calculate_size(point_count: int, color_channels: int = 3, has_confidence: bool = False) -> int:
         """
         Calculate total size needed for a keyframe in shared memory.
 
         Args:
             point_count: Number of points
             color_channels: Color channels per point (3=RGB, 4=RGBA)
+            has_confidence: Whether confidence data is included
 
         Returns:
             Total size in bytes
         """
-        header_size = 104
+        header_size = 108  # Updated from 104 to include has_confidence flag
         points_size = point_count * 3 * 4  # 3 floats per point
         colors_size = point_count * color_channels  # uint8 per channel
-        return header_size + points_size + colors_size
+        confidence_size = point_count * 4 if has_confidence else 0  # float32 per point
+        return header_size + points_size + colors_size + confidence_size

@@ -36,6 +36,13 @@ class MeshServiceConfig:
     enable_metrics: bool = os.getenv('ENABLE_METRICS', 'true').lower() == 'true'
     log_level: str = os.getenv('LOG_LEVEL', 'INFO')
 
+    # Optimization (Background high-quality point cloud generation)
+    enable_optimization: bool = os.getenv('ENABLE_OPTIMIZATION', 'true').lower() == 'true'
+    optimization_interval_seconds: float = float(os.getenv('OPTIMIZATION_INTERVAL_SECONDS', '15.0'))
+    optimization_conf_threshold: float = float(os.getenv('OPTIMIZATION_CONF_THRESHOLD', '10.0'))
+    optimization_target_points: int = int(os.getenv('OPTIMIZATION_TARGET_POINTS', '1000000'))
+    max_cached_keyframes: int = int(os.getenv('MAX_CACHED_KEYFRAMES', '100'))
+
     @property
     def rerun_url(self) -> str:
         """Get Rerun gRPC URL"""
@@ -53,6 +60,13 @@ class MeshServiceConfig:
 
     def __str__(self) -> str:
         """Human-readable config"""
+        opt_str = f"""
+  Optimization: {self.enable_optimization}
+    Interval: {self.optimization_interval_seconds}s
+    Conf Threshold: {self.optimization_conf_threshold}
+    Target Points: {self.optimization_target_points:,}
+    Max Cached Keyframes: {self.max_cached_keyframes}""" if self.enable_optimization else "\n  Optimization: Disabled"
+
         return f"""Mesh Service Configuration:
   RabbitMQ: {self.rabbitmq_url}
   Rerun: {self.rerun_url} (connect={self.rerun_connect})
@@ -60,7 +74,7 @@ class MeshServiceConfig:
   Max Points: {self.max_points:,}
   Log Interval: {self.log_interval_ms}ms
   Video Enabled: {self.enable_video}
-  Unlink SHM: {self.unlink_shm}
+  Unlink SHM: {self.unlink_shm}{opt_str}
 """
 
 

@@ -84,6 +84,38 @@ class RerunPublisher:
 
         logger.debug(f"Logged point cloud: {len(points):,} points")
 
+    def log_optimized_cloud(
+        self,
+        points: np.ndarray,
+        colors: np.ndarray,
+        timestamp_ns: Optional[int] = None
+    ) -> None:
+        """
+        Log optimized (high-quality) point cloud to Rerun.
+
+        This cloud is shown simultaneously with the real-time accumulated cloud,
+        allowing comparison of quality.
+
+        Args:
+            points: (N, 3) float32 XYZ coordinates
+            colors: (N, 3) uint8 RGB colors
+            timestamp_ns: Optional timestamp in nanoseconds
+        """
+        if len(points) == 0:
+            return
+
+        # Set time context
+        if timestamp_ns:
+            rr.set_time_nanos("sensor_time", timestamp_ns)
+
+        # Log to separate entity (shown alongside real-time cloud)
+        rr.log(
+            "/slam/world/optimized_cloud",
+            rr.Points3D(points, colors=colors, radii=0.015)  # Slightly larger for distinction
+        )
+
+        logger.info(f"Logged optimized cloud: {len(points):,} points")
+
     def log_video_frame(
         self,
         frame: np.ndarray,

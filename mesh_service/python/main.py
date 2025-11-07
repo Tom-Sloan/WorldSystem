@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 import rerun as rr
 from colorama import Fore, Style
+from concurrent.futures import ProcessPoolExecutor
 
 # Add common directory to path for WebSocketVideoConsumer
 sys.path.insert(0, '/app/common')
@@ -23,6 +24,7 @@ from utils.logger import setup_logging, get_logger
 from io_handlers.shared_memory import SharedMemoryReader
 from io_handlers.rabbitmq_consumer import RabbitMQConsumer
 from processing.point_cloud_manager import PointCloudManager
+from processing.optimizer import optimize_and_merge
 from visualization.rerun_publisher import RerunPublisher
 from visualization.blueprint_manager import (
     create_slam_visualization_blueprint,
@@ -99,7 +101,8 @@ class MeshService:
         self.point_cloud_mgr = PointCloudManager(
             voxel_size=config.voxel_size,
             max_points=config.max_points,
-            max_raw_points=config.max_raw_points
+            max_raw_points=config.max_raw_points,
+            max_cached_keyframes=config.max_cached_keyframes
         )
         self.rabbitmq = RabbitMQConsumer(config.rabbitmq_url)
         self.rerun_publisher = RerunPublisher(
@@ -110,6 +113,17 @@ class MeshService:
         # WebSocket video consumer (for camera feed)
         ws_url = os.getenv("VIDEO_STREAM_URL", "ws://127.0.0.1:5001/ws/video/consume")
         self.websocket_consumer = MeshServiceVideoConsumer(ws_url, self.rerun_publisher, config)
+
+        # Optimization infrastructure
+        self.enable_optimization = getattr(config, 'enable_optimization', True)
+        if self.enable_optimization:
+            self.process_pool = ProcessPoolExecutor(max_workers=1)
+            self.last_optimized_cloud = None  # Stores the latest optimized point cloud
+            self.optimization_in_progress = False
+            logger.info("✅ Optimization enabled with background process pool")
+        else:
+            self.process_pool = None
+            logger.info("ℹ️  Optimization disabled")
 
         # State
         self.stats_log_interval = 5.0  # Log stats every 5 seconds
@@ -146,12 +160,13 @@ class MeshService:
                     logger.warning(f"Failed to read keyframe from shared memory: {shm_key}")
                     return
 
-                # Add to point cloud manager
+                # Add to point cloud manager (including confidence if available)
                 added = self.point_cloud_mgr.add_keyframe(
                     keyframe_id=keyframe_id,
                     points=keyframe.points,
                     colors=keyframe.colors,
-                    pose=keyframe.pose_matrix
+                    pose=keyframe.pose_matrix,
+                    confidence=keyframe.confidence
                 )
 
                 if added:
@@ -285,6 +300,91 @@ class MeshService:
         except Exception as e:
             logger.error(f"Error logging statistics: {e}", exc_info=True)
 
+    async def periodic_optimization_loop(self) -> None:
+        """
+        Periodically optimize new keyframes in background process.
+
+        Runs every optimization_interval_seconds, takes new keyframes since
+        last optimization, applies confidence filtering and downsampling,
+        and merges with previous optimized cloud.
+        """
+        if not self.enable_optimization:
+            return
+
+        optimization_interval = getattr(config, 'optimization_interval_seconds', 15.0)
+        min_keyframes = 5  # Minimum keyframes before triggering optimization
+
+        logger.info(f"Started optimization loop (interval: {optimization_interval}s)")
+
+        while self.running:
+            try:
+                await asyncio.sleep(optimization_interval)
+
+                # Skip if optimization already in progress
+                if self.optimization_in_progress:
+                    logger.debug("Optimization already in progress, skipping")
+                    continue
+
+                # Get new keyframes since last optimization
+                new_keyframes = self.point_cloud_mgr.get_new_keyframes_since_optimization()
+
+                if len(new_keyframes) < min_keyframes:
+                    logger.debug(f"Not enough new keyframes for optimization: {len(new_keyframes)} < {min_keyframes}")
+                    continue
+
+                logger.info(f"🔧 Starting optimization of {len(new_keyframes)} keyframes...")
+                self.optimization_in_progress = True
+
+                # Get optimization parameters
+                conf_threshold = getattr(config, 'optimization_conf_threshold', 10.0)
+                target_points = getattr(config, 'optimization_target_points', 1_000_000)
+                max_total_points = target_points * 2  # Allow some growth
+
+                # Run optimization in background process
+                loop = asyncio.get_event_loop()
+                optimized = await loop.run_in_executor(
+                    self.process_pool,
+                    optimize_and_merge,
+                    new_keyframes,
+                    self.last_optimized_cloud,
+                    conf_threshold,
+                    target_points,
+                    max_total_points
+                )
+
+                # Update optimized cloud
+                self.last_optimized_cloud = optimized
+
+                # Mark keyframes as optimized
+                keyframe_ids = optimized.get('keyframe_ids', [])
+                self.point_cloud_mgr.mark_keyframes_optimized(keyframe_ids)
+
+                # Log optimized cloud to Rerun
+                if len(optimized['points']) > 0:
+                    self.rerun_publisher.log_optimized_cloud(
+                        optimized['points'],
+                        optimized['colors'],
+                        timestamp_ns=None
+                    )
+
+                    stats = optimized.get('stats', {})
+                    logger.info(
+                        f"✅ Optimization complete: {stats.get('total_input_points', 0):,} -> "
+                        f"{stats.get('total_output_points', 0):,} points "
+                        f"({len(keyframe_ids)} keyframes)"
+                    )
+                else:
+                    logger.warning("Optimization produced empty point cloud")
+
+                self.optimization_in_progress = False
+
+            except asyncio.CancelledError:
+                logger.info("Optimization loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in optimization loop: {e}", exc_info=True)
+                self.optimization_in_progress = False
+
     async def periodic_stats_logger(self) -> None:
         """Periodically log statistics"""
         while self.running:
@@ -344,6 +444,12 @@ class MeshService:
             # Start periodic stats logger
             stats_task = asyncio.create_task(self.periodic_stats_logger())
 
+            # Start periodic optimization loop
+            optimization_task = None
+            if self.enable_optimization:
+                optimization_task = asyncio.create_task(self.periodic_optimization_loop())
+                logger.info("🔧 Started background optimization loop")
+
             logger.info(f"\n{Fore.GREEN}{'='*60}")
             logger.info(f"🚀 Mesh Service Running")
             logger.info(f"{'='*60}{Style.RESET_ALL}\n")
@@ -358,9 +464,18 @@ class MeshService:
             stats_task.cancel()
             await stats_task
 
+            if optimization_task:
+                optimization_task.cancel()
+                await optimization_task
+
             if websocket_thread:
                 self.websocket_consumer.stop()
                 websocket_thread.join(timeout=2)
+
+            # Shutdown process pool
+            if self.process_pool:
+                self.process_pool.shutdown(wait=True, cancel_futures=True)
+                logger.info("Process pool shut down")
 
         except Exception as e:
             logger.error(f"Fatal error in service: {e}", exc_info=True)
